@@ -3,8 +3,8 @@ require 'test/unit'
 require 'timeout'
 
 module TestParallel
-  PARALLEL_RB = "#{File.dirname(__FILE__)}/../../lib/test/unit/parallel.rb"
-  TESTS = "#{File.dirname(__FILE__)}/tests_for_parallel"
+  PARALLEL_RB = "#{__dir__}/../../lib/test/unit/parallel.rb"
+  TESTS = "#{__dir__}/tests_for_parallel"
   # use large timeout for --jit-wait
   TIMEOUT = EnvUtil.apply_timeout_scale(defined?(RubyVM::JIT) && RubyVM::JIT.enabled? ? 100 : 30)
 
@@ -99,7 +99,7 @@ module TestParallel
           break if /^p (.+?)$/ =~ buf
         end
         assert_not_nil($1, "'p' was not found")
-        assert_match(/TestA#test_nothing_test = \d+\.\d+ s = \.\n/, $1.chomp.unpack("m")[0])
+        assert_match(/TestA#test_nothing_test = \d+\.\d+ s = \.\n/, $1.chomp.unpack1("m"))
       end
     end
 
@@ -111,7 +111,7 @@ module TestParallel
         end
         assert_not_nil($1, "'done' was not found")
 
-        result = Marshal.load($1.chomp.unpack("m")[0])
+        result = Marshal.load($1.chomp.unpack1("m"))
         assert_equal(5, result[0])
         pend "TODO: result[1] returns 17. We should investigate it" do
           assert_equal(12, result[1])

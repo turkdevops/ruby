@@ -12,6 +12,9 @@ jobs:
     # CodeQL runs on ubuntu-latest and windows-latest
     runs-on: ubuntu-latest
 
+    env:
+      enable_install_doc: no
+
     steps:
     - name: Install libraries
       run: |
@@ -29,6 +32,9 @@ jobs:
       uses: github/codeql-action/init@v1
       with:
         config-file: ./.github/codeql/codeql-config.yml
+
+    - name: Set ENV
+      run: echo "GNUMAKEFLAGS=-j$((1 + $(nproc --all)))" >> $GITHUB_ENV
 
     - name: Autobuild
       uses: github/codeql-action/autobuild@v1
