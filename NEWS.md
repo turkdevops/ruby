@@ -82,6 +82,10 @@ Note that each entry is kept to a minimum, see links for details.
   variable or method name even if it's a pseudo variable name such as
   `self`.
 
+* non main-Ractors can get instance variables (ivars) of classes/modules
+  if ivars refer to shareable objects.
+  [[Feature #17592]]
+
 ## Command line options
 
 ## Core classes updates
@@ -171,9 +175,84 @@ Outstanding ones only.
 
     * Replace copy coroutine with pthread implementation. [[Feature #18015]]
 
+* Refinement
+
+    * New class which represents a module created by Module#refine.
+      `include` and `prepend` are deprecated, and `import_methods` is added
+      instead. [[Bug #17429]]
+
 ## Stdlib updates
 
-Outstanding ones only.
+* The following default gem are updated.
+  * RubyGems
+  * Bundler
+  * RDoc 6.4.0
+  * ReLine
+  * JSON 2.6.0
+  * Psych 4.0.2
+  * FileUtils 1.6.0
+  * Fiddle 1.1.0
+  * StringIO 3.0.1
+  * IO::Console 0.5.9
+  * IO::Wait 0.2.0
+  * CSV 3.2.1
+  * Etc 1.3.0
+  * Date 3.2.0
+  * Zlib 2.1.1
+  * StringScanner 3.0.1
+  * IpAddr
+  * Logger 1.4.4
+  * OStruct 0.5.0
+  * Irb
+  * Racc 1.6.0
+  * Delegate 0.2.0
+  * Benchmark 0.2.0
+  * CGI 0.3.0
+  * Readline(C-ext) 0.1.3
+  * Timeout 0.2.0
+  * YAML 0.2.0
+  * URI 0.11.0
+  * OpenSSL
+  * DidYouMean
+  * Weakref 0.1.1
+  * Tempfile 0.1.2
+  * TmpDir 0.1.2
+  * English 0.7.1
+  * Net::Protocol 0.1.2
+  * Net::Http 0.2.0
+  * BigDecimal
+  * OptionParser 0.2.0
+  * Set
+  * Find 0.1.1
+  * Rinda 0.1.1
+  * Erb
+  * NKF 0.1.1
+  * Base64 0.1.1
+  * OpenUri 0.2.0
+  * SecureRandom 0.1.1
+  * Resolv 0.2.1
+  * Resolv::Replace 0.1.0
+  * Time 0.2.0
+  * PP 0.2.1
+  * Prettyprint 0.1.1
+  * Drb 2.1.0
+  * Pathname 0.2.0
+  * Digest 3.1.0.pre2
+  * Un 0.2.0
+* The following bundled gems are updated.
+  * minitest 5.14.4
+  * power_assert 2.0.1
+  * rake 13.0.6
+  * test-unit 3.5.0
+  * rbs 1.6.2
+  * typeprof 0.20.0
+* The following default gems are now bundled gems.
+  * net-ftp
+  * net-imap
+  * net-pop
+  * net-smtp
+  * matrix
+  * prime
 
 ## Compatibility issues
 
@@ -188,6 +267,8 @@ Excluding feature bug fixes.
 
 * `ERB#initialize` warns `safe_level` and later arguments even without -w.
   [[Feature #14256]]
+
+* `lib/debug.rb` is replaced with `debug.gem`
 
 ## C API updates
 
@@ -210,11 +291,57 @@ Excluding feature bug fixes.
 
 * `RubyVM::MJIT` is renamed to `RubyVM::JIT`. [[Feature #17490]]
 
+### YJIT: New experimental in-process JIT compiler
+
+New JIT compiler available as an experimental feature. [[Feature #18229]]
+
+See [this blog post](https://shopify.engineering/yjit-just-in-time-compiler-cruby
+) introducing the project.
+
+* Disabled by default, use `--yjit` command-line option to enable YJIT.
+
+* Performance improvements on most real-world software, up to 22% on railsbench, 39% on liquid-render.
+
+* Fast warm-up times.
+
+* Limited to macOS & Linux on x86-64 platforms for now.
+
 ## Static analysis
 
 ### RBS
 
 ### TypeProf
+
+* [Experimental IDE support](https://github.com/ruby/typeprof/blob/master/doc/ide.md) has been implemented.
+* Many bug fixes and performance improvements since Ruby 3.0.0.
+
+## Debugger
+
+* A new debugger [debug.gem](https://github.com/ruby/debug) is bundled.
+  debug.gem is fast debugger implementation and it provides many features
+  like remote debugging, colorful REPL, IDE (VSCode) integration and more.
+  It replaces `lib/debug.rb` standard library.
+
+* `rdbg` command is also installed into `bin/` directory to start and control
+  debugging execution.
+
+## error_highlight
+
+A built-in gem, error_highlight, has been introduced.
+It includes fine-grained error location in backtrace:
+
+```
+$ ruby test.rb
+test.rb:1:in `<main>': undefined method `time' for 1:Integer (NoMethodError)
+
+1.time {}
+ ^^^^^
+Did you mean?  times
+```
+
+This gem is enabled by default.
+You can disable it by using a command-line option `--disable-error_highlight`.
+See [the repository](https://github.com/ruby/error_highlight) in detail.
 
 ## Miscellaneous changes
 
@@ -242,6 +369,7 @@ Excluding feature bug fixes.
 [Bug #17423]:     https://bugs.ruby-lang.org/issues/17423
 [Feature #17479]: https://bugs.ruby-lang.org/issues/17479
 [Feature #17490]: https://bugs.ruby-lang.org/issues/17490
+[Feature #17592]: https://bugs.ruby-lang.org/issues/17592
 [Feature #17724]: https://bugs.ruby-lang.org/issues/17724
 [Feature #17744]: https://bugs.ruby-lang.org/issues/17744
 [Feature #17762]: https://bugs.ruby-lang.org/issues/17762

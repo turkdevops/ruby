@@ -390,6 +390,7 @@ vm_push_frame(rb_execution_context_t *ec,
 #if VM_DEBUG_BP_CHECK
         .bp_check   = sp,
 #endif
+        .jit_return = NULL
     };
 
     ec->cfp = cfp;
@@ -787,7 +788,7 @@ cref_replace_with_duplicated_cref_each_frame(const VALUE *vptr, int can_be_svar,
 	    return (rb_cref_t *)new_cref;
 	  case imemo_svar:
 	    if (can_be_svar) {
-		return cref_replace_with_duplicated_cref_each_frame((const VALUE *)&((struct vm_svar *)v)->cref_or_me, FALSE, v);
+		return cref_replace_with_duplicated_cref_each_frame(&((struct vm_svar *)v)->cref_or_me, FALSE, v);
 	    }
             /* fall through */
 	  case imemo_ment:
@@ -834,6 +835,12 @@ vm_get_cref(const VALUE *ep)
     }
 }
 
+rb_cref_t *
+rb_vm_get_cref(const VALUE *ep)
+{
+    return vm_get_cref(ep);
+}
+
 static rb_cref_t *
 vm_ec_cref(const rb_execution_context_t *ec)
 {
@@ -877,7 +884,7 @@ rb_vm_rewrite_cref(rb_cref_t *cref, VALUE old_klass, VALUE new_klass, rb_cref_t 
 	new_cref = vm_cref_new_use_prev(CREF_CLASS(cref), METHOD_VISI_UNDEF, FALSE, cref, FALSE);
 	cref = CREF_NEXT(cref);
 	*new_cref_ptr = new_cref;
-	new_cref_ptr = (rb_cref_t **)&new_cref->next;
+	new_cref_ptr = &new_cref->next;
     }
     *new_cref_ptr = NULL;
 }
@@ -1084,14 +1091,16 @@ static bool
 iv_index_tbl_lookup(struct st_table *iv_index_tbl, ID id, struct rb_iv_index_tbl_entry **ent)
 {
     int found;
+    st_data_t ent_data;
 
     if (iv_index_tbl == NULL) return false;
 
     RB_VM_LOCK_ENTER();
     {
-        found = st_lookup(iv_index_tbl, (st_data_t)id, (st_data_t *)ent);
+        found = st_lookup(iv_index_tbl, (st_data_t)id, &ent_data);
     }
     RB_VM_LOCK_LEAVE();
+    if (found) *ent = (struct rb_iv_index_tbl_entry *)ent_data;
 
     return found ? true : false;
 }
@@ -1327,6 +1336,12 @@ vm_getclassvariable(const rb_iseq_t *iseq, const rb_cref_t *cref, const rb_contr
     return update_classvariable_cache(iseq, klass, id, ic);
 }
 
+VALUE
+rb_vm_getclassvariable(const rb_iseq_t *iseq, const rb_cref_t *cref, const rb_control_frame_t *cfp, ID id, ICVARC ic)
+{
+    return vm_getclassvariable(iseq, cref, cfp, id, ic);
+}
+
 static inline void
 vm_setclassvariable(const rb_iseq_t *iseq, const rb_cref_t *cref, const rb_control_frame_t *cfp, ID id, VALUE val, ICVARC ic)
 {
@@ -1354,6 +1369,34 @@ static inline void
 vm_setinstancevariable(const rb_iseq_t *iseq, VALUE obj, ID id, VALUE val, IVC ic)
 {
     vm_setivar(obj, id, val, iseq, ic, 0, 0);
+}
+
+void
+rb_vm_setinstancevariable(const rb_iseq_t *iseq, VALUE obj, ID id, VALUE val, IVC ic)
+{
+    vm_setinstancevariable(iseq, obj, id, val, ic);
+}
+
+/* Set the instance variable +val+ on object +obj+ at the +index+.
+ * This function only works with T_OBJECT objects, so make sure
+ * +obj+ is of type T_OBJECT before using this function.
+ */
+VALUE
+rb_vm_set_ivar_idx(VALUE obj, uint32_t index, VALUE val)
+{
+    RUBY_ASSERT(RB_TYPE_P(obj, T_OBJECT));
+
+    rb_check_frozen_internal(obj);
+
+    VM_ASSERT(!rb_ractor_shareable_p(obj));
+
+    if (UNLIKELY(index >= ROBJECT_NUMIV(obj))) {
+        rb_init_iv_list(obj);
+    }
+    VALUE *ptr = ROBJECT_IVPTR(obj);
+    RB_OBJ_WRITE(obj, &ptr[index], val);
+
+    return val;
 }
 
 static VALUE
@@ -2219,7 +2262,7 @@ rb_simple_iseq_p(const rb_iseq_t *iseq)
 	   iseq->body->param.flags.has_block == FALSE;
 }
 
-static bool
+MJIT_FUNC_EXPORTED bool
 rb_iseq_only_optparam_p(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_opt == TRUE &&
@@ -2231,7 +2274,7 @@ rb_iseq_only_optparam_p(const rb_iseq_t *iseq)
            iseq->body->param.flags.has_block == FALSE;
 }
 
-static bool
+MJIT_FUNC_EXPORTED bool
 rb_iseq_only_kwparam_p(const rb_iseq_t *iseq)
 {
     return iseq->body->param.flags.has_opt == FALSE &&
@@ -3115,6 +3158,12 @@ aliased_callable_method_entry(const rb_callable_method_entry_t *me)
 
     VM_ASSERT(callable_method_entry_p(cme));
     return cme;
+}
+
+const rb_callable_method_entry_t *
+rb_aliased_callable_method_entry(const rb_callable_method_entry_t *me)
+{
+    return aliased_callable_method_entry(me);
 }
 
 static VALUE
@@ -4161,6 +4210,12 @@ vm_defined(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, rb_num_t op_
     return false;
 }
 
+bool
+rb_vm_defined(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, rb_num_t op_type, VALUE obj, VALUE v)
+{
+    return vm_defined(ec, reg_cfp, op_type, obj, v);
+}
+
 static const VALUE *
 vm_get_ep(const VALUE *const reg_ep, rb_num_t lv)
 {
@@ -4222,6 +4277,12 @@ vm_splat_array(VALUE flag, VALUE ary)
     else {
 	return tmp;
     }
+}
+
+VALUE
+rb_vm_splat_array(VALUE flag, VALUE ary)
+{
+    return vm_splat_array(flag, ary);
 }
 
 static VALUE
@@ -4723,6 +4784,13 @@ vm_ic_hit_p(const struct iseq_inline_constant_cache_entry *ice, const VALUE *reg
     return vm_inlined_ic_hit_p(ice->flags, ice->value, ice->ic_cref, ice->ic_serial, reg_ep);
 }
 
+// YJIT needs this function to never allocate and never raise
+bool
+rb_vm_ic_hit_p(IC ic, const VALUE *reg_ep)
+{
+    return ic->entry && vm_ic_hit_p(ic->entry, reg_ep);
+}
+
 static void
 vm_ic_update(const rb_iseq_t *iseq, IC ic, VALUE val, const VALUE *reg_ep)
 {
@@ -4734,6 +4802,11 @@ vm_ic_update(const rb_iseq_t *iseq, IC ic, VALUE val, const VALUE *reg_ep)
     if (rb_ractor_shareable_p(val)) ice->flags |= IMEMO_CONST_CACHE_SHAREABLE;
     ruby_vm_const_missing_count = 0;
     RB_OBJ_WRITE(iseq, &ic->entry, ice);
+#ifndef MJIT_HEADER
+    // MJIT and YJIT can't be on at the same time, so there is no need to
+    // notify YJIT about changes to the IC when running inside MJIT code.
+    rb_yjit_constant_ic_update(iseq, ic);
+#endif
 }
 
 static VALUE
@@ -4953,6 +5026,12 @@ vm_opt_mod(VALUE recv, VALUE obj)
     else {
 	return Qundef;
     }
+}
+
+VALUE
+rb_vm_opt_mod(VALUE recv, VALUE obj)
+{
+    return vm_opt_mod(recv, obj);
 }
 
 static VALUE

@@ -28,6 +28,7 @@
 #include "internal/sanitizers.h"
 #include "iseq.h"
 #include "mjit.h"
+#include "yjit.h"
 #include "ruby/st.h"
 #include "ruby/vm.h"
 #include "vm_core.h"
@@ -201,7 +202,7 @@ VM_CAPTURED_BLOCK_TO_CFP(const struct rb_captured_block *captured)
 {
     rb_control_frame_t *cfp = ((rb_control_frame_t *)((VALUE *)(captured) - 3));
     VM_ASSERT(!VM_CFP_IN_HEAP_P(GET_EC(), cfp));
-    VM_ASSERT(sizeof(rb_control_frame_t)/sizeof(VALUE) == 7 + VM_DEBUG_BP_CHECK ? 1 : 0);
+    VM_ASSERT(sizeof(rb_control_frame_t)/sizeof(VALUE) == 8 + VM_DEBUG_BP_CHECK ? 1 : 0);
     return cfp;
 }
 
@@ -293,6 +294,25 @@ vm_cref_dup(const rb_cref_t *cref)
     return new_cref;
 }
 
+
+rb_cref_t *
+rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
+{
+    VALUE klass = CREF_CLASS(cref);
+    const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
+    rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
+    int pushed_by_eval = CREF_PUSHED_BY_EVAL(cref);
+
+    new_cref = vm_cref_new(klass, visi->method_visi, visi->module_func, next_cref, pushed_by_eval);
+
+    if (!NIL_P(CREF_REFINEMENTS(cref))) {
+        CREF_REFINEMENTS_SET(new_cref, Qnil);
+        CREF_OMOD_SHARED_UNSET(new_cref);
+    }
+
+    return new_cref;
+}
+
 static rb_cref_t *
 vm_cref_new_toplevel(rb_execution_context_t *ec)
 {
@@ -379,6 +399,7 @@ VALUE rb_block_param_proxy;
 VALUE ruby_vm_const_missing_count = 0;
 rb_vm_t *ruby_current_vm_ptr = NULL;
 rb_ractor_t *ruby_single_main_ractor;
+bool ruby_vm_keep_script_lines;
 
 #ifdef RB_THREAD_LOCAL_SPECIFIER
 RB_THREAD_LOCAL_SPECIFIER rb_execution_context_t *ruby_current_ec;
@@ -1851,6 +1872,7 @@ rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
     if (vm_redefinition_check_method_type(me->def)) {
         if (st_lookup(vm_opt_method_def_table, (st_data_t)me->def, &bop)) {
             int flag = vm_redefinition_check_flag(klass);
+            rb_yjit_bop_redefined(klass, me, (enum ruby_basic_operators)bop);
 	    ruby_vm_redefined_flag[bop] |= flag;
 	}
     }
@@ -3336,6 +3358,41 @@ vm_mtbl2(VALUE self, VALUE obj, VALUE sym)
     return Qnil;
 }
 
+/*
+ *  call-seq:
+ *     RubyVM.keep_script_lines -> true or false
+ *
+ *  Return current +keep_script_lines+ status. Now it only returns
+ *  +true+ of +false+, but it can return other objects in future.
+ *
+ *  Note that this is an API for ruby internal use, debugging,
+ *  and research. Do not use this for any other purpose.
+ *  The compatibility is not guaranteed.
+ */
+static VALUE
+vm_keep_script_lines(VALUE self)
+{
+    return RBOOL(ruby_vm_keep_script_lines);
+}
+
+/*
+ *  call-seq:
+ *     RubyVM.keep_script_lines = true / false
+ *
+ *  It set +keep_script_lines+ flag. If the flag is set, all
+ *  loaded scripts are recorded in a interpreter process.
+ *
+ *  Note that this is an API for ruby internal use, debugging,
+ *  and research. Do not use this for any other purpose.
+ *  The compatibility is not guaranteed.
+ */
+static VALUE
+vm_keep_script_lines_set(VALUE self, VALUE flags)
+{
+    ruby_vm_keep_script_lines = RTEST(flags);
+    return flags;
+}
+
 void
 Init_VM(void)
 {
@@ -3359,6 +3416,9 @@ Init_VM(void)
     rb_undef_alloc_func(rb_cRubyVM);
     rb_undef_method(CLASS_OF(rb_cRubyVM), "new");
     rb_define_singleton_method(rb_cRubyVM, "stat", vm_stat, -1);
+    rb_define_singleton_method(rb_cRubyVM, "keep_script_lines", vm_keep_script_lines, 0);
+    rb_define_singleton_method(rb_cRubyVM, "keep_script_lines=", vm_keep_script_lines_set, 1);
+
 #if USE_DEBUG_COUNTER
     rb_define_singleton_method(rb_cRubyVM, "reset_debug_counters", rb_debug_counter_reset, 0);
     rb_define_singleton_method(rb_cRubyVM, "show_debug_counters", rb_debug_counter_show, 0);

@@ -77,6 +77,7 @@
 #include "ruby/st.h"
 #include "ruby_atomic.h"
 #include "vm_opts.h"
+#include "darray.h"
 
 #include "ruby/thread_native.h"
 #if   defined(_WIN32)
@@ -235,6 +236,9 @@ STATIC_ASSERT(sizeof_iseq_inline_constant_cache_entry,
 
 struct iseq_inline_constant_cache {
     struct iseq_inline_constant_cache_entry *entry;
+    // For YJIT: the index to the opt_getinlinecache instruction in the same iseq.
+    // It's set during compile time and constant once set.
+    unsigned get_insn_idx;
 };
 
 struct iseq_inline_iv_cache_entry {
@@ -310,6 +314,10 @@ pathobj_realpath(VALUE pathobj)
 
 /* Forward declarations */
 struct rb_mjit_unit;
+
+// List of YJIT block versions
+typedef rb_darray(struct yjit_block_version *) rb_yjit_block_array_t;
+typedef rb_darray(rb_yjit_block_array_t) rb_yjit_block_array_array_t;
 
 struct rb_iseq_constant_body {
     enum iseq_type {
@@ -425,6 +433,7 @@ struct rb_iseq_constant_body {
 
     struct {
 	rb_snum_t flip_count;
+        VALUE script_lines;
 	VALUE coverage;
         VALUE pc2branchindex;
 	VALUE *original_iseq;
@@ -438,6 +447,8 @@ struct rb_iseq_constant_body {
     char catch_except_p; /* If a frame of this ISeq may catch exception, set TRUE */
     // If true, this ISeq is leaf *and* backtraces are not used, for example,
     // by rb_profile_frames. We verify only leafness on VM_CHECK_MODE though.
+    // Note that GC allocations might use backtraces due to
+    // ObjectSpace#trace_object_allocations.
     // For more details, see: https://bugs.ruby-lang.org/issues/16956
     bool builtin_inline_p;
     struct rb_id_table *outer_variables;
@@ -449,6 +460,8 @@ struct rb_iseq_constant_body {
     long unsigned total_calls; /* number of total calls with `mjit_exec()` */
     struct rb_mjit_unit *jit_unit;
 #endif
+
+    rb_yjit_block_array_array_t yjit_blocks; // empty, or has a size equal to iseq_size
 };
 
 /* T_IMEMO/iseq */
@@ -790,6 +803,8 @@ typedef struct rb_control_frame_struct {
 #if VM_DEBUG_BP_CHECK
     VALUE *bp_check;		/* cfp[7] */
 #endif
+    // Return address for YJIT code
+    void *jit_return;
 } rb_control_frame_t;
 
 extern const rb_data_type_t ruby_threadptr_data_type;

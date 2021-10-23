@@ -1181,11 +1181,11 @@ debug_list(ISEQ_ARG_DECLARE LINK_ANCHOR *const anchor, LINK_ELEMENT *cur)
 {
     LINK_ELEMENT *list = FIRST_ELEMENT(anchor);
     printf("----\n");
-    printf("anch: %p, frst: %p, last: %p\n", &anchor->anchor,
-	   anchor->anchor.next, anchor->last);
+    printf("anch: %p, frst: %p, last: %p\n", (void *)&anchor->anchor,
+	   (void *)anchor->anchor.next, (void *)anchor->last);
     while (list) {
-	printf("curr: %p, next: %p, prev: %p, type: %d\n", list, list->next,
-	       list->prev, (int)list->type);
+	printf("curr: %p, next: %p, prev: %p, type: %d\n", (void *)list, (void *)list->next,
+	       (void *)list->prev, (int)list->type);
 	list = list->next;
     }
     printf("----\n");
@@ -1328,7 +1328,7 @@ new_child_iseq(rb_iseq_t *iseq, const NODE *const node,
 
     ast.root = node;
     ast.compile_option = 0;
-    ast.script_lines = INT2FIX(-1);
+    ast.script_lines = iseq->body->variable.script_lines;
 
     debugs("[new_child_iseq]> ---------------------------------------\n");
     int isolated_depth = ISEQ_COMPILE_DATA(iseq)->isolated_depth;
@@ -2419,6 +2419,12 @@ iseq_set_sequence(rb_iseq_t *iseq, LINK_ANCHOR *const anchor)
 			    }
 			    generated_iseq[code_index + 1 + j] = (VALUE)ic;
                             FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
+
+                            if (insn == BIN(opt_getinlinecache) && type == TS_IC) {
+                                // Store the instruction index for opt_getinlinecache on the IC for
+                                // YJIT to invalidate code when opt_setinlinecache runs.
+                                ic->get_insn_idx = (unsigned int)code_index;
+                            }
 			    break;
 			}
                         case TS_CALLDATA:
@@ -11114,13 +11120,17 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
 
     for (code_index=0; code_index<iseq_size;) {
         /* opcode */
-        const VALUE insn = code[code_index++] = ibf_load_small_value(load, &reading_pos);
+        const VALUE insn = code[code_index] = ibf_load_small_value(load, &reading_pos);
+        const unsigned int insn_index = code_index;
         const char *types = insn_op_types(insn);
         int op_index;
 
+        code_index++;
+
         /* operands */
         for (op_index=0; types[op_index]; op_index++, code_index++) {
-            switch (types[op_index]) {
+            const char operand_type = types[op_index];
+            switch (operand_type) {
               case TS_VALUE:
                 {
                     VALUE op = ibf_load_small_value(load, &reading_pos);
@@ -11168,6 +11178,12 @@ ibf_load_code(const struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t bytecod
                 {
                     VALUE op = ibf_load_small_value(load, &reading_pos);
                     code[code_index] = (VALUE)&is_entries[op];
+
+                    if (insn == BIN(opt_getinlinecache) && operand_type == TS_IC) {
+                        // Store the instruction index for opt_getinlinecache on the IC for
+                        // YJIT to invalidate code when opt_setinlinecache runs.
+                        is_entries[op].ic_cache.get_insn_idx = insn_index;
+                    }
                 }
                 FL_SET(iseqv, ISEQ_MARKABLE_ISEQ);
                 break;

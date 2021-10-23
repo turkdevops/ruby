@@ -4870,7 +4870,7 @@ lock_page_body(rb_objspace_t *objspace, struct heap_page_body *body)
 #else
     if (mprotect(body, HEAP_PAGE_SIZE, PROT_NONE)) {
 #endif
-        rb_bug("Couldn't protect page %p", (void *)body);
+        rb_bug("Couldn't protect page %p, errno: %s", (void *)body, strerror(errno));
     }
     else {
         gc_report(5, objspace, "Protecting page in move %p\n", (void *)body);
@@ -4887,7 +4887,7 @@ unlock_page_body(rb_objspace_t *objspace, struct heap_page_body *body)
 #else
     if (mprotect(body, HEAP_PAGE_SIZE, PROT_READ | PROT_WRITE)) {
 #endif
-        rb_bug("Couldn't unprotect page %p", (void *)body);
+        rb_bug("Couldn't unprotect page %p, errno: %s", (void *)body, strerror(errno));
     }
     else {
         gc_report(5, objspace, "Unprotecting page in move %p\n", (void *)body);
@@ -9296,6 +9296,24 @@ gc_start_internal(rb_execution_context_t *ec, VALUE self, VALUE full_mark, VALUE
 
     /* For now, compact implies full mark / sweep, so ignore other flags */
     if (RTEST(compact)) {
+#if defined(HAVE_SYSCONF) && defined(_SC_PAGE_SIZE)
+        /* If Ruby's heap pages are not a multiple of the system page size, we
+         * cannot use mprotect for the read barrier, so we must disable compaction. */
+        int pagesize;
+        pagesize = (int)sysconf(_SC_PAGE_SIZE);
+        if ((HEAP_PAGE_SIZE % pagesize) != 0) {
+            rb_raise(rb_eNotImpError, "Compaction isn't available on this platform");
+        }
+#endif
+
+    /* If not MinGW, Windows, or does not have mmap, we cannot use mprotect for
+     * the read barrier, so we must disable compaction. */
+#if !defined(__MINGW32__) && !defined(_WIN32)
+        if (!USE_MMAP_ALIGNED_ALLOC) {
+            rb_raise(rb_eNotImpError, "Compaction isn't available on this platform");
+        }
+#endif
+
         reason |= GPR_FLAG_COMPACT;
     }
     else {
@@ -10250,24 +10268,6 @@ heap_check_moved_i(void *vstart, void *vend, size_t stride, void *data)
 static VALUE
 gc_compact(rb_execution_context_t *ec, VALUE self)
 {
-#if defined(HAVE_SYSCONF) && defined(_SC_PAGE_SIZE)
-    /* If Ruby's heap pages are not a multiple of the system page size, we
-     * cannot use mprotect for the read barrier, so we must disable compaction. */
-    int pagesize;
-    pagesize = (int)sysconf(_SC_PAGE_SIZE);
-    if ((HEAP_PAGE_SIZE % pagesize) != 0) {
-        rb_raise(rb_eNotImpError, "Compaction isn't available on this platform");
-    }
-#endif
-
-    /* If not MinGW, Windows, or does not have mmap, we cannot use mprotect for
-     * the read barrier, so we must disable compaction. */
-#if !defined(__MINGW32__) && !defined(_WIN32)
-    if (!USE_MMAP_ALIGNED_ALLOC) {
-        rb_raise(rb_eNotImpError, "Compaction isn't available on this platform");
-    }
-#endif
-
     /* Run GC with compaction enabled */
     gc_start_internal(ec, self, Qtrue, Qtrue, Qtrue, Qtrue);
 

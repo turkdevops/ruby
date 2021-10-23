@@ -50,6 +50,7 @@ VALUE rb_mKernel;
 VALUE rb_cObject;
 VALUE rb_cModule;
 VALUE rb_cClass;
+VALUE rb_cRefinement;
 
 VALUE rb_cNilClass;
 VALUE rb_cTrueClass;
@@ -790,6 +791,8 @@ rb_obj_is_kind_of(VALUE obj, VALUE c)
 {
     VALUE cl = CLASS_OF(obj);
 
+    // Note: YJIT needs this function to never allocate and never raise when
+    // `c` is a class or a module.
     c = class_or_module_required(c);
     return RBOOL(class_search_ancestor(cl, RCLASS_ORIGIN(c)));
 }
@@ -4355,6 +4358,7 @@ InitVM_Object(void)
     rb_cObject = rb_define_class("Object", rb_cBasicObject);
     rb_cModule = rb_define_class("Module", rb_cObject);
     rb_cClass =  rb_define_class("Class",  rb_cModule);
+    rb_cRefinement = rb_define_class("Refinement", rb_cModule);
 #endif
 
     rb_define_private_method(rb_cBasicObject, "initialize", rb_obj_initialize, 0);

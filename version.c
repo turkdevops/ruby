@@ -13,6 +13,7 @@
 #include "version.h"
 #include "vm_core.h"
 #include "mjit.h"
+#include "yjit.h"
 #include <stdio.h>
 
 #ifndef EXIT_SUCCESS
@@ -42,6 +43,7 @@ const char ruby_platform[] = RUBY_PLATFORM;
 const int ruby_patchlevel = RUBY_PATCHLEVEL;
 const char ruby_description[] = RUBY_DESCRIPTION_WITH("");
 static const char ruby_description_with_jit[] = RUBY_DESCRIPTION_WITH(" +JIT");
+static const char ruby_description_with_yjit[] = RUBY_DESCRIPTION_WITH(" +YJIT");
 const char ruby_copyright[] = RUBY_COPYRIGHT;
 const char ruby_engine[] = "ruby";
 
@@ -104,6 +106,9 @@ Init_ruby_description(void)
     if (MJIT_OPTS_ON) {
         description = MKSTR(description_with_jit);
     }
+    else if (rb_yjit_enabled_p()) {
+        description = MKSTR(description_with_yjit);
+    }
     else {
         description = MKSTR(description);
     }
@@ -120,9 +125,13 @@ ruby_show_version(void)
     if (MJIT_OPTS_ON) {
         PRINT(description_with_jit);
     }
+    else if (rb_yjit_enabled_p()) {
+        PRINT(description_with_yjit);
+    }
     else {
         PRINT(description);
     }
+
 #ifdef RUBY_LAST_COMMIT_TITLE
     fputs("last_commit=" RUBY_LAST_COMMIT_TITLE, stdout);
 #endif

@@ -1107,7 +1107,7 @@ main()
 		])
 		],
 [haiku*], [
-		LIBS="$LIBS -lssp" # m lib is include in root
+		LIBS="$LIBS" # m lib is include in root
 		],
 [cygwin*|msys*], [
 		ac_cv_header_langinfo_h=yes
@@ -1228,6 +1228,15 @@ AC_CHECK_LIB(crypt, crypt)      # glibc (GNU/Linux, GNU/Hurd, GNU/kFreeBSD)
 AC_CHECK_LIB(dl, dlopen)	# Dynamic linking for SunOS/Solaris and SYSV
 AC_CHECK_LIB(dld, shl_load)	# Dynamic linking for HP-UX
 AC_CHECK_LIB(socket, shutdown)  # SunOS/Solaris
+
+if pkg-config --exists capstone; then
+   CAPSTONE_CFLAGS=`pkg-config --cflags capstone`
+   CAPSTONE_LIB_L=`pkg-config --libs-only-L capstone`
+   LDFLAGS="$LDFLAGS $CAPSTONE_LIB_L"
+   CFLAGS="$CFLAGS $CAPSTONE_CFLAGS"
+fi
+
+AC_CHECK_LIB(capstone, cs_open) # Capstone disassembler for debugging YJIT
 
 dnl Checks for header files.
 AC_HEADER_DIRENT
