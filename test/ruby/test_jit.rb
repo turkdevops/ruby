@@ -53,8 +53,9 @@ class TestJIT < Test::Unit::TestCase
 
     # ruby -w -Itest/lib test/ruby/test_jit.rb
     if $VERBOSE
+      pid = $$
       at_exit do
-        unless TestJIT.untested_insns.empty?
+        if pid == $$ && !TestJIT.untested_insns.empty?
           warn "you may want to add tests for following insns, when you have a chance: #{TestJIT.untested_insns.join(' ')}"
         end
       end
@@ -606,6 +607,17 @@ class TestJIT < Test::Unit::TestCase
     insns = collect_insns(iseq)
     mark_tested_insn(:opt_invokebuiltin_delegate_leave, used_insns: insns)
     assert_eval_with_jit('print "\x00".unpack("c")', stdout: '[0]', success_count: 1)
+  end
+
+  def test_compile_insn_checkmatch
+    assert_compile_once("#{<<~"begin;"}\n#{<<~"end;"}", result_inspect: '"world"', insns: %i[checkmatch])
+    begin;
+      ary = %w(hello good-bye)
+      case 'hello'
+      when *ary
+        'world'
+      end
+    end;
   end
 
   def test_jit_output

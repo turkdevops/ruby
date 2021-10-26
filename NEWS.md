@@ -96,6 +96,22 @@ Outstanding ones only.
 
     * Array#intersect? is added. [[Feature #15198]]
 
+* Class
+
+    * Class#descendants, which returns an array of classes
+      directly or indirectly inheriting from the receiver, not
+      including the receiver or singleton classes.
+      [[Feature #14394]]
+
+      ```ruby
+      class A; end
+      class B < A; end
+      class C < B; end
+      A.descendants    #=> [B, C]
+      B.descendants    #=> [C]
+      C.descendants    #=> []
+      ```
+
 * Enumerable
 
     * Enumerable#compact is added. [[Feature #17312]]
@@ -358,6 +374,7 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Bug #4443]:      https://bugs.ruby-lang.org/issues/4443
 [Feature #12194]: https://bugs.ruby-lang.org/issues/12194
 [Feature #14256]: https://bugs.ruby-lang.org/issues/14256
+[Feature #14394]: https://bugs.ruby-lang.org/issues/14394
 [Feature #14579]: https://bugs.ruby-lang.org/issues/14579
 [Feature #15198]: https://bugs.ruby-lang.org/issues/15198
 [Feature #15211]: https://bugs.ruby-lang.org/issues/15211
@@ -376,6 +393,7 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #17798]: https://bugs.ruby-lang.org/issues/17798
 [Bug #18003]:     https://bugs.ruby-lang.org/issues/18003
 [Feature #17370]: https://bugs.ruby-lang.org/issues/17370
+[Bug #17429]:     https://bugs.ruby-lang.org/issues/17429
 [Feature #17470]: https://bugs.ruby-lang.org/issues/17470
 [Feature #17750]: https://bugs.ruby-lang.org/issues/17750
 [Feature #17853]: https://bugs.ruby-lang.org/issues/17853
@@ -384,4 +402,5 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #18015]: https://bugs.ruby-lang.org/issues/18015
 [Feature #18029]: https://bugs.ruby-lang.org/issues/18029
 [Feature #18172]: https://bugs.ruby-lang.org/issues/18172
+[Feature #18229]: https://bugs.ruby-lang.org/issues/18229
 [GH-4815]: https://github.com/ruby/ruby/pull/4815

@@ -167,16 +167,16 @@ rb_class_detach_module_subclasses(VALUE klass)
 static VALUE
 class_alloc(VALUE flags, VALUE klass)
 {
-    size_t payload_size = 0;
+    size_t alloc_size = sizeof(struct RClass);
 
 #if USE_RVARGC
-    payload_size = sizeof(rb_classext_t);
+    alloc_size += sizeof(rb_classext_t);
 #endif
 
-    RVARGC_NEWOBJ_OF(obj, struct RClass, klass, (flags & T_MASK) | FL_PROMOTED1 /* start from age == 2 */ | (RGENGC_WB_PROTECTED_CLASS ? FL_WB_PROTECTED : 0), payload_size);
+    RVARGC_NEWOBJ_OF(obj, struct RClass, klass, (flags & T_MASK) | FL_PROMOTED1 /* start from age == 2 */ | (RGENGC_WB_PROTECTED_CLASS ? FL_WB_PROTECTED : 0), alloc_size);
 
 #if USE_RVARGC
-    obj->ptr = (rb_classext_t *)rb_gc_rvargc_object_data((VALUE)obj);
+    obj->ptr = (rb_classext_t *)((char *)obj + sizeof(struct RClass));
 #else
     obj->ptr = ZALLOC(rb_classext_t);
 #endif
@@ -689,6 +689,8 @@ Init_class_hierarchy(void)
     RBASIC_SET_CLASS(rb_cObject, rb_cClass);
     RBASIC_SET_CLASS(rb_cRefinement, rb_cClass);
     RBASIC_SET_CLASS(rb_cBasicObject, rb_cClass);
+
+    ENSURE_EIGENCLASS(rb_cRefinement);
 }
 
 
@@ -1329,6 +1331,41 @@ rb_mod_ancestors(VALUE mod)
 	    rb_ary_push(ary, p);
 	}
     }
+    return ary;
+}
+
+static void
+class_descendants_recursive(VALUE klass, VALUE ary)
+{
+    if (BUILTIN_TYPE(klass) == T_CLASS && !FL_TEST(klass, FL_SINGLETON)) {
+        rb_ary_push(ary, klass);
+    }
+    rb_class_foreach_subclass(klass, class_descendants_recursive, ary);
+}
+
+/*
+ *  call-seq:
+ *     descendants -> array
+ *
+ *  Returns an array of classes where the receiver is one of
+ *  the ancestors of the class, excluding the receiver and
+ *  singleton classes. The order of the returned array is not
+ *  defined.
+ *
+ *     class A; end
+ *     class B < A; end
+ *     class C < B; end
+ *
+ *     A.descendants        #=> [B, C]
+ *     B.descendants        #=> [C]
+ *     C.descendants        #=> []
+ */
+
+VALUE
+rb_class_descendants(VALUE klass)
+{
+    VALUE ary = rb_ary_new();
+    rb_class_foreach_subclass(klass, class_descendants_recursive, ary);
     return ary;
 }
 
