@@ -1078,23 +1078,42 @@ gen_expandarray(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 static codegen_status_t
 gen_newhash(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 {
-    rb_num_t n = (rb_num_t)jit_get_arg(jit, 0);
+    int32_t num = (int32_t)jit_get_arg(jit, 0);
 
-    if (n == 0) {
-        // Save the PC and SP because we are allocating
-        jit_prepare_routine_call(jit, ctx, REG0);
+    // Save the PC and SP because we are allocating
+    jit_prepare_routine_call(jit, ctx, REG0);
 
+    if (num) {
+        // val = rb_hash_new_with_size(num / 2);
+        mov(cb, C_ARG_REGS[0], imm_opnd(num / 2));
+        call_ptr(cb, REG0, (void *)rb_hash_new_with_size);
+
+        // save the allocated hash as we want to push it after insertion
+        push(cb, RAX);
+        push(cb, RAX); // alignment
+
+        // rb_hash_bulk_insert(num, STACK_ADDR_FROM_TOP(num), val);
+        mov(cb, C_ARG_REGS[0], imm_opnd(num));
+        lea(cb, C_ARG_REGS[1], ctx_stack_opnd(ctx, num - 1));
+        mov(cb, C_ARG_REGS[2], RAX);
+        call_ptr(cb, REG0, (void *)rb_hash_bulk_insert);
+
+        pop(cb, RAX); // alignment
+        pop(cb, RAX);
+
+        ctx_stack_pop(ctx, num);
+        x86opnd_t stack_ret = ctx_stack_push(ctx, TYPE_HASH);
+        mov(cb, stack_ret, RAX);
+    }
+    else {
         // val = rb_hash_new();
         call_ptr(cb, REG0, (void *)rb_hash_new);
 
         x86opnd_t stack_ret = ctx_stack_push(ctx, TYPE_HASH);
         mov(cb, stack_ret, RAX);
+    }
 
-        return YJIT_KEEP_COMPILING;
-    }
-    else {
-        return YJIT_CANT_COMPILE;
-    }
+    return YJIT_KEEP_COMPILING;
 }
 
 static codegen_status_t
@@ -3379,7 +3398,7 @@ rb_leaf_builtin_function(const rb_iseq_t *iseq)
 }
 
 static codegen_status_t
-gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const rb_callable_method_entry_t *cme, rb_iseq_t *block, const int32_t argc)
+gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const rb_callable_method_entry_t *cme, rb_iseq_t *block, int32_t argc)
 {
     const rb_iseq_t *iseq = def_iseq_ptr(cme->def);
 
@@ -3447,18 +3466,28 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
     else if (rb_iseq_only_kwparam_p(iseq)) {
         const int lead_num = iseq->body->param.lead_num;
 
+        doing_kw_call = true;
+
+        // Here we're calling a method with keyword arguments and specifying
+        // keyword arguments at this call site.
+
+        // This struct represents the metadata about the caller-specified
+        // keyword arguments.
+        const struct rb_callinfo_kwarg *kw_arg = vm_ci_kwarg(ci);
+
+        // This struct represents the metadata about the callee-specified
+        // keyword parameters.
+        const struct rb_iseq_param_keyword *keyword = iseq->body->param.keyword;
+
+        if (keyword->num > 30) {
+            // We have so many keywords that (1 << num) encoded as a FIXNUM
+            // (which shifts it left one more) no longer fits inside a 32-bit
+            // immediate.
+            GEN_COUNTER_INC(cb, send_iseq_complex_callee);
+            return YJIT_CANT_COMPILE;
+        }
+
         if (vm_ci_flag(ci) & VM_CALL_KWARG) {
-            // Here we're calling a method with keyword arguments and specifying
-            // keyword arguments at this call site.
-
-            // This struct represents the metadata about the caller-specified
-            // keyword arguments.
-            const struct rb_callinfo_kwarg *kw_arg = vm_ci_kwarg(ci);
-
-            // This struct represents the metadata about the callee-specified
-            // keyword parameters.
-            const struct rb_iseq_param_keyword *keyword = iseq->body->param.keyword;
-
             if ((kw_arg->keyword_len != keyword->num) || (lead_num != argc - kw_arg->keyword_len)) {
                 // Here the method being called specifies optional and required
                 // keyword arguments and the callee is not specifying every one
@@ -3500,16 +3529,19 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
                     return YJIT_CANT_COMPILE;
                 }
             }
-
-            doing_kw_call = true;
         }
         else if (argc == lead_num) {
             // Here we are calling a method that accepts keyword arguments
             // (optional or required) but we're not passing any keyword
             // arguments at this call site
 
-            GEN_COUNTER_INC(cb, send_iseq_kwargs_none_passed);
-            return YJIT_CANT_COMPILE;
+            if (keyword->required_num != 0) {
+                // If any of the keywords are required this is a mismatch
+                GEN_COUNTER_INC(cb, send_iseq_kwargs_mismatch);
+                return YJIT_CANT_COMPILE;
+            }
+
+            doing_kw_call = true;
         }
         else {
             GEN_COUNTER_INC(cb, send_iseq_complex_callee);
@@ -3574,16 +3606,26 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
 
         // This struct represents the metadata about the caller-specified
         // keyword arguments.
-        const struct rb_callinfo_kwarg *kw_arg = vm_ci_kwarg(ci);
+        int caller_keyword_len = 0;
+        const VALUE *caller_keywords = NULL;
+        if (vm_ci_kwarg(ci)) {
+            caller_keyword_len = vm_ci_kwarg(ci)->keyword_len;
+            caller_keywords = &vm_ci_kwarg(ci)->keywords[0];
+        }
 
         // This struct represents the metadata about the callee-specified
         // keyword parameters.
         const struct rb_iseq_param_keyword *keyword = iseq->body->param.keyword;
 
         // Note: we are about to do argument shuffling for a keyword argument
-        // call. The various checks for whether we can do it happened earlier
-        // in this function.
-        RUBY_ASSERT((kw_arg->keyword_len == keyword->num) && (lead_num == argc - kw_arg->keyword_len));
+        // call. Assert that we are in one of currently supported cases: either
+        // all keywords are provided or they are all the default values.
+        // The various checks for whether we can do it happened earlier in this
+        // function.
+        RUBY_ASSERT(
+                ((caller_keyword_len == keyword->num) &&
+                 (lead_num == argc - caller_keyword_len)) ||
+                (caller_keyword_len == 0 && lead_num == argc));
 
         // This is the list of keyword arguments that the callee specified
         // in its initial declaration.
@@ -3594,14 +3636,14 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
         // same order as the order specified in the callee declaration, then
         // we're going to need to generate some code to swap values around
         // on the stack.
-        ID *caller_kwargs = ALLOCA_N(VALUE, kw_arg->keyword_len);
-        for (int kwarg_idx = 0; kwarg_idx < kw_arg->keyword_len; kwarg_idx++)
-            caller_kwargs[kwarg_idx] = SYM2ID(kw_arg->keywords[kwarg_idx]);
+        ID *caller_kwargs = ALLOCA_N(VALUE, caller_keyword_len);
+        for (int kwarg_idx = 0; kwarg_idx < caller_keyword_len; kwarg_idx++)
+            caller_kwargs[kwarg_idx] = SYM2ID(caller_keywords[kwarg_idx]);
 
         // Next, we're going to loop through every keyword that was
         // specified by the caller and make sure that it's in the correct
         // place. If it's not we're going to swap it around with another one.
-        for (int kwarg_idx = 0; kwarg_idx < kw_arg->keyword_len; kwarg_idx++) {
+        for (int kwarg_idx = 0; kwarg_idx < caller_keyword_len; kwarg_idx++) {
             ID callee_kwarg = callee_kwargs[kwarg_idx];
 
             // If the argument is already in the right order, then we don't
@@ -3612,7 +3654,7 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
             // In this case the argument is not in the right place, so we
             // need to find its position where it _should_ be and swap with
             // that location.
-            for (int swap_idx = kwarg_idx + 1; swap_idx < kw_arg->keyword_len; swap_idx++) {
+            for (int swap_idx = kwarg_idx + 1; swap_idx < caller_keyword_len; swap_idx++) {
                 if (callee_kwarg == caller_kwargs[swap_idx]) {
                     // First we're going to generate the code that is going
                     // to perform the actual swapping at runtime.
@@ -3630,12 +3672,39 @@ gen_send_iseq(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const r
             }
         }
 
+        int unspecified_bits = 0;
+
+        if (caller_keyword_len == 0) {
+            ADD_COMMENT(cb, "default kwarg values");
+
+            for (int callee_idx = 0; callee_idx < keyword->num; callee_idx++) {
+                // Reserve space on the stack for each default value we'll be
+                // filling in (which is done in the next loop). Also increments
+                // argc so that the callee's SP is recorded correctly.
+                argc++;
+                ctx_stack_push(ctx, TYPE_UNKNOWN);
+            }
+
+            for (int callee_idx = 0; callee_idx < keyword->num; callee_idx++) {
+                VALUE default_value = keyword->default_values[callee_idx];
+
+                if (default_value == Qundef) {
+                    // Qundef means that this value is not constant and must be
+                    // recalculated at runtime, so we record it in unspecified_bits
+                    // (Qnil is then used as a placeholder instead of Qundef).
+                    unspecified_bits |= 0x01 << callee_idx;
+                    default_value = Qnil;
+                }
+
+                x86opnd_t stack_arg = ctx_stack_opnd(ctx, keyword->num - callee_idx - 1);
+                mov(cb, stack_arg, imm_opnd(default_value));
+            }
+        }
+
         // Keyword arguments cause a special extra local variable to be
         // pushed onto the stack that represents the parameters that weren't
-        // explicitly given a value. Its value is a bitmap that corresponds
-        // to the indices of the missing parameters. In this case since we
-        // know every value was specified, we can just write the value 0.
-        mov(cb, ctx_stack_opnd(ctx, -1), imm_opnd(INT2FIX(0)));
+        // explicitly given a value and have a non-constant default.
+        mov(cb, ctx_stack_opnd(ctx, -1), imm_opnd(INT2FIX(unspecified_bits)));
     }
     // Points to the receiver operand on the stack
     x86opnd_t recv = ctx_stack_opnd(ctx, argc);
@@ -3910,6 +3979,7 @@ gen_send_general(jitstate_t *jit, ctx_t *ctx, struct rb_call_data *cd, rb_iseq_t
                 ID ivar_name = cme->def->body.attr.id;
                 return gen_set_ivar(jit, ctx, comptime_recv, comptime_recv_klass, ivar_name);
             }
+          // Block method, e.g. define_method(:foo) { :my_block }
           case VM_METHOD_TYPE_BMETHOD:
             GEN_COUNTER_INC(cb, send_bmethod);
             return YJIT_CANT_COMPILE;
@@ -3927,6 +3997,7 @@ gen_send_general(jitstate_t *jit, ctx_t *ctx, struct rb_call_data *cd, rb_iseq_t
           case VM_METHOD_TYPE_NOTIMPLEMENTED:
             GEN_COUNTER_INC(cb, send_not_implemented_method);
             return YJIT_CANT_COMPILE;
+          // Send family of methods, e.g. call/apply
           case VM_METHOD_TYPE_OPTIMIZED:
             GEN_COUNTER_INC(cb, send_optimized_method);
             return YJIT_CANT_COMPILE;
@@ -4345,7 +4416,7 @@ gen_opt_getinlinecache(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     // See vm_ic_hit_p(). The same conditions are checked in yjit_constant_ic_update().
     struct iseq_inline_constant_cache_entry *ice = ic->entry;
     if (!ice || // cache not filled
-        ice->ic_serial != ruby_vm_global_constant_state /* cache out of date */) {
+        GET_IC_SERIAL(ice) != ruby_vm_global_constant_state /* cache out of date */) {
         // In these cases, leave a block that unconditionally side exits
         // for the interpreter to invalidate.
         return YJIT_CANT_COMPILE;

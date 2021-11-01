@@ -349,8 +349,9 @@ ubf_sigwait(void *ignore)
     rb_thread_wakeup_timer_thread(0);
 }
 
+#include THREAD_IMPL_SRC
+
 #if   defined(_WIN32)
-#include "thread_win32.c"
 
 #define DEBUG_OUT() \
   WaitForSingleObject(&debug_mutex, INFINITE); \
@@ -359,7 +360,6 @@ ubf_sigwait(void *ignore)
   ReleaseMutex(&debug_mutex);
 
 #elif defined(HAVE_PTHREAD_H)
-#include "thread_pthread.c"
 
 #define DEBUG_OUT() \
   pthread_mutex_lock(&debug_mutex); \
@@ -368,8 +368,6 @@ ubf_sigwait(void *ignore)
   fflush(stdout); \
   pthread_mutex_unlock(&debug_mutex);
 
-#else
-#error "unsupported thread type"
 #endif
 
 /*
@@ -5751,7 +5749,7 @@ rb_set_coverages(VALUE coverages, int mode, VALUE me2counter)
 }
 
 void
-rb_resume_coverages()
+rb_resume_coverages(void)
 {
     int mode = GET_VM()->coverage_mode;
     VALUE me2counter = GET_VM()->me2counter;
@@ -5765,7 +5763,7 @@ rb_resume_coverages()
 }
 
 void
-rb_suspend_coverages()
+rb_suspend_coverages(void)
 {
     rb_remove_event_hook((rb_event_hook_func_t) update_line_coverage);
     if (GET_VM()->coverage_mode & COVERAGE_TARGET_BRANCHES) {

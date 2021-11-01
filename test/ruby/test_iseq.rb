@@ -105,6 +105,18 @@ class TestISeq < Test::Unit::TestCase
     assert_equal(42, ISeq.load_from_binary(iseq.to_binary).eval)
   end
 
+  def test_ractor_unshareable_outer_variable
+    name = "\u{2603 26a1}"
+    y = eval("proc {#{name} = nil; proc {|x| #{name} = x}}").call
+    assert_raise_with_message(ArgumentError, /\(#{name}\)/) do
+      Ractor.make_shareable(y)
+    end
+    y = eval("proc {#{name} = []; proc {|x| #{name}}}").call
+    assert_raise_with_message(Ractor::IsolationError, /`#{name}'/) do
+      Ractor.make_shareable(y)
+    end
+  end
+
   def test_disasm_encoding
     src = "\u{3042} = 1; \u{3042}; \u{3043}"
     asm = compile(src).disasm
@@ -464,6 +476,11 @@ class TestISeq < Test::Unit::TestCase
     a1 = iseq.to_a
     a2 = iseq2.to_a
     assert_equal(a1, a2, message(mesg) {diff iseq.disassemble, iseq2.disassemble})
+    if iseq2.script_lines
+      assert_kind_of(Array, iseq2.script_lines)
+    else
+      assert_nil(iseq2.script_lines)
+    end
     iseq2
   end
 

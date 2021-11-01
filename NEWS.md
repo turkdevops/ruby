@@ -118,6 +118,18 @@ Outstanding ones only.
 
     * Enumerable#tally now accepts an optional hash to count. [[Feature #17744]]
 
+    * Enumerable#each_cons and each_slice to return a receiver. [[GH-1509]]
+
+      ```ruby
+      [1, 2, 3].each_cons(2){}
+      # 3.0 => nil
+      # 3.1 => [1, 2, 3]
+
+      [1, 2, 3].each_slice(2){}
+      # 3.0 => nil
+      # 3.1 => [1, 2, 3]
+      ```
+
 * Enumerator::Lazy
 
     * Enumerator::Lazy#compact is added. [[Feature #17312]]
@@ -202,9 +214,9 @@ Outstanding ones only.
 * The following default gem are updated.
   * RubyGems
   * Bundler
-  * RDoc 6.4.0
+  * RDoc 6.3.2
   * ReLine
-  * JSON 2.6.0
+  * JSON 2.6.1
   * Psych 4.0.2
   * FileUtils 1.6.0
   * Fiddle 1.1.0
@@ -216,7 +228,7 @@ Outstanding ones only.
   * Date 3.2.0
   * Zlib 2.1.1
   * StringScanner 3.0.1
-  * IpAddr
+  * IpAddr 1.2.2
   * Logger 1.4.4
   * OStruct 0.5.0
   * Irb
@@ -238,10 +250,10 @@ Outstanding ones only.
   * Net::Http 0.2.0
   * BigDecimal
   * OptionParser 0.2.0
-  * Set
+  * Set 1.0.1
   * Find 0.1.1
   * Rinda 0.1.1
-  * Erb
+  * Erb 2.2.3
   * NKF 0.1.1
   * Base64 0.1.1
   * OpenUri 0.2.0
@@ -261,7 +273,7 @@ Outstanding ones only.
   * rake 13.0.6
   * test-unit 3.5.0
   * rbs 1.6.2
-  * typeprof 0.20.0
+  * typeprof 0.20.2
 * The following default gems are now bundled gems.
   * net-ftp
   * net-imap
@@ -382,25 +394,26 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #16806]: https://bugs.ruby-lang.org/issues/16806
 [Feature #17312]: https://bugs.ruby-lang.org/issues/17312
 [Feature #17327]: https://bugs.ruby-lang.org/issues/17327
+[Feature #17370]: https://bugs.ruby-lang.org/issues/17370
 [Feature #17411]: https://bugs.ruby-lang.org/issues/17411
 [Bug #17423]:     https://bugs.ruby-lang.org/issues/17423
+[Bug #17429]:     https://bugs.ruby-lang.org/issues/17429
+[Feature #17470]: https://bugs.ruby-lang.org/issues/17470
 [Feature #17479]: https://bugs.ruby-lang.org/issues/17479
 [Feature #17490]: https://bugs.ruby-lang.org/issues/17490
 [Feature #17592]: https://bugs.ruby-lang.org/issues/17592
 [Feature #17724]: https://bugs.ruby-lang.org/issues/17724
 [Feature #17744]: https://bugs.ruby-lang.org/issues/17744
+[Feature #17750]: https://bugs.ruby-lang.org/issues/17750
 [Feature #17762]: https://bugs.ruby-lang.org/issues/17762
 [Feature #17798]: https://bugs.ruby-lang.org/issues/17798
-[Bug #18003]:     https://bugs.ruby-lang.org/issues/18003
-[Feature #17370]: https://bugs.ruby-lang.org/issues/17370
-[Bug #17429]:     https://bugs.ruby-lang.org/issues/17429
-[Feature #17470]: https://bugs.ruby-lang.org/issues/17470
-[Feature #17750]: https://bugs.ruby-lang.org/issues/17750
-[Feature #17853]: https://bugs.ruby-lang.org/issues/17853
 [Bug #17827]:     https://bugs.ruby-lang.org/issues/17827
+[Feature #17853]: https://bugs.ruby-lang.org/issues/17853
+[Bug #18003]:     https://bugs.ruby-lang.org/issues/18003
 [Feature #18008]: https://bugs.ruby-lang.org/issues/18008
 [Feature #18015]: https://bugs.ruby-lang.org/issues/18015
 [Feature #18029]: https://bugs.ruby-lang.org/issues/18029
 [Feature #18172]: https://bugs.ruby-lang.org/issues/18172
 [Feature #18229]: https://bugs.ruby-lang.org/issues/18229
+[GH-1509]: https://github.com/ruby/ruby/pull/1509
 [GH-4815]: https://github.com/ruby/ruby/pull/4815

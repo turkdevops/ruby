@@ -3,7 +3,7 @@ require 'test/unit'
 require 'envutil'
 require 'tmpdir'
 
-return unless defined?(YJIT) && YJIT.enabled?
+return unless defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?
 
 # Tests for YJIT with assertions on compilation and side exits
 # insipired by the MJIT tests in test/ruby/test_jit.rb
@@ -23,25 +23,33 @@ class TestYJIT < Test::Unit::TestCase
       %w(--version --disable=yjit --enable=yjit),
     ].each do |version_args|
       assert_in_out_err(version_args) do |stdout, stderr|
-        assert_equal([RUBY_DESCRIPTION], stdout)
+        assert_equal(RUBY_DESCRIPTION, stdout.first)
         assert_equal([], stderr)
       end
     end
   end
 
   def test_command_line_switches
-      assert_in_out_err('--yjit-', '', [], /invalid option --yjit-/)
-      assert_in_out_err('--yjithello', '', [], /invalid option --yjithello/)
-      assert_in_out_err('--yjit-call-threshold', '', [], /--yjit-call-threshold needs an argument/)
-      assert_in_out_err('--yjit-call-threshold=', '', [], /--yjit-call-threshold needs an argument/)
-      assert_in_out_err('--yjit-greedy-versioning=1', '', [], /warning: argument to --yjit-greedy-versioning is ignored/)
+    assert_in_out_err('--yjit-', '', [], /invalid option --yjit-/)
+    assert_in_out_err('--yjithello', '', [], /invalid option --yjithello/)
+    assert_in_out_err('--yjit-call-threshold', '', [], /--yjit-call-threshold needs an argument/)
+    assert_in_out_err('--yjit-call-threshold=', '', [], /--yjit-call-threshold needs an argument/)
+    assert_in_out_err('--yjit-greedy-versioning=1', '', [], /warning: argument to --yjit-greedy-versioning is ignored/)
+  end
+
+  def test_yjit_stats_and_v_no_error
+    _stdout, stderr, _status = EnvUtil.invoke_ruby(%w(-v --yjit-stats), '', true, true)
+    refute_includes(stderr, "NoMethodError")
   end
 
   def test_enable_from_env_var
     yjit_child_env = {'RUBY_YJIT_ENABLE' => '1'}
-    assert_in_out_err([yjit_child_env, '--version'], '', [RUBY_DESCRIPTION])
+    assert_in_out_err([yjit_child_env, '--version'], '') do |stdout, stderr|
+      assert_equal(RUBY_DESCRIPTION, stdout.first)
+      assert_equal([], stderr)
+    end
     assert_in_out_err([yjit_child_env, '-e puts RUBY_DESCRIPTION'], '', [RUBY_DESCRIPTION])
-    assert_in_out_err([yjit_child_env, '-e p YJIT.enabled?'], '', ['true'])
+    assert_in_out_err([yjit_child_env, '-e p RubyVM::YJIT.enabled?'], '', ['true'])
   end
 
   def test_compile_getclassvariable
@@ -83,6 +91,16 @@ class TestYJIT < Test::Unit::TestCase
     assert_compiles('s = 1; (s...5)', insns: %i[newrange], result: 1...5)
     assert_compiles('s = 1; (s..)', insns: %i[newrange], result: 1..)
     assert_compiles('e = 5; (..e)', insns: %i[newrange], result: ..5)
+  end
+
+  def test_compile_duphash
+    assert_compiles('{ two: 2 }', insns: %i[duphash], result: { two: 2 })
+  end
+
+  def test_compile_newhash
+    assert_compiles('{}', insns: %i[newhash], result: {})
+    assert_compiles('{ two: 1 + 1 }', insns: %i[newhash], result: { two: 2 })
+    assert_compiles('{ 1 + 1 => :two }', insns: %i[newhash], result: { 2 => :two })
   end
 
   def test_compile_opt_nil_p
@@ -480,7 +498,7 @@ class TestYJIT < Test::Unit::TestCase
         objects[1].foo
       }
 
-      stats = YJIT.runtime_stats
+      stats = RubyVM::YJIT.runtime_stats
       return :ok unless stats[:all_stats]
       return :ok if stats[:invalidation_count] < 10
 
@@ -495,12 +513,12 @@ class TestYJIT < Test::Unit::TestCase
   ANY = Object.new
   def assert_compiles(test_script, insns: [], min_calls: 1, stdout: nil, exits: {}, result: ANY, frozen_string_literal: nil)
     reset_stats = <<~RUBY
-      YJIT.runtime_stats
-      YJIT.reset_stats!
+      RubyVM::YJIT.runtime_stats
+      RubyVM::YJIT.reset_stats!
     RUBY
 
     write_results = <<~RUBY
-      stats = YJIT.runtime_stats
+      stats = RubyVM::YJIT.runtime_stats
 
       def collect_blocks(blocks)
         blocks.sort_by(&:address).map { |b| [b.iseq_start_index, b.iseq_end_index] }
@@ -509,7 +527,7 @@ class TestYJIT < Test::Unit::TestCase
       def collect_iseqs(iseq)
         iseq_array = iseq.to_a
         insns = iseq_array.last.grep(Array)
-        blocks = YJIT.blocks_for(iseq)
+        blocks = RubyVM::YJIT.blocks_for(iseq)
         h = {
           name: iseq_array[5],
           insns: insns,

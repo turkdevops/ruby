@@ -2165,6 +2165,28 @@ assert_equal '[2]', %q{
   5.times.map { default_expression(value: 2) }.uniq
 }
 
+# constant default values on keywords
+assert_equal '[3]', %q{
+  def default_expression(value: 3)
+    value
+  end
+
+  5.times.map { default_expression }.uniq
+}
+
+# non-constant default values on keywords
+assert_equal '[3]', %q{
+  def default_value
+    3
+  end
+
+  def default_expression(value: default_value)
+    value
+  end
+
+  5.times.map { default_expression }.uniq
+}
+
 # attr_reader on frozen object
 assert_equal 'false', %q{
   class Foo
@@ -2273,6 +2295,16 @@ assert_equal "true", %q{
 assert_equal '{:foo=>123}', %q{
   def foo
     {foo: 123}
+  end
+
+  foo
+  foo
+}
+
+# newhash
+assert_equal '{:foo=>2}', %q{
+  def foo
+    {foo: 1+1}
   end
 
   foo
