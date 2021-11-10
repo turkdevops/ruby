@@ -156,6 +156,14 @@ Outstanding ones only.
       modify the ancestor chain if the receiver has already prepended
       the argument. [[Bug #17423]]
 
+* Process
+
+    * Process.\_fork is added. This is a core method for fork(2).
+      Do not call this method directly; it is called by existing
+      fork methods: Kernel.#fork, Process.fork, and IO.popen("-").
+      Application monitoring libraries can overwride this method to
+      hook fork event. [[Feature #17795]]
+
 * Struct
 
     * Passing only keyword arguments to Struct#initialize is warned.
@@ -195,6 +203,9 @@ Outstanding ones only.
 
     * Introduce non-blocking `Timeout.timeout` using `timeout_after` hook.
       [[Feature #17470]]
+
+    * Introduce new scheduler hooks `io_read` and `io_write` along with a
+      low level `IO::Buffer` for zero-copy read/write. [[Feature #18020]]
 
     * IO hooks `io_wait`, `io_read`, `io_write`, receive the original IO object
       where possible. [[Bug #18003]]
@@ -302,6 +313,9 @@ Excluding feature bug fixes.
 
 * Documented. [[GH-4815]]
 
+* `rb_gc_force_recycle` is deprecated and has been changed to a no-op.
+  [[Feature #18290]]
+
 ## Implementation improvements
 
 ### JIT
@@ -406,14 +420,18 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #17744]: https://bugs.ruby-lang.org/issues/17744
 [Feature #17750]: https://bugs.ruby-lang.org/issues/17750
 [Feature #17762]: https://bugs.ruby-lang.org/issues/17762
+[Feature #17795]: https://bugs.ruby-lang.org/issues/17795
 [Feature #17798]: https://bugs.ruby-lang.org/issues/17798
 [Bug #17827]:     https://bugs.ruby-lang.org/issues/17827
 [Feature #17853]: https://bugs.ruby-lang.org/issues/17853
 [Bug #18003]:     https://bugs.ruby-lang.org/issues/18003
 [Feature #18008]: https://bugs.ruby-lang.org/issues/18008
 [Feature #18015]: https://bugs.ruby-lang.org/issues/18015
+[Feature #18020]: https://bugs.ruby-lang.org/issues/18020
 [Feature #18029]: https://bugs.ruby-lang.org/issues/18029
 [Feature #18172]: https://bugs.ruby-lang.org/issues/18172
 [Feature #18229]: https://bugs.ruby-lang.org/issues/18229
+[Feature #18290]: https://bugs.ruby-lang.org/issues/18290
 [GH-1509]: https://github.com/ruby/ruby/pull/1509
 [GH-4815]: https://github.com/ruby/ruby/pull/4815
+

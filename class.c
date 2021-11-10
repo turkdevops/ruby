@@ -124,6 +124,8 @@ rb_class_foreach_subclass(VALUE klass, void (*f)(VALUE, VALUE), VALUE arg)
     while (cur) {
 	VALUE curklass = cur->klass;
 	cur = cur->next;
+        // do not trigger GC during f, otherwise the cur will become
+        // a dangling pointer if the subclass is collected
 	f(curklass, arg);
     }
 }
@@ -1334,13 +1336,26 @@ rb_mod_ancestors(VALUE mod)
     return ary;
 }
 
-static void
-class_descendants_recursive(VALUE klass, VALUE ary)
+struct subclass_traverse_data
 {
+    VALUE buffer;
+    long count;
+    long maxcount;
+};
+
+static void
+class_descendants_recursive(VALUE klass, VALUE v)
+{
+    struct subclass_traverse_data *data = (struct subclass_traverse_data *) v;
+
     if (BUILTIN_TYPE(klass) == T_CLASS && !FL_TEST(klass, FL_SINGLETON)) {
-        rb_ary_push(ary, klass);
+        if (data->buffer && data->count < data->maxcount && !rb_objspace_garbage_object_p(klass)) {
+            // assumes that this does not cause GC as long as the length does not exceed the capacity
+            rb_ary_push(data->buffer, klass);
+        }
+        data->count++;
     }
-    rb_class_foreach_subclass(klass, class_descendants_recursive, ary);
+    rb_class_foreach_subclass(klass, class_descendants_recursive, v);
 }
 
 /*
@@ -1364,9 +1379,26 @@ class_descendants_recursive(VALUE klass, VALUE ary)
 VALUE
 rb_class_descendants(VALUE klass)
 {
-    VALUE ary = rb_ary_new();
-    rb_class_foreach_subclass(klass, class_descendants_recursive, ary);
-    return ary;
+    struct subclass_traverse_data data = { Qfalse, 0, -1 };
+
+    // estimate the count of subclasses
+    rb_class_foreach_subclass(klass, class_descendants_recursive, (VALUE) &data);
+
+    // the following allocation may cause GC which may change the number of subclasses
+    data.buffer = rb_ary_new_capa(data.count);
+    data.maxcount = data.count;
+    data.count = 0;
+
+    size_t gc_count = rb_gc_count();
+
+    // enumerate subclasses
+    rb_class_foreach_subclass(klass, class_descendants_recursive, (VALUE) &data);
+
+    if (gc_count != rb_gc_count()) {
+	rb_bug("GC must not occur during the subclass iteration of Class#descendants");
+    }
+
+    return data.buffer;
 }
 
 static void
