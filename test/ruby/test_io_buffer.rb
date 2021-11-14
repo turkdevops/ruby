@@ -44,9 +44,41 @@ class TestIOBuffer < Test::Unit::TestCase
     assert buffer.mapped?
   end
 
+  def test_new_immutable
+    buffer = IO::Buffer.new(128, IO::Buffer::INTERNAL|IO::Buffer::IMMUTABLE)
+    assert buffer.immutable?
+
+    assert_raise RuntimeError do
+      buffer.copy("", 0)
+    end
+
+    assert_raise RuntimeError do
+      buffer.copy("!", 1)
+    end
+  end
+
   def test_file_mapped
     buffer = File.open(__FILE__) {|file| IO::Buffer.map(file)}
     assert_include buffer.to_str, "Hello World"
+  end
+
+  def test_string_mapped
+    string = "Hello World"
+    buffer = IO::Buffer.for(string)
+
+    # Cannot modify string as it's locked by the buffer:
+    assert_raise RuntimeError do
+      string[0] = "h"
+    end
+
+    buffer.set(:U8, 0, "h".ord)
+
+    # Buffer releases it's ownership of the string:
+    buffer.free
+
+    assert_equal "hello World", string
+    string[0] = "H"
+    assert_equal "Hello World", string
   end
 
   def test_resize
@@ -101,6 +133,22 @@ class TestIOBuffer < Test::Unit::TestCase
     # assert_raise RuntimeError do
     #   pp buffer.slice(-10, 10)
     # end
+  end
+
+  def test_locked
+    buffer = IO::Buffer.new(128, IO::Buffer::INTERNAL|IO::Buffer::LOCKED)
+
+    assert_raise RuntimeError do
+      buffer.resize(256, 0)
+    end
+
+    assert_equal 128, buffer.size
+
+    assert_raise RuntimeError do
+      buffer.free
+    end
+
+    assert_equal 128, buffer.size
   end
 
   def test_invalidation

@@ -182,6 +182,10 @@ io_buffer_free(struct rb_io_buffer *data)
             io_buffer_unmap(data->base, data->size);
         }
 
+        if (RB_TYPE_P(data->source, T_STRING)) {
+            rb_str_unlocktmp(data->source);
+        }
+
         data->base = NULL;
 
 #if defined(_WIN32)
@@ -248,6 +252,21 @@ rb_io_buffer_type_allocate(VALUE self)
     data->size = 0;
     data->flags = 0;
     data->source = Qnil;
+
+    return instance;
+}
+
+VALUE
+rb_io_buffer_type_for(VALUE klass, VALUE string)
+{
+    VALUE instance = rb_io_buffer_type_allocate(klass);
+
+    struct rb_io_buffer *data = NULL;
+    TypedData_Get_Struct(instance, struct rb_io_buffer, &rb_io_buffer_type, data);
+
+    rb_str_locktmp(string);
+
+    io_buffer_initialize(data, RSTRING_PTR(string), RSTRING_LEN(string), RB_IO_BUFFER_EXTERNAL, string);
 
     return instance;
 }
@@ -417,7 +436,6 @@ rb_io_buffer_to_s(VALUE self)
     }
 
     return rb_str_cat2(result, ">");
-
 }
 
 static VALUE
@@ -701,15 +719,19 @@ size_t rb_io_buffer_copy(VALUE self, VALUE source, size_t offset)
     const void *source_base = NULL;
     size_t source_size = 0;
 
+    struct rb_io_buffer *data = NULL;
+    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
+
+    if (data->flags & RB_IO_BUFFER_IMMUTABLE) {
+        rb_raise(rb_eRuntimeError, "Buffer is immutable!");
+    }
+
     if (RB_TYPE_P(source, T_STRING)) {
         RSTRING_GETMEM(source, source_base, source_size);
     }
     else {
         rb_io_buffer_get_immutable(source, &source_base, &source_size);
     }
-
-    struct rb_io_buffer *data = NULL;
-    TypedData_Get_Struct(self, struct rb_io_buffer, &rb_io_buffer_type, data);
 
     rb_io_buffer_validate(data, offset, source_size);
 
@@ -1026,6 +1048,7 @@ Init_IO_Buffer(void)
     rb_cIOBuffer = rb_define_class_under(rb_cIO, "Buffer", rb_cObject);
 
     rb_define_alloc_func(rb_cIOBuffer, rb_io_buffer_type_allocate);
+    rb_define_singleton_method(rb_cIOBuffer, "for", rb_io_buffer_type_for, 1);
 
 #ifdef _WIN32
     SYSTEM_INFO info;
