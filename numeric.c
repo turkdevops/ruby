@@ -3505,17 +3505,18 @@ rb_enc_uint_chr(unsigned int code, rb_encoding *enc)
     return str;
 }
 
-/*
- *  call-seq:
- *    chr(encoding = Encoding.default_internal) -> string
+/*  call-seq:
+ *   chr           -> string
+ *   chr(encoding) -> string
  *
  *  Returns a 1-character string containing the character
  *  represented by the value of +self+, according to the given +encoding+.
  *
- *     65.chr                   # => "A"
- *     0..chr                   # => "\x00"
- *     255.chr                  # => "\xFF"
- *     255.chr(Encoding::UTF_8) # => "ÿ"
+ *    65.chr                   # => "A"
+ *    0..chr                   # => "\x00"
+ *    255.chr                  # => "\xFF"
+ *    string = 255.chr(Encoding::UTF_8)
+ *    string.encoding          # => Encoding::UTF_8
  *
  *  Raises an exception if +self+ is negative.
  *
