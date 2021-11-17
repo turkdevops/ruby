@@ -38,6 +38,7 @@ extern VALUE rb_make_no_method_exception(VALUE exc, VALUE format, VALUE obj,
 
 #ifndef MJIT_HEADER
 static const struct rb_callcache vm_empty_cc;
+static const struct rb_callcache vm_empty_cc_for_super;
 #endif
 
 /* control stack frame */
@@ -1848,8 +1849,10 @@ vm_search_cc(const VALUE klass, const struct rb_callinfo * const ci)
         }
     }
 
-    if ((cme->def->iseq_overload &&
-         (int)vm_ci_argc(ci) == method_entry_iseqptr(cme)->body->param.lead_num)) {
+    if (cme->def->iseq_overload &&
+        (vm_ci_flag(ci) & (VM_CALL_ARGS_SIMPLE)) &&
+        (int)vm_ci_argc(ci) == method_entry_iseqptr(cme)->body->param.lead_num
+    ) {
         // use alternative
         cme = overloaded_cme(cme);
         METHOD_ENTRY_CACHED_SET((struct rb_callable_method_entry_struct *)cme);
@@ -1946,8 +1949,7 @@ vm_search_method_fastpath(VALUE cd_owner, struct rb_call_data *cd, VALUE klass)
 
 #if OPT_INLINE_METHOD_CACHE
     if (LIKELY(vm_cc_class_check(cc, klass))) {
-        const struct rb_callable_method_entry_struct *cme = vm_cc_cme(cc);
-        if (LIKELY(cme && !METHOD_ENTRY_INVALIDATED(cme))) {
+        if (LIKELY(!METHOD_ENTRY_INVALIDATED(vm_cc_cme(cc)))) {
             VM_ASSERT(callable_method_entry_p(vm_cc_cme(cc)));
             RB_DEBUG_COUNTER_INC(mc_inline_hit);
             VM_ASSERT(vm_cc_cme(cc) == NULL ||                        // not found
@@ -3709,9 +3711,13 @@ vm_call_super_method(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, st
 {
     RB_DEBUG_COUNTER_INC(ccf_super_method);
 
+    // This line is introduced to make different from `vm_call_general` because some compilers (VC we found)
+    // can merge the function and the address of the function becomes same.
+    // The address of `vm_call_super_method` is used in `search_refined_method`, so it should be different.
+    if (ec == NULL) rb_bug("unreachable");
+
     /* this check is required to distinguish with other functions. */
-    const struct rb_callcache *cc = calling->cc;
-    if (vm_cc_call(cc) != vm_call_super_method) rb_bug("bug");
+    VM_ASSERT(vm_cc_call(calling->cc) == vm_call_super_method);
     return vm_call_method(ec, reg_cfp, calling);
 }
 
@@ -3734,6 +3740,16 @@ static void
 vm_super_outside(void)
 {
     rb_raise(rb_eNoMethodError, "super called outside of method");
+}
+
+static const struct rb_callcache *
+empty_cc_for_super(void)
+{
+#ifdef MJIT_HEADER
+    return rb_vm_empty_cc_for_super();
+#else
+    return &vm_empty_cc_for_super;
+#endif
 }
 
 static const struct rb_callcache *
@@ -3799,19 +3815,18 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
 
         // define_method can cache for different method id
         if (cached_cme == NULL) {
-            // temporary CC. revisit it
-            static const struct rb_callcache *empty_cc_for_super = NULL;
-            if (empty_cc_for_super == NULL) {
-                empty_cc_for_super = vm_cc_new(0, NULL, vm_call_super_method);
-                FL_SET_RAW((VALUE)empty_cc_for_super, VM_CALLCACHE_UNMARKABLE);
-                rb_gc_register_mark_object((VALUE)empty_cc_for_super);
-            }
-            RB_OBJ_WRITE(reg_cfp->iseq, &cd->cc, cc = empty_cc_for_super);
+            // empty_cc_for_super is not markable object
+            cd->cc = empty_cc_for_super();
         }
         else if (cached_cme->called_id != mid) {
             const rb_callable_method_entry_t *cme = rb_callable_method_entry(klass, mid);
-            cc = vm_cc_new(klass, cme, vm_call_super_method);
-            RB_OBJ_WRITE(reg_cfp->iseq, &cd->cc, cc);
+            if (cme) {
+                cc = vm_cc_new(klass, cme, vm_call_super_method);
+                RB_OBJ_WRITE(reg_cfp->iseq, &cd->cc, cc);
+            }
+            else {
+                cd->cc = cc = empty_cc_for_super();
+            }
         }
         else {
             switch (cached_cme->def->type) {
@@ -3827,6 +3842,8 @@ vm_search_super_method(const rb_control_frame_t *reg_cfp, struct rb_call_data *c
             }
         }
     }
+
+    VM_ASSERT((vm_cc_cme(cc), true));
 
     return cc;
 }
