@@ -4286,7 +4286,7 @@ gen_setglobal(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 }
 
 static codegen_status_t
-gen_tostring(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
+gen_anytostring(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 {
     // Save the PC and SP because we might make a Ruby call for
     // Kernel#set_trace_var
@@ -4305,6 +4305,30 @@ gen_tostring(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     mov(cb, stack_ret, RAX);
 
     return YJIT_KEEP_COMPILING;
+}
+
+static codegen_status_t
+gen_objtostring(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
+{
+    if (!jit_at_current_insn(jit)) {
+        defer_compilation(jit, ctx);
+        return YJIT_END_BLOCK;
+    }
+
+    x86opnd_t recv = ctx_stack_opnd(ctx, 0);
+    VALUE comptime_recv = jit_peek_at_stack(jit, ctx, 0);
+
+    if (RB_TYPE_P(comptime_recv, T_STRING)) {
+        uint8_t *side_exit = yjit_side_exit(jit, ctx);
+
+        mov(cb, REG0, recv);
+        jit_guard_known_klass(jit, ctx, CLASS_OF(comptime_recv), OPND_STACK(0), comptime_recv, SEND_MAX_DEPTH, side_exit);
+        // No work needed. The string value is already on the top of the stack.
+        return YJIT_KEEP_COMPILING;
+    } else {
+        struct rb_call_data *cd = (struct rb_call_data *)jit_get_arg(jit, 0);
+        return gen_send_general(jit, ctx, cd, NULL);
+    }
 }
 
 static codegen_status_t
@@ -4421,10 +4445,7 @@ gen_getspecial(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 }
 
 VALUE
-rb_vm_getclassvariable(const rb_iseq_t *iseq, const rb_cref_t *cref, const rb_control_frame_t *cfp, ID id, ICVARC ic);
-
-rb_cref_t *
-rb_vm_get_cref(const VALUE *ep);
+rb_vm_getclassvariable(const rb_iseq_t *iseq, const rb_control_frame_t *cfp, ID id, ICVARC ic);
 
 static codegen_status_t
 gen_getclassvariable(jitstate_t* jit, ctx_t* ctx, codeblock_t* cb)
@@ -4432,14 +4453,10 @@ gen_getclassvariable(jitstate_t* jit, ctx_t* ctx, codeblock_t* cb)
     // rb_vm_getclassvariable can raise exceptions.
     jit_prepare_routine_call(jit, ctx, REG0);
 
-    mov(cb, C_ARG_REGS[0], member_opnd(REG_CFP, rb_control_frame_t, ep));
-    call_ptr(cb, REG0, (void *)rb_vm_get_cref);
-
     mov(cb, C_ARG_REGS[0], member_opnd(REG_CFP, rb_control_frame_t, iseq));
-    mov(cb, C_ARG_REGS[1], RAX);
-    mov(cb, C_ARG_REGS[2], REG_CFP);
-    mov(cb, C_ARG_REGS[3], imm_opnd(jit_get_arg(jit, 0)));
-    mov(cb, C_ARG_REGS[4], imm_opnd(jit_get_arg(jit, 1)));
+    mov(cb, C_ARG_REGS[1], REG_CFP);
+    mov(cb, C_ARG_REGS[2], imm_opnd(jit_get_arg(jit, 0)));
+    mov(cb, C_ARG_REGS[3], imm_opnd(jit_get_arg(jit, 1)));
 
     call_ptr(cb, REG0, (void *)rb_vm_getclassvariable);
 
@@ -4838,7 +4855,8 @@ yjit_init_codegen(void)
     yjit_reg_op(BIN(leave), gen_leave);
     yjit_reg_op(BIN(getglobal), gen_getglobal);
     yjit_reg_op(BIN(setglobal), gen_setglobal);
-    yjit_reg_op(BIN(tostring), gen_tostring);
+    yjit_reg_op(BIN(anytostring), gen_anytostring);
+    yjit_reg_op(BIN(objtostring), gen_objtostring);
     yjit_reg_op(BIN(toregexp), gen_toregexp);
     yjit_reg_op(BIN(getspecial), gen_getspecial);
     yjit_reg_op(BIN(getclassvariable), gen_getclassvariable);

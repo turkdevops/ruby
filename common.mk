@@ -3858,6 +3858,7 @@ debug_counter.$(OBJEXT): {$(VPATH)}thread_native.h
 dir.$(OBJEXT): $(hdrdir)/ruby.h
 dir.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 dir.$(OBJEXT): $(top_srcdir)/internal/array.h
+dir.$(OBJEXT): $(top_srcdir)/internal/class.h
 dir.$(OBJEXT): $(top_srcdir)/internal/compilers.h
 dir.$(OBJEXT): $(top_srcdir)/internal/dir.h
 dir.$(OBJEXT): $(top_srcdir)/internal/encoding.h
@@ -3865,6 +3866,7 @@ dir.$(OBJEXT): $(top_srcdir)/internal/error.h
 dir.$(OBJEXT): $(top_srcdir)/internal/file.h
 dir.$(OBJEXT): $(top_srcdir)/internal/gc.h
 dir.$(OBJEXT): $(top_srcdir)/internal/io.h
+dir.$(OBJEXT): $(top_srcdir)/internal/object.h
 dir.$(OBJEXT): $(top_srcdir)/internal/serial.h
 dir.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
 dir.$(OBJEXT): $(top_srcdir)/internal/string.h
@@ -3888,6 +3890,7 @@ dir.$(OBJEXT): {$(VPATH)}dir.rbinc
 dir.$(OBJEXT): {$(VPATH)}encindex.h
 dir.$(OBJEXT): {$(VPATH)}encoding.h
 dir.$(OBJEXT): {$(VPATH)}id.h
+dir.$(OBJEXT): {$(VPATH)}id_table.h
 dir.$(OBJEXT): {$(VPATH)}intern.h
 dir.$(OBJEXT): {$(VPATH)}internal.h
 dir.$(OBJEXT): {$(VPATH)}internal/anyargs.h
@@ -5849,6 +5852,7 @@ gc.$(OBJEXT): {$(VPATH)}encoding.h
 gc.$(OBJEXT): {$(VPATH)}eval_intern.h
 gc.$(OBJEXT): {$(VPATH)}gc.c
 gc.$(OBJEXT): {$(VPATH)}gc.h
+gc.$(OBJEXT): {$(VPATH)}gc.rb
 gc.$(OBJEXT): {$(VPATH)}gc.rbinc
 gc.$(OBJEXT): {$(VPATH)}id.h
 gc.$(OBJEXT): {$(VPATH)}id_table.h
@@ -9519,6 +9523,7 @@ numeric.$(OBJEXT): $(top_srcdir)/internal/hash.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/numeric.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/object.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/rational.h
+numeric.$(OBJEXT): $(top_srcdir)/internal/string.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/serial.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
 numeric.$(OBJEXT): $(top_srcdir)/internal/util.h
@@ -9595,6 +9600,7 @@ numeric.$(OBJEXT): {$(VPATH)}internal/compiler_is/intel.h
 numeric.$(OBJEXT): {$(VPATH)}internal/compiler_is/msvc.h
 numeric.$(OBJEXT): {$(VPATH)}internal/compiler_is/sunpro.h
 numeric.$(OBJEXT): {$(VPATH)}internal/compiler_since.h
+numeric.$(OBJEXT): {$(VPATH)}internal/compilers.h
 numeric.$(OBJEXT): {$(VPATH)}internal/config.h
 numeric.$(OBJEXT): {$(VPATH)}internal/constant_p.h
 numeric.$(OBJEXT): {$(VPATH)}internal/core.h
@@ -16062,6 +16068,7 @@ vm.$(OBJEXT): $(top_srcdir)/internal/sanitizers.h
 vm.$(OBJEXT): $(top_srcdir)/internal/serial.h
 vm.$(OBJEXT): $(top_srcdir)/internal/static_assert.h
 vm.$(OBJEXT): $(top_srcdir)/internal/string.h
+vm.$(OBJEXT): $(top_srcdir)/internal/struct.h
 vm.$(OBJEXT): $(top_srcdir)/internal/symbol.h
 vm.$(OBJEXT): $(top_srcdir)/internal/thread.h
 vm.$(OBJEXT): $(top_srcdir)/internal/variable.h

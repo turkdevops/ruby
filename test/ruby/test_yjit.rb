@@ -377,7 +377,7 @@ class TestYJIT < Test::Unit::TestCase
   end
 
   def test_string_interpolation
-    assert_compiles(<<~'RUBY', insns: %i[checktype concatstrings], result: "foobar", min_calls: 2)
+    assert_compiles(<<~'RUBY', insns: %i[objtostring anytostring concatstrings], result: "foobar", min_calls: 2)
       def make_str(foo, bar)
         "#{foo}#{bar}"
       end
@@ -388,7 +388,7 @@ class TestYJIT < Test::Unit::TestCase
   end
 
   def test_string_interpolation_cast
-    assert_compiles(<<~'RUBY', insns: %i[checktype concatstrings tostring], result: "123")
+    assert_compiles(<<~'RUBY', insns: %i[objtostring anytostring concatstrings], result: "123")
       def make_str(foo, bar)
         "#{foo}#{bar}"
       end
@@ -408,6 +408,8 @@ class TestYJIT < Test::Unit::TestCase
   end
 
   def test_invokebuiltin
+    skip "Struct's getter/setter doesn't use invokebuiltin and YJIT doesn't support new logic"
+
     assert_compiles(<<~RUBY)
       def foo(obj)
         obj.foo = 123

@@ -732,6 +732,7 @@ typedef struct rb_objspace {
 #if GC_ENABLE_INCREMENTAL_MARK
 	unsigned int during_incremental_marking : 1;
 #endif
+        unsigned int measure_gc : 1;
     } flags;
 
     rb_event_flag_t hook_events;
@@ -807,6 +808,8 @@ typedef struct rb_objspace {
 	size_t total_freed_objects;
 	size_t total_allocated_pages;
 	size_t total_freed_pages;
+        uint64_t total_time_ns;
+        struct timespec start_time;
     } profile;
     struct gc_list *global_list;
 
@@ -1716,6 +1719,7 @@ rb_objspace_t *
 rb_objspace_alloc(void)
 {
     rb_objspace_t *objspace = calloc1(sizeof(rb_objspace_t));
+    objspace->flags.measure_gc = 1;
     malloc_limit = gc_params.malloc_limit_min;
 
     for (int i = 0; i < SIZE_POOL_COUNT; i++) {
@@ -9163,10 +9167,71 @@ gc_enter_count(enum gc_enter_event event)
     }
 }
 
+#ifndef MEASURE_GC
+#define MEASURE_GC (objspace->flags.measure_gc)
+#endif
+
+static bool
+gc_enter_event_measure_p(rb_objspace_t *objspace, enum gc_enter_event event)
+{
+    if (!MEASURE_GC) return false;
+
+    switch (event) {
+      case gc_enter_event_start:
+      case gc_enter_event_mark_continue:
+      case gc_enter_event_sweep_continue:
+      case gc_enter_event_rest:
+        return true;
+
+      default:
+        // case gc_enter_event_finalizer:
+        // case gc_enter_event_rb_memerror:
+        return false;
+    }
+}
+
+static bool current_process_time(struct timespec *ts);
+
+static void
+gc_enter_clock(rb_objspace_t *objspace, enum gc_enter_event event)
+{
+    if (gc_enter_event_measure_p(objspace, event)) {
+        if (!current_process_time(&objspace->profile.start_time)) {
+            objspace->profile.start_time.tv_sec = 0;
+            objspace->profile.start_time.tv_nsec = 0;
+        }
+    }
+}
+
+static void
+gc_exit_clock(rb_objspace_t *objspace, enum gc_enter_event event)
+{
+    if (gc_enter_event_measure_p(objspace, event)) {
+        struct timespec end_time;
+
+        if ((objspace->profile.start_time.tv_sec > 0 ||
+             objspace->profile.start_time.tv_nsec > 0) &&
+            current_process_time(&end_time)) {
+
+            if (end_time.tv_sec < objspace->profile.start_time.tv_sec) {
+                return; // ignore
+            }
+            else {
+                uint64_t ns =
+                  (uint64_t)(end_time.tv_sec - objspace->profile.start_time.tv_sec) * (1000 * 1000 * 1000) +
+                            (end_time.tv_nsec - objspace->profile.start_time.tv_nsec);
+                objspace->profile.total_time_ns += ns;
+            }
+        }
+    }
+}
+
 static inline void
 gc_enter(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_lev)
 {
     RB_VM_LOCK_ENTER_LEV(lock_lev);
+
+    gc_enter_clock(objspace, event);
 
     switch (event) {
       case gc_enter_event_rest:
@@ -9206,6 +9271,7 @@ gc_exit(rb_objspace_t *objspace, enum gc_enter_event event, unsigned int *lock_l
     during_gc = FALSE;
 
     mjit_gc_exit_hook();
+    gc_exit_clock(objspace, event);
     RB_VM_LOCK_LEAVE_LEV(lock_lev);
 }
 
@@ -10444,6 +10510,7 @@ gc_latest_gc_info(rb_execution_context_t *ec, VALUE self, VALUE arg)
 
 enum gc_stat_sym {
     gc_stat_sym_count,
+    gc_stat_sym_time,
     gc_stat_sym_heap_allocated_pages,
     gc_stat_sym_heap_sorted_length,
     gc_stat_sym_heap_allocatable_pages,
@@ -10492,6 +10559,7 @@ setup_gc_stat_symbols(void)
     if (gc_stat_symbols[0] == 0) {
 #define S(s) gc_stat_symbols[gc_stat_sym_##s] = ID2SYM(rb_intern_const(#s))
 	S(count);
+        S(time);
 	S(heap_allocated_pages);
 	S(heap_sorted_length);
 	S(heap_allocatable_pages);
@@ -10558,6 +10626,7 @@ gc_stat_internal(VALUE hash_or_sym)
 	rb_hash_aset(hash, gc_stat_symbols[gc_stat_sym_##name], SIZET2NUM(attr));
 
     SET(count, objspace->profile.count);
+    SET(time, (size_t) (objspace->profile.total_time_ns / (1000 * 1000) /* ns -> ms */)); // TODO: UINT64T2NUM
 
     /* implementation dependent counters */
     SET(heap_allocated_pages, heap_allocated_pages);
@@ -12360,16 +12429,14 @@ wmap_size(VALUE self)
 
 #define GC_PROFILE_RECORD_DEFAULT_SIZE 100
 
-/* return sec in user time */
-static double
-getrusage_time(void)
+static bool
+current_process_time(struct timespec *ts)
 {
 #if defined(HAVE_CLOCK_GETTIME) && defined(CLOCK_PROCESS_CPUTIME_ID)
     {
         static int try_clock_gettime = 1;
-        struct timespec ts;
-        if (try_clock_gettime && clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
-            return ts.tv_sec + ts.tv_nsec * 1e-9;
+        if (try_clock_gettime && clock_gettime(CLOCK_PROCESS_CPUTIME_ID, ts) == 0) {
+            return true;
         }
         else {
             try_clock_gettime = 0;
@@ -12383,7 +12450,9 @@ getrusage_time(void)
         struct timeval time;
         if (getrusage(RUSAGE_SELF, &usage) == 0) {
             time = usage.ru_utime;
-            return time.tv_sec + time.tv_usec * 1e-6;
+            ts->tv_sec = time.tv_sec;
+            ts->tv_nsec = time.tv_usec * 1000;
+            return true;
         }
     }
 #endif
@@ -12391,29 +12460,34 @@ getrusage_time(void)
 #ifdef _WIN32
     {
 	FILETIME creation_time, exit_time, kernel_time, user_time;
-	ULARGE_INTEGER ui;
-	LONG_LONG q;
-	double t;
+        ULARGE_INTEGER ui;
 
-	if (GetProcessTimes(GetCurrentProcess(),
+        if (GetProcessTimes(GetCurrentProcess(),
 			    &creation_time, &exit_time, &kernel_time, &user_time) != 0) {
-	    memcpy(&ui, &user_time, sizeof(FILETIME));
-	    q = ui.QuadPart / 10L;
-	    t = (DWORD)(q % 1000000L) * 1e-6;
-	    q /= 1000000L;
-#ifdef __GNUC__
-	    t += q;
-#else
-	    t += (double)(DWORD)(q >> 16) * (1 << 16);
-	    t += (DWORD)q & ~(~0 << 16);
-#endif
-	    return t;
+            memcpy(&ui, &user_time, sizeof(FILETIME));
+#define PER100NSEC (uint64_t)(1000 * 1000 * 10)
+            ts->tv_nsec = (long)(ui.QuadPart % PER100NSEC);
+            ts->tv_sec  = (time_t)(ui.QuadPart / PER100NSEC);
+            return true;
 	}
     }
 #endif
 
-    return 0.0;
+    return false;
 }
+
+static double
+getrusage_time(void)
+{
+    struct timespec ts;
+    if (current_process_time(&ts)) {
+        return ts.tv_sec + ts.tv_nsec * 1e-9;
+    }
+    else {
+        return 0.0;
+    }
+}
+
 
 static inline void
 gc_prof_setup_new_record(rb_objspace_t *objspace, unsigned int reason)

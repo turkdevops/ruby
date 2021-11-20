@@ -3271,13 +3271,13 @@ iseq_peephole_optimize(rb_iseq_t *iseq, LINK_ELEMENT *list, const int do_tailcal
 	}
     }
 
-    if (IS_INSN_ID(iobj, tostring)) {
+    if (IS_INSN_ID(iobj, anytostring)) {
 	LINK_ELEMENT *next = iobj->link.next;
 	/*
-	 *  tostring
+         *  anytostring
 	 *  concatstrings 1
 	 * =>
-	 *  tostring
+         *  anytostring
 	 */
 	if (IS_INSN(next) && IS_INSN_ID(next, concatstrings) &&
 	    OPERAND_AT(next, 0) == INT2FIX(1)) {
@@ -7642,17 +7642,14 @@ compile_evstr(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, i
     CHECK(COMPILE_(ret, "nd_body", node, popped));
 
     if (!popped && !all_string_result_p(node)) {
-	const int line = nd_line(node);
         const NODE *line_node = node;
 	const unsigned int flag = VM_CALL_FCALL;
-	LABEL *isstr = NEW_LABEL(line);
-	ADD_INSN(ret, line_node, dup);
-	ADD_INSN1(ret, line_node, checktype, INT2FIX(T_STRING));
-	ADD_INSNL(ret, line_node, branchif, isstr);
-	ADD_INSN(ret, line_node, dup);
-	ADD_SEND_R(ret, line_node, idTo_s, INT2FIX(0), NULL, INT2FIX(flag), NULL);
-	ADD_INSN(ret, line_node, tostring);
-	ADD_LABEL(ret, isstr);
+
+        // Note, this dup could be removed if we are willing to change anytostring. It pops
+        // two VALUEs off the stack when it could work by replacing the top most VALUE.
+        ADD_INSN(ret, line_node, dup);
+        ADD_INSN1(ret, line_node, objtostring, new_callinfo(iseq, idTo_s, 0, flag, NULL, FALSE));
+        ADD_INSN(ret, line_node, anytostring);
     }
     return COMPILE_OK;
 }
@@ -7901,7 +7898,7 @@ mandatory_node(const rb_iseq_t *iseq, const NODE *cond_node)
 static int
 compile_builtin_mandatory_only_method(rb_iseq_t *iseq, const NODE *node, const NODE *line_node)
 {
-    // argumens
+    // arguments
     struct rb_args_info args = {
         .pre_args_num = iseq->body->param.lead_num,
     };
@@ -7993,7 +7990,6 @@ compile_builtin_function_call(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NOD
 
                 ADD_INSN1(ret, line_node, putobject, Qfalse);
                 return compile_builtin_mandatory_only_method(iseq, node, line_node);
-                return COMPILE_OK;
             }
             else if (1) {
                 rb_bug("can't find builtin function:%s", builtin_func);
@@ -10590,101 +10586,6 @@ rb_local_defined(ID id, const rb_iseq_t *iseq)
 	}
     }
     return 0;
-}
-
-static int
-caller_location(VALUE *path, VALUE *realpath)
-{
-    const rb_execution_context_t *ec = GET_EC();
-    const rb_control_frame_t *const cfp =
-        rb_vm_get_ruby_level_next_cfp(ec, ec->cfp);
-
-    if (cfp) {
-	int line = rb_vm_get_sourceline(cfp);
-	*path = rb_iseq_path(cfp->iseq);
-	*realpath = rb_iseq_realpath(cfp->iseq);
-	return line;
-    }
-    else {
-	*path = rb_fstring_lit("<compiled>");
-	*realpath = *path;
-	return 1;
-    }
-}
-
-typedef struct {
-    VALUE arg;
-    VALUE func;
-    int line;
-} accessor_args;
-
-static const rb_iseq_t *
-method_for_self(VALUE name, VALUE arg, const struct rb_builtin_function *func,
-                void (*build)(rb_iseq_t *, LINK_ANCHOR *, const void *))
-{
-    VALUE path, realpath;
-    accessor_args acc;
-
-    acc.arg = arg;
-    acc.func = (VALUE)func;
-    acc.line = caller_location(&path, &realpath);
-    struct rb_iseq_new_with_callback_callback_func *ifunc =
-        rb_iseq_new_with_callback_new_callback(build, &acc);
-    return rb_iseq_new_with_callback(ifunc,
-			     rb_sym2str(name), path, realpath,
-			     INT2FIX(acc.line), 0, ISEQ_TYPE_METHOD, 0);
-}
-
-static void
-for_self_aref(rb_iseq_t *iseq, LINK_ANCHOR *ret, const void *a)
-{
-    const accessor_args *const args = (void *)a;
-    const int line = args->line;
-    struct rb_iseq_constant_body *const body = iseq->body;
-
-    iseq_set_local_table(iseq, 0);
-    body->param.lead_num = 0;
-    body->param.size = 0;
-
-    NODE dummy_line_node = generate_dummy_line_node(line, -1);
-    ADD_INSN1(ret, &dummy_line_node, putobject, args->arg);
-    ADD_INSN1(ret, &dummy_line_node, invokebuiltin, args->func);
-}
-
-static void
-for_self_aset(rb_iseq_t *iseq, LINK_ANCHOR *ret, const void *a)
-{
-    const accessor_args *const args = (void *)a;
-    const int line = args->line;
-    struct rb_iseq_constant_body *const body = iseq->body;
-    static const ID vars[] = {1, idUScore};
-
-    iseq_set_local_table(iseq, vars);
-    body->param.lead_num = 1;
-    body->param.size = 1;
-
-    NODE dummy_line_node = generate_dummy_line_node(line, -1);
-    ADD_GETLOCAL(ret, &dummy_line_node, numberof(vars)-1, 0);
-    ADD_INSN1(ret, &dummy_line_node, putobject, args->arg);
-    ADD_INSN1(ret, &dummy_line_node, invokebuiltin, args->func);
-}
-
-/*
- * func (index) -> (value)
- */
-const rb_iseq_t *
-rb_method_for_self_aref(VALUE name, VALUE arg, const struct rb_builtin_function *func)
-{
-    return method_for_self(name, arg, func, for_self_aref);
-}
-
-/*
- * func (index, value) -> (value)
- */
-const rb_iseq_t *
-rb_method_for_self_aset(VALUE name, VALUE arg, const struct rb_builtin_function *func)
-{
-    return method_for_self(name, arg, func, for_self_aset);
 }
 
 /* ISeq binary format */

@@ -266,6 +266,41 @@ module GC
   def self.using_rvargc?
     GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] > 1
   end
+
+
+  # call-seq:
+  #    GC.measure_total_time = true/false
+  #
+  # Enable to measure GC time.
+  # You can get the result with `GC.stat(:time)`.
+  # Note that the GC time measurement can introduce the performance regression.
+  def self.measure_total_time=(flag)
+    Primitive.cstmt! %{
+      rb_objspace.flags.measure_gc = RTEST(flag) ? TRUE : FALSE;
+      return flag;
+    }
+  end
+
+  # call-seq:
+  #    GC.measure_total_time -> true/false
+  #
+  # Return measure_total_time flag (default: true).
+  # Note that measurement can affect the application performance.
+  def self.measure_total_time
+    Primitive.cexpr! %{
+      RBOOL(rb_objspace.flags.measure_gc)
+    }
+  end
+
+  # call-seq:
+  #    GC.total_time -> int
+  #
+  # Return measured GC total time in nano seconds.
+  def self.total_time
+    Primitive.cexpr! %{
+      ULL2NUM(rb_objspace.profile.total_time_ns)
+    }
+  end
 end
 
 module ObjectSpace
