@@ -7,8 +7,8 @@ Note that each entry is kept to a minimum, see links for details.
 
 ## Language changes
 
-* The block arguments can be now be anonymous, if the block will
-  only be passed to another method. [[Feature #11256]]
+*   The block arguments can be now be anonymous, if the block will
+    only be passed to another method. [[Feature #11256]]
 
     ```ruby
     def foo(&)
@@ -16,15 +16,15 @@ Note that each entry is kept to a minimum, see links for details.
     end
     ```
 
-* Pin operator now takes an expression. [[Feature #17411]]
+*   Pin operator now takes an expression. [[Feature #17411]]
 
     ```ruby
     Prime.each_cons(2).lazy.find_all{_1 in [n, ^(n + 2)]}.take(3).to_a
     #=> [[3, 5], [5, 7], [11, 13]]
     ```
 
-* Pin operator now supports instance, class, and global variables.
-  [[Feature #17724]]
+*   Pin operator now supports instance, class, and global variables.
+    [[Feature #17724]]
 
     ```ruby
     @n = 5
@@ -32,11 +32,11 @@ Note that each entry is kept to a minimum, see links for details.
     #=> [3, 5]
     ```
 
-* One-line pattern matching is no longer experimental.
+*   One-line pattern matching is no longer experimental.
 
-* Multiple assignment evaluation order has been made consistent with
-  single assignment evaluation order.  With single assignment, Ruby
-  uses a left-to-right evaluation order.  With this code:
+*   Multiple assignment evaluation order has been made consistent with
+    single assignment evaluation order.  With single assignment, Ruby
+    uses a left-to-right evaluation order.  With this code:
 
     ```ruby
     foo[0] = bar
@@ -51,9 +51,9 @@ Note that each entry is kept to a minimum, see links for details.
     In Ruby before 3.1.0, multiple assignment did not follow this
     evaluation order.  With this code:
 
-      ```ruby
-      foo[0], bar.baz = a, b
-      ```
+    ```ruby
+    foo[0], bar.baz = a, b
+    ```
 
     Versions of Ruby before 3.1.0 would evaluate in the following
     order
@@ -78,22 +78,22 @@ Note that each entry is kept to a minimum, see links for details.
 
     [[Bug #4443]]
 
-* Values in Hash literals and keyword arguments can be omitted.
-  [[Feature #14579]]
+*   Values in Hash literals and keyword arguments can be omitted.
+    [[Feature #14579]]
 
-  For example,
+    For example,
 
     * `{x:, y:}` is a syntax sugar of `{x: x, y: y}`.
     * `foo(x:, y:)` is a syntax sugar of `foo(x: x, y: y)`.
 
-  Constant names, local variable names, and method names are allowed as
-  key names.  Note that a reserved word is considered as a local
-  variable or method name even if it's a pseudo variable name such as
-  `self`.
+    Constant names, local variable names, and method names are allowed as
+    key names.  Note that a reserved word is considered as a local
+    variable or method name even if it's a pseudo variable name such as
+    `self`.
 
-* non main-Ractors can get instance variables (ivars) of classes/modules
-  if ivars refer to shareable objects.
-  [[Feature #17592]]
+*   non main-Ractors can get instance variables (ivars) of classes/modules
+    if ivars refer to shareable objects.
+    [[Feature #17592]]
 
 ## Command line options
 
@@ -119,6 +119,21 @@ Outstanding ones only.
       A.descendants    #=> [B, C]
       B.descendants    #=> [C]
       C.descendants    #=> []
+      ```
+
+    * Class#subclasses, which returns an array of classes
+      directly inheriting from the receiver, not
+      including singleton classes.
+      [[Feature #18273]]
+
+      ```ruby
+      class A; end
+      class B < A; end
+      class C < B; end
+      class D < A; end
+      A.subclasses    #=> [D, B]
+      B.subclasses    #=> [C]
+      C.subclasses    #=> []
       ```
 
 * Enumerable
@@ -147,6 +162,16 @@ Outstanding ones only.
 
     * File.dirname now accepts an optional argument for the level to
       strip path components. [[Feature #12194]]
+
+* GC
+
+    * "GC.measure_total_time = true" enables the measurement of GC.
+      Measurement can introduce overhead. It is enabled by default.
+      GC.measure_total_time returns the current setting.
+      GC.stat[:time] or GC.stat(:time) returns measured time
+      in milli-soconds.
+
+    * GC.total_time returns measured time in nano-seconds.
 
 * Integer
 
@@ -244,76 +269,76 @@ Outstanding ones only.
 
 ## Stdlib updates
 
-* The following default gem are updated.
-  * RubyGems
-  * Bundler
-  * RDoc 6.3.2
-  * ReLine
-  * JSON 2.6.1
-  * Psych 4.0.2
-  * FileUtils 1.6.0
-  * Fiddle 1.1.0
-  * StringIO 3.0.1
-  * IO::Console 0.5.9
-  * IO::Wait 0.2.0
-  * CSV 3.2.1
-  * Etc 1.3.0
-  * Date 3.2.0
-  * Zlib 2.1.1
-  * StringScanner 3.0.1
-  * IpAddr 1.2.2
-  * Logger 1.4.4
-  * OStruct 0.5.0
-  * Irb
-  * Racc 1.6.0
-  * Delegate 0.2.0
-  * Benchmark 0.2.0
-  * CGI 0.3.0
-  * Readline(C-ext) 0.1.3
-  * Timeout 0.2.0
-  * YAML 0.2.0
-  * URI 0.11.0
-  * OpenSSL
-  * DidYouMean
-  * Weakref 0.1.1
-  * Tempfile 0.1.2
-  * TmpDir 0.1.2
-  * English 0.7.1
-  * Net::Protocol 0.1.2
-  * Net::Http 0.2.0
-  * BigDecimal
-  * OptionParser 0.2.0
-  * Set 1.0.1
-  * Find 0.1.1
-  * Rinda 0.1.1
-  * Erb 2.2.3
-  * NKF 0.1.1
-  * Base64 0.1.1
-  * OpenUri 0.2.0
-  * SecureRandom 0.1.1
-  * Resolv 0.2.1
-  * Resolv::Replace 0.1.0
-  * Time 0.2.0
-  * PP 0.2.1
-  * Prettyprint 0.1.1
-  * Drb 2.1.0
-  * Pathname 0.2.0
-  * Digest 3.1.0.pre2
-  * Un 0.2.0
-* The following bundled gems are updated.
-  * minitest 5.14.4
-  * power_assert 2.0.1
-  * rake 13.0.6
-  * test-unit 3.5.0
-  * rbs 1.6.2
-  * typeprof 0.20.2
-* The following default gems are now bundled gems.
-  * net-ftp
-  * net-imap
-  * net-pop
-  * net-smtp
-  * matrix
-  * prime
+*   The following default gem are updated.
+    * RubyGems
+    * Bundler
+    * RDoc 6.3.2
+    * ReLine
+    * JSON 2.6.1
+    * Psych 4.0.2
+    * FileUtils 1.6.0
+    * Fiddle 1.1.0
+    * StringIO 3.0.1
+    * IO::Console 0.5.9
+    * IO::Wait 0.2.0
+    * CSV 3.2.1
+    * Etc 1.3.0
+    * Date 3.2.2
+    * Zlib 2.1.1
+    * StringScanner 3.0.1
+    * IpAddr 1.2.3
+    * Logger 1.4.4
+    * OStruct 0.5.0
+    * Irb
+    * Racc 1.6.0
+    * Delegate 0.2.0
+    * Benchmark 0.2.0
+    * CGI 0.3.1
+    * Readline(C-ext) 0.1.3
+    * Timeout 0.2.0
+    * YAML 0.2.0
+    * URI 0.11.0
+    * OpenSSL
+    * DidYouMean
+    * Weakref 0.1.1
+    * Tempfile 0.1.2
+    * TmpDir 0.1.2
+    * English 0.7.1
+    * Net::Protocol 0.1.2
+    * Net::Http 0.2.0
+    * BigDecimal
+    * OptionParser 0.2.0
+    * Set 1.0.2
+    * Find 0.1.1
+    * Rinda 0.1.1
+    * Erb 2.2.3
+    * NKF 0.1.1
+    * Base64 0.1.1
+    * OpenUri 0.2.0
+    * SecureRandom 0.1.1
+    * Resolv 0.2.1
+    * Resolv::Replace 0.1.0
+    * Time 0.2.0
+    * PP 0.2.1
+    * Prettyprint 0.1.1
+    * Drb 2.1.0
+    * Pathname 0.2.0
+    * Digest 3.1.0.pre3
+    * Un 0.2.0
+*   The following bundled gems are updated.
+    * minitest 5.14.4
+    * power_assert 2.0.1
+    * rake 13.0.6
+    * test-unit 3.5.1
+    * rbs 1.8.0
+    * typeprof 0.20.4
+*   The following default gems are now bundled gems.
+    * net-ftp
+    * net-imap
+    * net-pop
+    * net-smtp
+    * matrix
+    * prime
 
 ## Compatibility issues
 
@@ -339,6 +364,14 @@ Excluding feature bug fixes.
   [[Feature #18290]]
 
 ## Implementation improvements
+
+* `instance_eval` and `instance_exec` now only allocate a singleton class when
+  required, avoiding extra objects and improving performance. [[GH-5146]]
+
+* The performance of `Struct` accessors is improved. [[GH-5131]]
+
+* `mandatory_only?` builtin special form to improve performance on
+  builtin methods. [[GH-5112]]
 
 ### JIT
 
@@ -456,7 +489,10 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #18029]: https://bugs.ruby-lang.org/issues/18029
 [Feature #18172]: https://bugs.ruby-lang.org/issues/18172
 [Feature #18229]: https://bugs.ruby-lang.org/issues/18229
+[Feature #18273]: https://bugs.ruby-lang.org/issues/18273
 [Feature #18290]: https://bugs.ruby-lang.org/issues/18290
 [GH-1509]: https://github.com/ruby/ruby/pull/1509
 [GH-4815]: https://github.com/ruby/ruby/pull/4815
-
+[GH-5112]: https://github.com/ruby/ruby/pull/5112
+[GH-5131]: https://github.com/ruby/ruby/pull/5131
+[GH-5146]: https://github.com/ruby/ruby/pull/5146

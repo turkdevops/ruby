@@ -11483,6 +11483,13 @@ nogvl_fcopyfile(struct copy_stream_struct *stp)
         return 0;
     if (lseek(stp->dst_fptr->fd, 0, SEEK_CUR) > (off_t)0) /* if dst IO was already written */
         return 0;
+    if (fcntl(stp->dst_fptr->fd, F_GETFL) & O_APPEND) {
+        /* fcopyfile(3) appends src IO to dst IO and then truncates
+         * dst IO to src IO's original size. */
+        off_t end = lseek(stp->dst_fptr->fd, 0, SEEK_END);
+        lseek(stp->dst_fptr->fd, 0, SEEK_SET);
+        if (end > (off_t)0) return 0;
+    }
 
     if (src_offset > (off_t)0) {
         off_t r;
@@ -12224,6 +12231,18 @@ rb_stdio_set_default_encoding(void)
 {
     VALUE val = Qnil;
 
+#ifdef _WIN32
+    if (isatty(fileno(stdin))) {
+        rb_encoding *external = rb_locale_encoding();
+        rb_encoding *internal = rb_default_internal_encoding();
+        if (!internal) internal = rb_default_external_encoding();
+        io_encoding_set(RFILE(rb_stdin)->fptr,
+                        rb_enc_from_encoding(external),
+                        rb_enc_from_encoding(internal),
+                        Qnil);
+    }
+    else
+#endif
     rb_io_set_encoding(1, &val, rb_stdin);
     rb_io_set_encoding(1, &val, rb_stdout);
     rb_io_set_encoding(1, &val, rb_stderr);

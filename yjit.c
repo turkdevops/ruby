@@ -69,6 +69,9 @@ YJIT_DECLARE_COUNTERS(
     send_zsuper_method,
     send_undef_method,
     send_optimized_method,
+    send_optimized_method_send,
+    send_optimized_method_call,
+    send_optimized_method_block_call,
     send_missing_method,
     send_bmethod,
     send_refined_method,
@@ -100,6 +103,7 @@ YJIT_DECLARE_COUNTERS(
 
     getivar_se_self_not_heap,
     getivar_idx_out_of_range,
+    getivar_megamorphic,
 
     setivar_se_self_not_heap,
     setivar_idx_out_of_range,
@@ -119,6 +123,9 @@ YJIT_DECLARE_COUNTERS(
     vm_insns_count,
     compiled_iseq_count,
     compiled_block_count,
+    compilation_failure,
+
+    exit_from_branch_stub,
 
     invalidation_count,
     invalidate_method_lookup,
@@ -180,7 +187,7 @@ void rb_yjit_iseq_mark(const struct rb_iseq_constant_body *body) {}
 void rb_yjit_iseq_update_references(const struct rb_iseq_constant_body *body) {}
 void rb_yjit_iseq_free(const struct rb_iseq_constant_body *body) {}
 void rb_yjit_before_ractor_spawn(void) {}
-void rb_yjit_constant_ic_update(const rb_iseq_t *iseq, IC ic) {}
+void rb_yjit_constant_ic_update(const rb_iseq_t *const iseq, IC ic) {}
 void rb_yjit_tracing_invalidate_all(void) {}
 
 #endif // if JIT_ENABLED && PLATFORM_SUPPORTED_P

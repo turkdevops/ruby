@@ -868,7 +868,9 @@ static inline VALUE
 empty_str_alloc(VALUE klass)
 {
     RUBY_DTRACE_CREATE_HOOK(STRING, 0);
-    return str_alloc_embed(klass, 0);
+    VALUE str = str_alloc_embed(klass, 0);
+    memset(RSTRING(str)->as.embed.ary, 0, str_embed_capa(str));
+    return str;
 }
 
 static VALUE
@@ -1732,11 +1734,11 @@ str_duplicate_setup(VALUE klass, VALUE str, VALUE dup)
     VALUE flags = FL_TEST_RAW(str, flag_mask);
     int encidx = 0;
     if (STR_EMBED_P(str)) {
-        assert(str_embed_capa(dup) >= RSTRING_EMBED_LEN(str));
-        STR_SET_EMBED_LEN(dup, RSTRING_EMBED_LEN(str));
-        MEMCPY(RSTRING(dup)->as.embed.ary, RSTRING(str)->as.embed.ary,
-               char, RSTRING_EMBED_LEN(str));
-        flags &= ~RSTRING_NOEMBED;
+        long len = RSTRING_EMBED_LEN(str);
+
+        assert(str_embed_capa(dup) >= len + 1);
+        STR_SET_EMBED_LEN(dup, len);
+        MEMCPY(RSTRING(dup)->as.embed.ary, RSTRING(str)->as.embed.ary, char, len + 1);
     }
     else {
         VALUE root = str;
@@ -1778,7 +1780,7 @@ static inline VALUE
 ec_str_duplicate(struct rb_execution_context_struct *ec, VALUE klass, VALUE str)
 {
     VALUE dup;
-    if (FL_TEST(str, STR_NOEMBED)) {
+    if (!USE_RVARGC || FL_TEST(str, STR_NOEMBED)) {
         dup = ec_str_alloc_heap(ec, klass);
     }
     else {
@@ -1792,7 +1794,7 @@ static inline VALUE
 str_duplicate(VALUE klass, VALUE str)
 {
     VALUE dup;
-    if (FL_TEST(str, STR_NOEMBED)) {
+    if (!USE_RVARGC || FL_TEST(str, STR_NOEMBED)) {
         dup = str_alloc_heap(klass);
     }
     else {
@@ -2321,6 +2323,7 @@ rb_str_times(VALUE str, VALUE times)
     if (RSTRING_LEN(str) == 1 && RSTRING_PTR(str)[0] == 0) {
         if (STR_EMBEDDABLE_P(len, 1)) {
             str2 = str_alloc_embed(rb_cString, len + 1);
+            memset(RSTRING_PTR(str2), 0, len + 1);
         }
         else {
             str2 = str_alloc_heap(rb_cString);
@@ -11149,15 +11152,18 @@ rb_str_unicode_normalized_p(int argc, VALUE *argv, VALUE str)
 /**********************************************************************
  * Document-class: Symbol
  *
- *  Symbol objects represent named identifiers inside the Ruby interpreter. They
- *  are generated using the <code>:name</code> and
- *  <code>:"string"</code> literals syntax, and by the various
- *  <code>to_sym</code> methods. The same Symbol object will be
- *  created for a given name or string for the duration of a program's
- *  execution, regardless of the context or meaning of that name. Thus
- *  if <code>Fred</code> is a constant in one context, a method in
- *  another, and a class in a third, the Symbol <code>:Fred</code>
- *  will be the same object in all three contexts.
+ * Symbol objects represent named identifiers inside the Ruby interpreter.
+ *
+ * You can create a \Symbol object explicitly with:
+ *
+ * - A {symbol literal}[doc/syntax/literals_rdoc.html#label-Symbol+Literals].
+ *
+ * The same Symbol object will be
+ * created for a given name or string for the duration of a program's
+ * execution, regardless of the context or meaning of that name. Thus
+ * if <code>Fred</code> is a constant in one context, a method in
+ * another, and a class in a third, the Symbol <code>:Fred</code>
+ * will be the same object in all three contexts.
  *
  *     module One
  *       class Fred
@@ -11792,6 +11798,15 @@ rb_enc_interned_str_cstr(const char *ptr, rb_encoding *enc)
  *  String objects differ from Symbol objects in that Symbol objects are
  *  designed to be used as identifiers, instead of text or data.
  *
+ *  You can create a \String object explicitly with:
+ *
+ *  - A {string literal}[doc/syntax/literals_rdoc.html#label-String+Literals].
+ *  - A {heredoc literal}[doc/syntax/literals_rdoc.html#label-Here+Document+Literals].
+ *
+ *  You can convert certain objects to Strings with:
+ *
+ *  - \Method {String}[Kernel.html#method-i-String].
+ *
  *  Some \String methods modify +self+.
  *  Typically, a method whose name ends with <tt>!</tt> modifies +self+
  *  and returns +self+;
@@ -11876,7 +11891,7 @@ rb_enc_interned_str_cstr(const char *ptr, rb_encoding *enc)
  *  Note that <tt>\\\\</tt> is interpreted as an escape, i.e., a single backslash.
  *
  *  Note also that a string literal consumes backslashes.
- *  See rdoc-ref:syntax/literals.rdoc for details about string literals.
+ *  See {String Literals}[doc/syntax/literals_rdoc.html#label-String+Literals] for details about string literals.
  *
  *  A back-reference is typically preceded by an additional backslash.
  *  For example, if you want to write a back-reference <tt>\&</tt> in

@@ -53,10 +53,27 @@ class Ripper
   end
 
   class Lexer < ::Ripper   #:nodoc: internal use only
-    State = Struct.new(:to_int, :to_s) do
+    class State
+      attr_reader :to_int, :to_s
+
+      def initialize(i)
+        @to_int = i
+        @to_s = Ripper.lex_state_name(i)
+        freeze
+      end
+
+      def [](index)
+        case index
+        when 0
+          warn "Calling `Lexer::State#[0]` is deprecated, please use `Lexer::State#to_int` instead"
+          @to_int
+        when 1
+          warn "Calling `Lexer::State#[1]` is deprecated, please use `Lexer::State#to_s` instead"
+          @event
+        end
+      end
+
       alias to_i to_int
-      def initialize(i) super(i, Ripper.lex_state_name(i)).freeze end
-      # def inspect; "#<#{self.class}: #{self}>" end
       alias inspect to_s
       def pretty_print(q) q.text(to_s) end
       def ==(i) super or to_int == i end
@@ -67,14 +84,42 @@ class Ripper
       def nobits?(i) to_int.nobits?(i) end
     end
 
-    Elem = Struct.new(:pos, :event, :tok, :state, :message) do
+    class Elem
+      attr_accessor :pos, :event, :tok, :state, :message
+
       def initialize(pos, event, tok, state, message = nil)
-        super(pos, event, tok, State.new(state), message)
+        @pos = pos
+        @event = event
+        @tok = tok
+        @state = State.new(state)
+        @message = message
+      end
+
+      def [](index)
+        case index
+        when 0
+          warn "Calling `Lexer::Elem#[0]` is deprecated, please use `Lexer::Elem#pos` instead"
+          @pos
+        when 1
+          warn "Calling `Lexer::Elem#[1]` is deprecated, please use `Lexer::Elem#event` instead"
+          @event
+        when 2
+          warn "Calling `Lexer::Elem#[2]` is deprecated, please use `Lexer::Elem#tok` instead"
+          @tok
+        when 3
+          warn "Calling `Lexer::Elem#[3]` is deprecated, please use `Lexer::Elem#state` instead"
+          @state
+        when 4
+          warn "Calling `Lexer::Elem#[4]` is deprecated, please use `Lexer::Elem#message` instead"
+          @message
+        end
       end
 
       def inspect
         "#<#{self.class}: #{event}@#{pos[0]}:#{pos[1]}:#{state}: #{tok.inspect}#{": " if message}#{message}>"
       end
+
+      alias to_s inspect
 
       def pretty_print(q)
         q.group(2, "#<#{self.class}:", ">") {
@@ -94,9 +139,11 @@ class Ripper
       end
 
       def to_a
-        a = super
-        a.pop unless a.last
-        a
+        if @message
+          [@pos, @event, @tok, @state, @message]
+        else
+          [@pos, @event, @tok, @state]
+        end
       end
     end
 
@@ -152,17 +199,19 @@ class Ripper
     def on_heredoc_dedent(v, w)
       ignored_sp = []
       heredoc = @buf.last
-      heredoc.each_with_index do |e, i|
-        if Elem === e and e.event == :on_tstring_content and e.pos[1].zero?
-          tok = e.tok.dup if w > 0 and /\A\s/ =~ e.tok
-          if (n = dedent_string(e.tok, w)) > 0
-            if e.tok.empty?
-              e.tok = tok[0, n]
-              e.event = :on_ignored_sp
-              next
+      if Array === heredoc
+        heredoc.each_with_index do |e, i|
+          if Elem === e and e.event == :on_tstring_content and e.pos[1].zero?
+            tok = e.tok.dup if w > 0 and /\A\s/ =~ e.tok
+            if (n = dedent_string(e.tok, w)) > 0
+              if e.tok.empty?
+                e.tok = tok[0, n]
+                e.event = :on_ignored_sp
+                next
+              end
+              ignored_sp << [i, Elem.new(e.pos.dup, :on_ignored_sp, tok[0, n], e.state)]
+              e.pos[1] += n
             end
-            ignored_sp << [i, Elem.new(e.pos.dup, :on_ignored_sp, tok[0, n], e.state)]
-            e.pos[1] += n
           end
         end
       end

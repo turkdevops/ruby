@@ -13,8 +13,8 @@ on:
       - '**.rdoc'
 
 concurrency:
-  group: ${{ github.workflow }} / ${{ github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
+  cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
 
 jobs:
   baseruby:
@@ -33,6 +33,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+      - uses: actions/cache@v2
+        with:
+          path: .downloaded-cache
+          key: downloaded-cache
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}

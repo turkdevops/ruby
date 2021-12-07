@@ -275,11 +275,11 @@ vm_call0_body(rb_execution_context_t *ec, struct rb_calling_info *calling, const
 	    }
           case OPTIMIZED_METHOD_TYPE_STRUCT_AREF:
             vm_call_check_arity(calling, 0, argv);
-            ret = vm_call_opt_struct_aref0(ec, ec->cfp, calling);
+            ret = vm_call_opt_struct_aref0(ec, calling);
             goto success;
           case OPTIMIZED_METHOD_TYPE_STRUCT_ASET:
             vm_call_check_arity(calling, 1, argv);
-            ret = vm_call_opt_struct_aset0(ec, ec->cfp, calling);
+            ret = vm_call_opt_struct_aset0(ec, calling, argv[0]);
             goto success;
 	  default:
 	    rb_bug("vm_call0: unsupported optimized method type (%d)", vm_cc_cme(cc)->def->body.optimized.type);
@@ -382,7 +382,7 @@ static inline enum method_missing_reason rb_method_call_status(rb_execution_cont
 static const struct rb_callcache *
 cc_new(VALUE klass, ID mid, int argc, const rb_callable_method_entry_t *cme)
 {
-    const struct rb_callcache *cc;
+    const struct rb_callcache *cc = NULL;
 
     RB_VM_LOCK_ENTER();
     {
@@ -399,10 +399,15 @@ cc_new(VALUE klass, ID mid, int argc, const rb_callable_method_entry_t *cme)
             rb_id_table_insert(cc_tbl, mid, (VALUE)ccs);
         }
 
-        if (ccs->len > 0) {
-            cc = ccs->entries[0].cc;
+        for (int i=0; i<ccs->len; i++) {
+            cc = ccs->entries[i].cc;
+            if (vm_cc_cme(cc) == cme) {
+                break;
+            }
+            cc = NULL;
         }
-        else {
+
+        if (cc == NULL) {
             const struct rb_callinfo *ci = vm_ci_new(mid, 0, argc, false); // TODO: proper ci
             cc = vm_cc_new(klass, cme, vm_call_general);
             METHOD_ENTRY_CACHED_SET((struct rb_callable_method_entry_struct *)cme);
@@ -1855,7 +1860,7 @@ eval_string_wrap_protect(VALUE data)
 {
     const struct eval_string_wrap_arg *const arg = (struct eval_string_wrap_arg*)data;
     rb_cref_t *cref = rb_vm_cref_new_toplevel();
-    cref->klass = arg->klass;
+    cref->klass_or_self = arg->klass;
     return eval_string_with_cref(arg->top_self, rb_str_new_cstr(arg->str), cref, rb_str_new_cstr("eval"), 1);
 }
 
@@ -1917,7 +1922,7 @@ rb_eval_cmd_kw(VALUE cmd, VALUE arg, int kw_splat)
 /* block eval under the class/module context */
 
 static VALUE
-yield_under(VALUE under, VALUE self, int argc, const VALUE *argv, int kw_splat)
+yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat)
 {
     rb_execution_context_t *ec = GET_EC();
     rb_control_frame_t *cfp = ec->cfp;
@@ -1958,7 +1963,9 @@ yield_under(VALUE under, VALUE self, int argc, const VALUE *argv, int kw_splat)
 	VM_FORCE_WRITE_SPECIAL_CONST(&VM_CF_LEP(ec->cfp)[VM_ENV_DATA_INDEX_SPECVAL], new_block_handler);
     }
 
-    cref = vm_cref_push(ec, under, ep, TRUE);
+    VM_ASSERT(singleton || RB_TYPE_P(self, T_MODULE) || RB_TYPE_P(self, T_CLASS));
+    cref = vm_cref_push(ec, self, ep, TRUE, singleton);
+
     return vm_yield_with_cref(ec, argc, argv, kw_splat, cref, is_lambda);
 }
 
@@ -1976,7 +1983,7 @@ rb_yield_refine_block(VALUE refinement, VALUE refinements)
 	struct rb_captured_block new_captured = *captured;
 	VALUE new_block_handler = VM_BH_FROM_ISEQ_BLOCK(&new_captured);
 	const VALUE *ep = captured->ep;
-	rb_cref_t *cref = vm_cref_push(ec, refinement, ep, TRUE);
+	rb_cref_t *cref = vm_cref_push(ec, refinement, ep, TRUE, FALSE);
 	CREF_REFINEMENTS_SET(cref, refinements);
 	VM_FORCE_WRITE_SPECIAL_CONST(&VM_CF_LEP(ec->cfp)[VM_ENV_DATA_INDEX_SPECVAL], new_block_handler);
 	new_captured.self = refinement;
@@ -1986,19 +1993,20 @@ rb_yield_refine_block(VALUE refinement, VALUE refinements)
 
 /* string eval under the class/module context */
 static VALUE
-eval_under(VALUE under, VALUE self, VALUE src, VALUE file, int line)
+eval_under(VALUE self, int singleton, VALUE src, VALUE file, int line)
 {
-    rb_cref_t *cref = vm_cref_push(GET_EC(), under, NULL, SPECIAL_CONST_P(self) && !NIL_P(under));
+    rb_cref_t *cref = vm_cref_push(GET_EC(), self, NULL, FALSE, singleton);
     SafeStringValue(src);
+
     return eval_string_with_cref(self, src, cref, file, line);
 }
 
 static VALUE
-specific_eval(int argc, const VALUE *argv, VALUE klass, VALUE self, int kw_splat)
+specific_eval(int argc, const VALUE *argv, VALUE self, int singleton, int kw_splat)
 {
     if (rb_block_given_p()) {
 	rb_check_arity(argc, 0, 0);
-        return yield_under(klass, self, 1, &self, kw_splat);
+        return yield_under(self, singleton, 1, &self, kw_splat);
     }
     else {
 	VALUE file = Qundef;
@@ -2014,23 +2022,7 @@ specific_eval(int argc, const VALUE *argv, VALUE klass, VALUE self, int kw_splat
 	    file = argv[1];
 	    if (!NIL_P(file)) StringValue(file);
 	}
-	return eval_under(klass, self, code, file, line);
-    }
-}
-
-static VALUE
-singleton_class_for_eval(VALUE self)
-{
-    if (SPECIAL_CONST_P(self)) {
-	return rb_special_singleton_class(self);
-    }
-    switch (BUILTIN_TYPE(self)) {
-      case T_FLOAT: case T_BIGNUM: case T_SYMBOL:
-	return Qnil;
-      case T_STRING:
-	if (FL_TEST_RAW(self, RSTRING_FSTR)) return Qnil;
-      default:
-	return rb_singleton_class(self);
+	return eval_under(self, singleton, code, file, line);
     }
 }
 
@@ -2070,15 +2062,13 @@ singleton_class_for_eval(VALUE self)
 static VALUE
 rb_obj_instance_eval_internal(int argc, const VALUE *argv, VALUE self)
 {
-    VALUE klass = singleton_class_for_eval(self);
-    return specific_eval(argc, argv, klass, self, RB_PASS_CALLED_KEYWORDS);
+    return specific_eval(argc, argv, self, TRUE, RB_PASS_CALLED_KEYWORDS);
 }
 
 VALUE
 rb_obj_instance_eval(int argc, const VALUE *argv, VALUE self)
 {
-    VALUE klass = singleton_class_for_eval(self);
-    return specific_eval(argc, argv, klass, self, RB_NO_KEYWORDS);
+    return specific_eval(argc, argv, self, TRUE, RB_NO_KEYWORDS);
 }
 
 /*
@@ -2102,15 +2092,13 @@ rb_obj_instance_eval(int argc, const VALUE *argv, VALUE self)
 static VALUE
 rb_obj_instance_exec_internal(int argc, const VALUE *argv, VALUE self)
 {
-    VALUE klass = singleton_class_for_eval(self);
-    return yield_under(klass, self, argc, argv, RB_PASS_CALLED_KEYWORDS);
+    return yield_under(self, TRUE, argc, argv, RB_PASS_CALLED_KEYWORDS);
 }
 
 VALUE
 rb_obj_instance_exec(int argc, const VALUE *argv, VALUE self)
 {
-    VALUE klass = singleton_class_for_eval(self);
-    return yield_under(klass, self, argc, argv, RB_NO_KEYWORDS);
+    return yield_under(self, TRUE, argc, argv, RB_NO_KEYWORDS);
 }
 
 /*
@@ -2143,13 +2131,13 @@ rb_obj_instance_exec(int argc, const VALUE *argv, VALUE self)
 static VALUE
 rb_mod_module_eval_internal(int argc, const VALUE *argv, VALUE mod)
 {
-    return specific_eval(argc, argv, mod, mod, RB_PASS_CALLED_KEYWORDS);
+    return specific_eval(argc, argv, mod, FALSE, RB_PASS_CALLED_KEYWORDS);
 }
 
 VALUE
 rb_mod_module_eval(int argc, const VALUE *argv, VALUE mod)
 {
-    return specific_eval(argc, argv, mod, mod, RB_NO_KEYWORDS);
+    return specific_eval(argc, argv, mod, FALSE, RB_NO_KEYWORDS);
 }
 
 /*
@@ -2177,13 +2165,13 @@ rb_mod_module_eval(int argc, const VALUE *argv, VALUE mod)
 static VALUE
 rb_mod_module_exec_internal(int argc, const VALUE *argv, VALUE mod)
 {
-    return yield_under(mod, mod, argc, argv, RB_PASS_CALLED_KEYWORDS);
+    return yield_under(mod, FALSE, argc, argv, RB_PASS_CALLED_KEYWORDS);
 }
 
 VALUE
 rb_mod_module_exec(int argc, const VALUE *argv, VALUE mod)
 {
-    return yield_under(mod, mod, argc, argv, RB_NO_KEYWORDS);
+    return yield_under(mod, FALSE, argc, argv, RB_NO_KEYWORDS);
 }
 
 /*

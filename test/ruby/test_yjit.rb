@@ -52,6 +52,11 @@ class TestYJIT < Test::Unit::TestCase
     assert_in_out_err([yjit_child_env, '-e p RubyVM::YJIT.enabled?'], '', ['true'])
   end
 
+  def test_compile_setclassvariable
+    script = 'class Foo; def self.foo; @@foo = 1; end; end; Foo.foo'
+    assert_compiles(script, insns: %i[setclassvariable], result: 1)
+  end
+
   def test_compile_getclassvariable
     script = 'class Foo; @@foo = 1; def self.foo; @@foo; end; end; Foo.foo'
     assert_compiles(script, insns: %i[getclassvariable], result: 1)
@@ -407,9 +412,20 @@ class TestYJIT < Test::Unit::TestCase
     RUBY
   end
 
-  def test_invokebuiltin
-    skip "Struct's getter/setter doesn't use invokebuiltin and YJIT doesn't support new logic"
+  def test_struct_aref
+    assert_compiles(<<~RUBY)
+      def foo(obj)
+        obj.foo
+        obj.bar
+      end
 
+      Foo = Struct.new(:foo, :bar)
+      foo(Foo.new(123))
+      foo(Foo.new(123))
+    RUBY
+  end
+
+  def test_struct_aset
     assert_compiles(<<~RUBY)
       def foo(obj)
         obj.foo = 123

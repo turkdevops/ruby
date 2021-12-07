@@ -1,3 +1,88 @@
+assert_equal '0', %q{
+  # This is a regression test for incomplete invalidation from
+  # opt_setinlinecache. This test might be brittle, so
+  # feel free to remove it in the future if it's too annoying.
+  # This test assumes --yjit-call-threshold=2.
+  module M
+    Foo = 1
+    def foo
+      Foo
+    end
+
+    def pin_self_type_then_foo
+      _ = @foo
+      foo
+    end
+
+    def only_ints
+      1 + self
+      foo
+    end
+  end
+
+  class Integer
+    include M
+  end
+
+  class Sub
+    include M
+  end
+
+  foo_method = M.instance_method(:foo)
+
+  dbg = ->(message) do
+    return # comment this out to get printouts
+
+    $stderr.puts RubyVM::YJIT.disasm(foo_method)
+    $stderr.puts message
+  end
+
+  2.times { 42.only_ints }
+
+  dbg["There should be two versions of getinlineache"]
+
+  module M
+    remove_const(:Foo)
+  end
+
+  dbg["There should be no getinlinecaches"]
+
+  2.times do
+    42.only_ints
+  rescue NameError => err
+    _ = "caught name error #{err}"
+  end
+
+  dbg["There should be one version of getinlineache"]
+
+  2.times do
+    Sub.new.pin_self_type_then_foo
+  rescue NameError
+    _ = 'second specialization'
+  end
+
+  dbg["There should be two versions of getinlineache"]
+
+  module M
+    Foo = 1
+  end
+
+  dbg["There should still be two versions of getinlineache"]
+
+  42.only_ints
+
+  dbg["There should be no getinlinecaches"]
+
+  # Find name of the first VM instruction in M#foo.
+  insns = RubyVM::InstructionSequence.of(foo_method).to_a
+  if defined?(RubyVM::YJIT.blocks_for) && (insns.last.find { Array === _1 }&.first == :opt_getinlinecache)
+    RubyVM::YJIT.blocks_for(RubyVM::InstructionSequence.of(foo_method))
+      .filter { _1.iseq_start_index == 0 }.count
+  else
+    0 # skip the test
+  end
+}
+
 # Check that frozen objects are respected
 assert_equal 'great', %q{
   class Foo
@@ -2380,4 +2465,185 @@ assert_equal '{:foo=>2}', %q{
 
   foo
   foo
+}
+
+# block invalidation edge case
+assert_equal 'undef', %q{
+  class A
+    def foo(arg)
+      arg.times { A.remove_method(:bar) }
+      self
+    end
+
+    def bar
+      4
+    end
+
+    def use(arg)
+      # two consecutive sends. When bar is removed, the return address
+      # for calling it is already on foo's control frame
+      foo(arg).bar
+    rescue NoMethodError
+      :undef
+    end
+  end
+
+  A.new.use 0
+  A.new.use 0
+  A.new.use 1
+}
+
+# block invalidation edge case
+assert_equal 'ok', %q{
+  class A
+    Good = :ng
+    def foo(arg)
+      arg.times { A.const_set(:Good, :ok) }
+      self
+    end
+
+    def id(arg)
+      arg
+    end
+
+    def use(arg)
+      # send followed by an opt_getinlinecache.
+      # The return address remains on the control frame
+      # when opt_getinlinecache is invalidated.
+      foo(arg).id(Good)
+    end
+  end
+
+  A.new.use 0
+  A.new.use 0
+  A.new.use 1
+}
+
+assert_equal 'ok', %q{
+  # test hitting a branch stub when out of memory
+  def nimai(jita)
+    if jita
+      :ng
+    else
+      :ok
+    end
+  end
+
+  nimai(true)
+  nimai(true)
+
+  RubyVM::YJIT.simulate_oom! if defined?(RubyVM::YJIT)
+
+  nimai(false)
+}
+
+assert_equal 'new', %q{
+  # test block invalidation while out of memory
+  def foo
+    :old
+  end
+
+  def test
+    foo
+  end
+
+  test
+  test
+
+  RubyVM::YJIT.simulate_oom! if defined?(RubyVM::YJIT)
+
+  def foo
+    :new
+  end
+
+  test
+}
+
+assert_equal 'ok', %q{
+  # Try to compile new method while OOM
+  def foo
+    :ok
+  end
+
+  RubyVM::YJIT.simulate_oom! if defined?(RubyVM::YJIT)
+
+  foo
+  foo
+}
+
+# struct aref embedded
+assert_equal '2', %q{
+  def foo(s)
+    s.foo
+  end
+
+  S = Struct.new(:foo)
+  foo(S.new(1))
+  foo(S.new(2))
+}
+
+# struct aref non-embedded
+assert_equal '4', %q{
+  def foo(s)
+    s.d
+  end
+
+  S = Struct.new(:a, :b, :c, :d, :e)
+  foo(S.new(1,2,3,4,5))
+  foo(S.new(1,2,3,4,5))
+}
+
+# struct aset embedded
+assert_equal '123', %q{
+  def foo(s)
+    s.foo = 123
+  end
+
+  s = Struct.new(:foo).new
+  foo(s)
+  s = Struct.new(:foo).new
+  foo(s)
+  s.foo
+}
+
+# struct aset non-embedded
+assert_equal '[1, 2, 3, 4, 5]', %q{
+  def foo(s)
+    s.a = 1
+    s.b = 2
+    s.c = 3
+    s.d = 4
+    s.e = 5
+  end
+
+  S = Struct.new(:a, :b, :c, :d, :e)
+  s = S.new
+  foo(s)
+  s = S.new
+  foo(s)
+  [s.a, s.b, s.c, s.d, s.e]
+}
+
+# struct aref too many args
+assert_equal 'ok', %q{
+  def foo(s)
+    s.foo(:bad)
+  end
+
+  s = Struct.new(:foo).new
+  foo(s) rescue :ok
+  foo(s) rescue :ok
+}
+
+# struct aset too many args
+assert_equal 'ok', %q{
+  def foo(s)
+    s.set_foo(123, :bad)
+  end
+
+  s = Struct.new(:foo) do
+    alias :set_foo :foo=
+  end
+  foo(s) rescue :ok
+  foo(s) rescue :ok
 }

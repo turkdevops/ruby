@@ -223,7 +223,7 @@ vm_passed_block_handler(rb_execution_context_t *ec)
 }
 
 static rb_cref_t *
-vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_t *prev_cref, int pushed_by_eval, int use_prev_prev)
+vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_t *prev_cref, int pushed_by_eval, int use_prev_prev, int singleton)
 {
     VALUE refinements = Qnil;
     int omod_shared = FALSE;
@@ -248,24 +248,27 @@ vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_
 	}
     }
 
+    VM_ASSERT(singleton || klass);
+
     cref = (rb_cref_t *)rb_imemo_new(imemo_cref, klass, (VALUE)(use_prev_prev ? CREF_NEXT(prev_cref) : prev_cref), scope_visi.value, refinements);
 
     if (pushed_by_eval) CREF_PUSHED_BY_EVAL_SET(cref);
     if (omod_shared) CREF_OMOD_SHARED_SET(cref);
+    if (singleton) CREF_SINGLETON_SET(cref);
 
     return cref;
 }
 
 static rb_cref_t *
-vm_cref_new(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_t *prev_cref, int pushed_by_eval)
+vm_cref_new(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_t *prev_cref, int pushed_by_eval, int singleton)
 {
-    return vm_cref_new0(klass, visi, module_func, prev_cref, pushed_by_eval, FALSE);
+    return vm_cref_new0(klass, visi, module_func, prev_cref, pushed_by_eval, FALSE, singleton);
 }
 
 static rb_cref_t *
 vm_cref_new_use_prev(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_t *prev_cref, int pushed_by_eval)
 {
-    return vm_cref_new0(klass, visi, module_func, prev_cref, pushed_by_eval, TRUE);
+    return vm_cref_new0(klass, visi, module_func, prev_cref, pushed_by_eval, TRUE, FALSE);
 }
 
 static int
@@ -277,18 +280,18 @@ ref_delete_symkey(VALUE key, VALUE value, VALUE unused)
 static rb_cref_t *
 vm_cref_dup(const rb_cref_t *cref)
 {
-    VALUE klass = CREF_CLASS(cref);
     const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
     rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
     int pushed_by_eval = CREF_PUSHED_BY_EVAL(cref);
+    int singleton = CREF_SINGLETON(cref);
 
-    new_cref = vm_cref_new(klass, visi->method_visi, visi->module_func, next_cref, pushed_by_eval);
+    new_cref = vm_cref_new(cref->klass_or_self, visi->method_visi, visi->module_func, next_cref, pushed_by_eval, singleton);
 
     if (!NIL_P(CREF_REFINEMENTS(cref))) {
         VALUE ref = rb_hash_dup(CREF_REFINEMENTS(cref));
         rb_hash_foreach(ref, ref_delete_symkey, Qnil);
         CREF_REFINEMENTS_SET(new_cref, ref);
-	CREF_OMOD_SHARED_UNSET(new_cref);
+        CREF_OMOD_SHARED_UNSET(new_cref);
     }
 
     return new_cref;
@@ -298,12 +301,12 @@ vm_cref_dup(const rb_cref_t *cref)
 rb_cref_t *
 rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
 {
-    VALUE klass = CREF_CLASS(cref);
     const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
     rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
     int pushed_by_eval = CREF_PUSHED_BY_EVAL(cref);
+    int singleton = CREF_SINGLETON(cref);
 
-    new_cref = vm_cref_new(klass, visi->method_visi, visi->module_func, next_cref, pushed_by_eval);
+    new_cref = vm_cref_new(cref->klass_or_self, visi->method_visi, visi->module_func, next_cref, pushed_by_eval, singleton);
 
     if (!NIL_P(CREF_REFINEMENTS(cref))) {
         CREF_REFINEMENTS_SET(new_cref, Qnil);
@@ -316,11 +319,11 @@ rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
 static rb_cref_t *
 vm_cref_new_toplevel(rb_execution_context_t *ec)
 {
-    rb_cref_t *cref = vm_cref_new(rb_cObject, METHOD_VISI_PRIVATE /* toplevel visibility is private */, FALSE, NULL, FALSE);
+    rb_cref_t *cref = vm_cref_new(rb_cObject, METHOD_VISI_PRIVATE /* toplevel visibility is private */, FALSE, NULL, FALSE, FALSE);
     VALUE top_wrapper = rb_ec_thread_ptr(ec)->top_wrapper;
 
     if (top_wrapper) {
-	cref = vm_cref_new(top_wrapper, METHOD_VISI_PRIVATE, FALSE, cref, FALSE);
+	cref = vm_cref_new(top_wrapper, METHOD_VISI_PRIVATE, FALSE, cref, FALSE, FALSE);
     }
 
     return cref;
@@ -1256,18 +1259,17 @@ rb_binding_add_dynavars(VALUE bindval, rb_binding_t *bind, int dyncount, const I
     const rb_iseq_t *base_iseq, *iseq;
     rb_ast_body_t ast;
     NODE tmp_node;
-    ID minibuf[4], *dyns = minibuf;
-    VALUE idtmp = 0;
 
     if (dyncount < 0) return 0;
 
     base_block = &bind->block;
     base_iseq = vm_block_iseq(base_block);
 
-    if (dyncount >= numberof(minibuf)) dyns = ALLOCV_N(ID, idtmp, dyncount + 1);
+    VALUE idtmp = 0;
+    rb_ast_id_table_t *dyns = ALLOCV(idtmp, sizeof(rb_ast_id_table_t) + dyncount * sizeof(ID));
+    dyns->size = dyncount;
+    MEMCPY(dyns->ids, dynvars, ID, dyncount);
 
-    dyns[0] = dyncount;
-    MEMCPY(dyns + 1, dynvars, ID, dyncount);
     rb_node_init(&tmp_node, NODE_SCOPE, (VALUE)dyns, 0, 0);
     ast.root = &tmp_node;
     ast.compile_option = 0;
@@ -1314,7 +1316,6 @@ invoke_bmethod(rb_execution_context_t *ec, const rb_iseq_t *iseq, VALUE self, co
     /* bmethod */
     int arg_size = iseq->body->param.size;
     VALUE ret;
-    rb_hook_list_t *hooks;
 
     VM_ASSERT(me->def->type == VM_METHOD_TYPE_BMETHOD);
 
@@ -1326,24 +1327,9 @@ invoke_bmethod(rb_execution_context_t *ec, const rb_iseq_t *iseq, VALUE self, co
 		  iseq->body->local_table_size - arg_size,
 		  iseq->body->stack_max);
 
-    RUBY_DTRACE_METHOD_ENTRY_HOOK(ec, me->owner, me->def->original_id);
-    EXEC_EVENT_HOOK(ec, RUBY_EVENT_CALL, self, me->def->original_id, me->called_id, me->owner, Qnil);
-
-    if (UNLIKELY((hooks = me->def->body.bmethod.hooks) != NULL) &&
-        hooks->events & RUBY_EVENT_CALL) {
-        rb_exec_event_hook_orig(ec, hooks, RUBY_EVENT_CALL, self,
-                                me->def->original_id, me->called_id, me->owner, Qnil, FALSE);
-    }
     VM_ENV_FLAGS_SET(ec->cfp->ep, VM_FRAME_FLAG_FINISH);
     ret = vm_exec(ec, true);
 
-    EXEC_EVENT_HOOK(ec, RUBY_EVENT_RETURN, self, me->def->original_id, me->called_id, me->owner, ret);
-    if ((hooks = me->def->body.bmethod.hooks) != NULL &&
-        hooks->events & RUBY_EVENT_RETURN) {
-        rb_exec_event_hook_orig(ec, hooks, RUBY_EVENT_RETURN, self,
-                                me->def->original_id, me->called_id, me->owner, ret, FALSE);
-    }
-    RUBY_DTRACE_METHOD_RETURN_HOOK(ec, me->owner, me->def->original_id);
     return ret;
 }
 
@@ -2034,9 +2020,11 @@ frame_name(const rb_control_frame_t *cfp)
 }
 #endif
 
+// cfp_returning_with_value:
+//     Whether cfp is the last frame in the unwinding process for a non-local return.
 static void
 hook_before_rewind(rb_execution_context_t *ec, const rb_control_frame_t *cfp,
-                   int will_finish_vm_exec, int state, struct vm_throw_data *err)
+                   bool cfp_returning_with_value, int state, struct vm_throw_data *err)
 {
     if (state == TAG_RAISE && RBASIC(err)->klass == rb_eSysStackError) {
 	return;
@@ -2059,32 +2047,36 @@ hook_before_rewind(rb_execution_context_t *ec, const rb_control_frame_t *cfp,
             break;
           case VM_FRAME_MAGIC_BLOCK:
             if (VM_FRAME_BMETHOD_P(ec->cfp)) {
-                EXEC_EVENT_HOOK(ec, RUBY_EVENT_B_RETURN, ec->cfp->self, 0, 0, 0, frame_return_value(err));
-                if (UNLIKELY(local_hooks && local_hooks->events & RUBY_EVENT_B_RETURN)) {
-                    rb_exec_event_hook_orig(ec, local_hooks, RUBY_EVENT_B_RETURN,
-                                            ec->cfp->self, 0, 0, 0, frame_return_value(err), FALSE);
+                VALUE bmethod_return_value = frame_return_value(err);
+                if (cfp_returning_with_value) {
+                    // Non-local return terminating at a BMETHOD control frame.
+                    bmethod_return_value = THROW_DATA_VAL(err);
                 }
 
-                if (!will_finish_vm_exec) {
-                    const rb_callable_method_entry_t *me = rb_vm_frame_method_entry(ec->cfp);
 
-                    /* kick RUBY_EVENT_RETURN at invoke_block_from_c() for bmethod */
-                    EXEC_EVENT_HOOK_AND_POP_FRAME(ec, RUBY_EVENT_RETURN, ec->cfp->self,
-                                                  rb_vm_frame_method_entry(ec->cfp)->def->original_id,
-                                                  rb_vm_frame_method_entry(ec->cfp)->called_id,
-                                                  rb_vm_frame_method_entry(ec->cfp)->owner,
-                                                  frame_return_value(err));
+                EXEC_EVENT_HOOK(ec, RUBY_EVENT_B_RETURN, ec->cfp->self, 0, 0, 0, bmethod_return_value);
+                if (UNLIKELY(local_hooks && local_hooks->events & RUBY_EVENT_B_RETURN)) {
+                    rb_exec_event_hook_orig(ec, local_hooks, RUBY_EVENT_B_RETURN,
+                                            ec->cfp->self, 0, 0, 0, bmethod_return_value, FALSE);
+                }
 
-                    VM_ASSERT(me->def->type == VM_METHOD_TYPE_BMETHOD);
-                    local_hooks = me->def->body.bmethod.hooks;
+                const rb_callable_method_entry_t *me = rb_vm_frame_method_entry(ec->cfp);
 
-                    if (UNLIKELY(local_hooks && local_hooks->events & RUBY_EVENT_RETURN)) {
-                        rb_exec_event_hook_orig(ec, local_hooks, RUBY_EVENT_RETURN, ec->cfp->self,
-                                                rb_vm_frame_method_entry(ec->cfp)->def->original_id,
-                                                rb_vm_frame_method_entry(ec->cfp)->called_id,
-                                                rb_vm_frame_method_entry(ec->cfp)->owner,
-                                                frame_return_value(err), TRUE);
-                    }
+                EXEC_EVENT_HOOK_AND_POP_FRAME(ec, RUBY_EVENT_RETURN, ec->cfp->self,
+                                              rb_vm_frame_method_entry(ec->cfp)->def->original_id,
+                                              rb_vm_frame_method_entry(ec->cfp)->called_id,
+                                              rb_vm_frame_method_entry(ec->cfp)->owner,
+                                              bmethod_return_value);
+
+                VM_ASSERT(me->def->type == VM_METHOD_TYPE_BMETHOD);
+                local_hooks = me->def->body.bmethod.hooks;
+
+                if (UNLIKELY(local_hooks && local_hooks->events & RUBY_EVENT_RETURN)) {
+                    rb_exec_event_hook_orig(ec, local_hooks, RUBY_EVENT_RETURN, ec->cfp->self,
+                                            rb_vm_frame_method_entry(ec->cfp)->def->original_id,
+                                            rb_vm_frame_method_entry(ec->cfp)->called_id,
+                                            rb_vm_frame_method_entry(ec->cfp)->owner,
+                                            bmethod_return_value, TRUE);
                 }
                 THROW_DATA_CONSUMED_SET(err);
             }
@@ -2285,7 +2277,8 @@ vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
 			if (catch_iseq == NULL) {
 			    ec->errinfo = Qnil;
 			    THROW_DATA_CATCH_FRAME_SET(err, cfp + 1);
-			    hook_before_rewind(ec, ec->cfp, TRUE, state, err);
+                            // cfp == escape_cfp here so calling with cfp_returning_with_value = true
+                            hook_before_rewind(ec, ec->cfp, true, state, err);
 			    rb_vm_pop_frame(ec);
 			    return THROW_DATA_VAL(err);
 			}
@@ -2426,7 +2419,7 @@ vm_exec_handle_exception(rb_execution_context_t *ec, enum ruby_tag_type state,
 	    return Qundef;
 	}
 	else {
-	    hook_before_rewind(ec, ec->cfp, FALSE, state, err);
+	    hook_before_rewind(ec, ec->cfp, (cfp == escape_cfp), state, err);
 
 	    if (VM_FRAME_FINISHED_P(ec->cfp)) {
 		rb_vm_pop_frame(ec);
@@ -3752,7 +3745,7 @@ Init_VM(void)
 	th->ec->cfp->self = th->top_self;
 
 	VM_ENV_FLAGS_UNSET(th->ec->cfp->ep, VM_FRAME_FLAG_CFRAME);
-	VM_STACK_ENV_WRITE(th->ec->cfp->ep, VM_ENV_DATA_INDEX_ME_CREF, (VALUE)vm_cref_new(rb_cObject, METHOD_VISI_PRIVATE, FALSE, NULL, FALSE));
+	VM_STACK_ENV_WRITE(th->ec->cfp->ep, VM_ENV_DATA_INDEX_ME_CREF, (VALUE)vm_cref_new(rb_cObject, METHOD_VISI_PRIVATE, FALSE, NULL, FALSE, FALSE));
 
 	/*
 	 * The Binding of the top level scope

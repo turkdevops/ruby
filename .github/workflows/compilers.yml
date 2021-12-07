@@ -13,8 +13,8 @@ on:
       - '**.rdoc'
 
 concurrency:
-  group: ${{ github.workflow }} / ${{ github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
+  cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
 
 # Github actions does not support YAML anchors.  This creative use of
 # environment variables (plus the "echo $GITHUB_ENV" hack) is to reroute that
@@ -200,6 +200,10 @@ jobs:
       - uses: actions/checkout@v2
         with:
           path: src
+      - uses: actions/cache@v2
+        with:
+          path: src/.downloaded-cache
+          key: downloaded-cache
       - run: ./autogen.sh
         working-directory: src
       - name: Run configure

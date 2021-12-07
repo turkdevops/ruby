@@ -12,8 +12,8 @@ on:
       - '**.rdoc'
 
 concurrency:
-  group: ${{ github.workflow }} / ${{ github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
+  cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
 
 jobs:
   update-deps:
@@ -39,6 +39,10 @@ jobs:
           git config --global advice.detachedHead 0
           git config --global init.defaultBranch garbage
       - uses: actions/checkout@v2
+      - uses: actions/cache@v2
+        with:
+          path: .downloaded-cache
+          key: downloaded-cache
       - run: ./autogen.sh
       - name: Run configure
         run: ./configure -C --disable-install-doc --disable-rubygems --with-gcc 'optflags=-O0' 'debugflags=-save-temps=obj -g'

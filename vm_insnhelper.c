@@ -892,7 +892,7 @@ rb_vm_rewrite_cref(rb_cref_t *cref, VALUE old_klass, VALUE new_klass, rb_cref_t 
 }
 
 static rb_cref_t *
-vm_cref_push(const rb_execution_context_t *ec, VALUE klass, const VALUE *ep, int pushed_by_eval)
+vm_cref_push(const rb_execution_context_t *ec, VALUE klass, const VALUE *ep, int pushed_by_eval, int singleton)
 {
     rb_cref_t *prev_cref = NULL;
 
@@ -907,40 +907,30 @@ vm_cref_push(const rb_execution_context_t *ec, VALUE klass, const VALUE *ep, int
 	}
     }
 
-    return vm_cref_new(klass, METHOD_VISI_PUBLIC, FALSE, prev_cref, pushed_by_eval);
+    return vm_cref_new(klass, METHOD_VISI_PUBLIC, FALSE, prev_cref, pushed_by_eval, singleton);
 }
 
 static inline VALUE
 vm_get_cbase(const VALUE *ep)
 {
     const rb_cref_t *cref = vm_get_cref(ep);
-    VALUE klass = Qundef;
 
-    while (cref) {
-	if ((klass = CREF_CLASS(cref)) != 0) {
-	    break;
-	}
-	cref = CREF_NEXT(cref);
-    }
-
-    return klass;
+    return CREF_CLASS_FOR_DEFINITION(cref);
 }
 
 static inline VALUE
 vm_get_const_base(const VALUE *ep)
 {
     const rb_cref_t *cref = vm_get_cref(ep);
-    VALUE klass = Qundef;
 
     while (cref) {
-	if (!CREF_PUSHED_BY_EVAL(cref) &&
-	    (klass = CREF_CLASS(cref)) != 0) {
-	    break;
-	}
-	cref = CREF_NEXT(cref);
+        if (!CREF_PUSHED_BY_EVAL(cref)) {
+            return CREF_CLASS_FOR_DEFINITION(cref);
+        }
+        cref = CREF_NEXT(cref);
     }
 
-    return klass;
+    return Qundef;
 }
 
 static inline void
@@ -1060,7 +1050,7 @@ vm_get_cvar_base(const rb_cref_t *cref, const rb_control_frame_t *cfp, int top_l
 
     while (CREF_NEXT(cref) &&
 	   (NIL_P(CREF_CLASS(cref)) || FL_TEST(CREF_CLASS(cref), FL_SINGLETON) ||
-	    CREF_PUSHED_BY_EVAL(cref))) {
+	    CREF_PUSHED_BY_EVAL(cref) || CREF_SINGLETON(cref))) {
 	cref = CREF_NEXT(cref);
     }
     if (top_level_raise && !CREF_NEXT(cref)) {
@@ -1365,6 +1355,12 @@ vm_setclassvariable(const rb_iseq_t *iseq, const rb_control_frame_t *reg_cfp, ID
     rb_cvar_set(klass, id, val);
 
     update_classvariable_cache(iseq, klass, id, ic);
+}
+
+void
+rb_vm_setclassvariable(const rb_iseq_t *iseq, const rb_control_frame_t *cfp, ID id, VALUE val, ICVARC ic)
+{
+    vm_setclassvariable(iseq, cfp, id, val, ic);
 }
 
 static inline VALUE
@@ -3531,7 +3527,7 @@ vm_call_opt_block_call(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, 
 }
 
 static VALUE
-vm_call_opt_struct_aref0(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling)
+vm_call_opt_struct_aref0(rb_execution_context_t *ec, struct rb_calling_info *calling)
 {
     VALUE recv = calling->recv;
 
@@ -3548,16 +3544,15 @@ vm_call_opt_struct_aref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
 {
     RB_DEBUG_COUNTER_INC(ccf_opt_struct_aref);
 
-    VALUE ret = vm_call_opt_struct_aref0(ec, reg_cfp, calling);
+    VALUE ret = vm_call_opt_struct_aref0(ec, calling);
     reg_cfp->sp -= 1;
     return ret;
 }
 
 static VALUE
-vm_call_opt_struct_aset0(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp, struct rb_calling_info *calling)
+vm_call_opt_struct_aset0(rb_execution_context_t *ec, struct rb_calling_info *calling, VALUE val)
 {
     VALUE recv = calling->recv;
-    VALUE val = *(reg_cfp->sp - 1);
 
     VM_ASSERT(RB_TYPE_P(recv, T_STRUCT));
     VM_ASSERT(vm_cc_cme(calling->cc)->def->type == VM_METHOD_TYPE_OPTIMIZED);
@@ -3576,7 +3571,7 @@ vm_call_opt_struct_aset(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
 {
     RB_DEBUG_COUNTER_INC(ccf_opt_struct_aset);
 
-    VALUE ret = vm_call_opt_struct_aset0(ec, reg_cfp, calling);
+    VALUE ret = vm_call_opt_struct_aset0(ec, calling, *(reg_cfp->sp - 1));
     reg_cfp->sp -= 2;
     return ret;
 }
@@ -4652,13 +4647,13 @@ vm_define_method(const rb_execution_context_t *ec, VALUE obj, ID id, VALUE iseqv
     rb_method_visibility_t visi;
     rb_cref_t *cref = vm_ec_cref(ec);
 
-    if (!is_singleton) {
-        klass = CREF_CLASS(cref);
-        visi = vm_scope_visibility_get(ec);
-    }
-    else { /* singleton */
+    if (is_singleton) {
         klass = rb_singleton_class(obj); /* class and frozen checked in this API */
         visi = METHOD_VISI_PUBLIC;
+    }
+    else {
+        klass = CREF_CLASS_FOR_DEFINITION(cref);
+        visi = vm_scope_visibility_get(ec);
     }
 
     if (NIL_P(klass)) {
@@ -5633,6 +5628,7 @@ vm_trace(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp)
 {
     const VALUE *pc = reg_cfp->pc;
     rb_event_flag_t enabled_flags = ruby_vm_event_flags & ISEQ_TRACE_EVENTS;
+    rb_event_flag_t global_events = enabled_flags;
 
     if (enabled_flags == 0 && ruby_vm_event_local_num == 0) {
         return;
@@ -5642,12 +5638,25 @@ vm_trace(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp)
 	size_t pos = pc - iseq->body->iseq_encoded;
         rb_event_flag_t pc_events = rb_iseq_event_flags(iseq, pos);
         rb_hook_list_t *local_hooks = iseq->aux.exec.local_hooks;
-        rb_event_flag_t local_hook_events = local_hooks != NULL ? local_hooks->events : 0;
-        enabled_flags |= local_hook_events;
+        rb_event_flag_t iseq_local_events = local_hooks != NULL ? local_hooks->events : 0;
+        rb_hook_list_t *bmethod_local_hooks = NULL;
+        rb_event_flag_t bmethod_local_events = 0;
+        bool bmethod_frame = VM_FRAME_BMETHOD_P(reg_cfp);
+        enabled_flags |= iseq_local_events;
 
-        VM_ASSERT((local_hook_events & ~ISEQ_TRACE_EVENTS) == 0);
+        VM_ASSERT((iseq_local_events & ~ISEQ_TRACE_EVENTS) == 0);
 
-        if ((pc_events & enabled_flags) == 0) {
+        if (bmethod_frame) {
+            const rb_callable_method_entry_t *me = rb_vm_frame_method_entry(reg_cfp);
+            VM_ASSERT(me->def->type == VM_METHOD_TYPE_BMETHOD);
+            bmethod_local_hooks = me->def->body.bmethod.hooks;
+            if (bmethod_local_hooks) {
+                bmethod_local_events = bmethod_local_hooks->events;
+            }
+        }
+
+
+        if ((pc_events & enabled_flags) == 0 && !bmethod_frame) {
 #if 0
 	    /* disable trace */
             /* TODO: incomplete */
@@ -5665,6 +5674,9 @@ vm_trace(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp)
         }
         else {
             rb_hook_list_t *global_hooks = rb_ec_ractor_hooks(ec);
+            /* Note, not considering iseq local events here since the same
+             * iseq could be used in multiple bmethods. */
+            rb_event_flag_t bmethod_events = global_events | bmethod_local_events;
 
             if (0) {
                 ruby_debug_printf("vm_trace>>%4d (%4x) - %s:%d %s\n",
@@ -5676,17 +5688,25 @@ vm_trace(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp)
             }
             VM_ASSERT(reg_cfp->pc == pc);
             VM_ASSERT(pc_events != 0);
-            VM_ASSERT(enabled_flags & pc_events);
 
             /* check traces */
+            if ((pc_events & RUBY_EVENT_B_CALL) && bmethod_frame && (bmethod_events & RUBY_EVENT_CALL)) {
+                /* b_call instruction running as a method. Fire call event. */
+                vm_trace_hook(ec, reg_cfp, pc, RUBY_EVENT_CALL, RUBY_EVENT_CALL, global_hooks, bmethod_local_hooks, Qundef);
+            }
             VM_TRACE_HOOK(RUBY_EVENT_CLASS | RUBY_EVENT_CALL | RUBY_EVENT_B_CALL,   Qundef);
             VM_TRACE_HOOK(RUBY_EVENT_LINE,                                          Qundef);
             VM_TRACE_HOOK(RUBY_EVENT_COVERAGE_LINE,                                 Qundef);
             VM_TRACE_HOOK(RUBY_EVENT_COVERAGE_BRANCH,                               Qundef);
             VM_TRACE_HOOK(RUBY_EVENT_END | RUBY_EVENT_RETURN | RUBY_EVENT_B_RETURN, TOPN(0));
+            if ((pc_events & RUBY_EVENT_B_RETURN) && bmethod_frame && (bmethod_events & RUBY_EVENT_RETURN)) {
+                /* b_return instruction running as a method. Fire return event. */
+                vm_trace_hook(ec, reg_cfp, pc, RUBY_EVENT_RETURN, RUBY_EVENT_RETURN, global_hooks, bmethod_local_hooks, TOPN(0));
+            }
         }
     }
 }
+#undef VM_TRACE_HOOK
 
 #if VM_CHECK_MODE > 0
 NORETURN( NOINLINE( COLDFUNC

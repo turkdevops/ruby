@@ -338,8 +338,13 @@ $(UNICODE_SRC_DATA_DIR)/.unicode-tables.time: \
 	$(UNICODE_FILES) $(UNICODE_PROPERTY_FILES)
 endif
 
+ifeq ($(wildcard $(srcdir)/revision.h),)
+REVISION_IN_HEADER := none
+REVISION_LATEST := update
+else
 REVISION_IN_HEADER := $(shell sed -n 's/^\#define RUBY_FULL_REVISION "\(.*\)"/\1/p' $(srcdir)/revision.h 2>/dev/null)
 REVISION_LATEST := $(shell $(CHDIR) $(srcdir) && git log -1 --format=%H 2>/dev/null)
+endif
 ifneq ($(REVISION_IN_HEADER),$(REVISION_LATEST))
 # GNU make treat the target as unmodified when its dependents get
 # updated but it is not updated, while others may not.
@@ -362,11 +367,10 @@ spec/bundler: test-bundler-parallel
 	$(Q)$(NULLCMD)
 
 # workaround to avoid matching non ruby files with "spec/%/" under GNU make 3.81
-spec/%_spec.c spec/%_spec.$(DLEXT):
+spec/%_spec.c:
 	$(empty)
-
-spec/%/ spec/%_spec.rb: programs exts PHONY
-	+$(RUNRUBY) -r./$(arch)-fake $(srcdir)/spec/mspec/bin/mspec-run -B $(srcdir)/spec/default.mspec $(SPECOPTS) $(patsubst %,$(srcdir)/%,$@)
+$(srcdir)/$(RUBYSPEC_CAPIEXT)/rubyspec.h:
+	$(empty)
 
 benchmark/%: miniruby$(EXEEXT) update-benchmark-driver PHONY
 	$(Q)$(BASERUBY) -rrubygems -I$(srcdir)/benchmark/lib $(srcdir)/benchmark/benchmark-driver/exe/benchmark-driver \
@@ -417,3 +421,8 @@ rubyspec-capiext: $(patsubst %.c,$(RUBYSPEC_CAPIEXT)/%.$(DLEXT),$(notdir $(wildc
 ifeq ($(ENABLE_SHARED),yes)
 exts: rubyspec-capiext
 endif
+
+spec/%/ spec/%_spec.rb: programs exts PHONY
+	+$(RUNRUBY) -r./$(arch)-fake $(srcdir)/spec/mspec/bin/mspec-run -B $(srcdir)/spec/default.mspec $(SPECOPTS) $(patsubst %,$(srcdir)/%,$@)
+
+ruby.pc: $(filter-out ruby.pc,$(ruby_pc))

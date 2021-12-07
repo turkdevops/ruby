@@ -12,8 +12,8 @@ on:
       - '**.rdoc'
 
 concurrency:
-  group: ${{ github.workflow }} / ${{ github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
+  cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
 
 jobs:
   make:
@@ -28,7 +28,6 @@ jobs:
           - test_task: "check"
             os: ubuntu-20.04
             configure: "--host=i686-$OSTYPE"
-            skipped_tests: TestReadline#test_interrupt_in_other_thread
           - test_task: "test-all TESTS=--repeat-count=2"
             os: ubuntu-20.04
             configure: ""
@@ -58,7 +57,8 @@ jobs:
           ${arch:+cross}build-essential${arch/:/-} \
           libssl-dev${arch} libyaml-dev${arch} libreadline6-dev${arch} \
           zlib1g-dev${arch} libncurses5-dev${arch} libffi-dev${arch} \
-          pkg-config${arch} bison autoconf ruby
+          bison autoconf ruby
+          sudo apt-get install -q -y pkg-config${arch} || :
       - name: git config
         run: |
           git config --global advice.detachedHead 0
@@ -66,6 +66,10 @@ jobs:
       - uses: actions/checkout@v2
         with:
           path: src
+      - uses: actions/cache@v2
+        with:
+          path: src/.downloaded-cache
+          key: downloaded-cache
       - name: Fixed world writable dirs
         run: |
           chmod -v go-w $HOME $HOME/.config
@@ -91,19 +95,20 @@ jobs:
         if: ${{ matrix.test_task == 'check' }}
       - name: make ${{ matrix.test_task }}
         run: |
-          if [ ${{ matrix.test_task }} = 'check' ]; then
-            TESTS=`echo "${{ matrix.skipped_tests }}" | sed 's| |$/ -n!/|g;s|^|-n!/|;s|$|$$/|'`
-          fi
-          $SETARCH make -s ${{ matrix.test_task }} ${TESTS:+TESTS="$TESTS"}
-          if [ ${{ matrix.test_task }} = 'check' -a "${TESTS:+set}" ]; then
-            TESTS=`echo "${{ matrix.skipped_tests }}" | sed 's| |$/ -n/|g;s|^|-n/|;s|$|$$/|'`
-            unset GNUMAKEFLAGS
-            $SETARCH make -s test-all TESTS="$TESTS"
-          fi
+          $SETARCH make -s ${{ matrix.test_task }} ${TESTS:+TESTS=`echo "$TESTS" | sed 's| |$/ -n!/|g;s|^|-n!/|;s|$|$$/|'`}
         timeout-minutes: 40
         env:
           RUBY_TESTOPTS: "-q --tty=no"
+          TESTS: ${{ matrix.test_task == 'check' && matrix.skipped_tests || '' }}
           TEST_BUNDLED_GEMS_ALLOW_FAILURES: ""
+      - name: make skipped tests
+        run: |
+          $SETARCH make -s test-all TESTS=`echo "$TESTS" | sed 's| |$/ -n/|g;s|^|-n/|;s|$|$$/|'`
+        env:
+          GNUMAKEFLAGS: ""
+          RUBY_TESTOPTS: "-v --tty=no"
+          TESTS: ${{ matrix.skipped_tests }}
+        if: ${{ matrix.test_task == 'check' && matrix.skipped_tests != '' }}
       - uses: k0kubun/action-slack@v2.0.0
         with:
           payload: |
