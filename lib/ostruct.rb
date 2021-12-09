@@ -107,7 +107,7 @@
 # For all these reasons, consider not using OpenStruct at all.
 #
 class OpenStruct
-  VERSION = "0.5.0"
+  VERSION = "0.5.2"
 
   #
   # Creates a new OpenStruct object.  By default, the resulting OpenStruct
@@ -221,11 +221,14 @@ class OpenStruct
   #
   def new_ostruct_member!(name) # :nodoc:
     unless @table.key?(name) || is_method_protected!(name)
-      getter_proc = Proc.new { @table[name] }
-      setter_proc = Proc.new {|x| @table[name] = x}
       if defined?(::Ractor)
+        getter_proc = nil.instance_eval{ Proc.new { @table[name] } }
+        setter_proc = nil.instance_eval{ Proc.new {|x| @table[name] = x} }
         ::Ractor.make_shareable(getter_proc)
         ::Ractor.make_shareable(setter_proc)
+      else
+        getter_proc = Proc.new { @table[name] }
+        setter_proc = Proc.new {|x| @table[name] = x}
       end
       define_singleton_method!(name, &getter_proc)
       define_singleton_method!("#{name}=", &setter_proc)
@@ -453,7 +456,12 @@ class OpenStruct
   end
 
   # Make all public methods (builtin or our own) accessible with <code>!</code>:
-  instance_methods.each do |method|
+  give_access = instance_methods
+  # See https://github.com/ruby/ostruct/issues/30
+  give_access -= %i[instance_exec instance_eval eval] if RUBY_ENGINE == 'jruby'
+  give_access.each do |method|
+    next if method.match(/\W$/)
+
     new_name = "#{method}!"
     alias_method new_name, method
   end
