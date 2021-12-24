@@ -307,16 +307,16 @@ Note: We're only listing outstanding class updates.
 ## Stdlib updates
 
 *   The following default gem are updated.
-    * RubyGems 3.3.1
+    * RubyGems 3.3.2
     * base64 0.1.1
     * benchmark 0.2.0
     * bigdecimal 3.1.1
-    * bundler 2.3.1
+    * bundler 2.3.2
     * cgi 0.3.1
-    * csv 3.2.1
+    * csv 3.2.2
     * date 3.2.2
-    * did_you_mean 1.6.0.pre.alpha
-    * digest 3.1.0.pre3
+    * did_you_mean 1.6.1
+    * digest 3.1.0
     * drb 2.1.0
     * erb 2.2.3
     * error_highlight 0.3.0
@@ -328,14 +328,14 @@ Note: We're only listing outstanding class updates.
     * io-console 0.5.9
     * io-wait 0.2.1
     * ipaddr 1.2.3
-    * irb 1.3.8.pre.11
+    * irb 1.4.0
     * json 2.6.1
     * logger 1.5.0
     * net-http 0.2.0
     * net-protocol 0.1.2
     * nkf 0.1.1
     * open-uri 0.2.0
-    * openssl 3.0.0.pre
+    * openssl 3.0.0
     * optparse 0.2.0
     * ostruct 0.5.2
     * pathname 0.2.0
@@ -343,8 +343,9 @@ Note: We're only listing outstanding class updates.
     * prettyprint 0.1.1
     * psych 4.0.3
     * racc 1.6.0
-    * rdoc 6.3.2
-    * readline-ext 0.1.3
+    * rdoc 6.4.0
+    * readline 0.0.3
+    * readline-ext 0.1.4
     * reline 0.2.8.pre.11
     * resolv 0.2.1
     * rinda 0.1.1
@@ -367,7 +368,7 @@ Note: We're only listing outstanding class updates.
     * rake 13.0.6
     * test-unit 3.5.3
     * rexml 3.2.5
-    * rbs 1.8.1
+    * rbs 2.0.0
     * typeprof 0.21.1
 *   The following default gems are now bundled gems.
     * net-ftp 0.1.3
@@ -419,6 +420,9 @@ Note: Excluding feature bug fixes.
 
 ## Implementation improvements
 
+* Inline cache mechanism is introduced for reading class variables.
+  [[Feature #17763]]
+
 * `instance_eval` and `instance_exec` now only allocate a singleton class when
   required, avoiding extra objects and improving performance. [[GH-5146]]
 
@@ -458,18 +462,48 @@ See [this blog post](https://shopify.engineering/yjit-just-in-time-compiler-crub
 
 * Disabled by default, use `--yjit` command-line option to enable YJIT.
 
-* Performance improvements on most real-world software, up to 22% on railsbench, 39% on liquid-render.
+* Performance improvements on benchmarks based on real-world software,
+  up to 22% on railsbench, 39% on liquid-render.
 
 * Fast warm-up times.
 
-* Limited to macOS & Linux on x86-64 platforms for now.
+* Limited to Unix-like x86-64 platforms for now.
 
 ## Static analysis
 
 ### RBS
 
+*   Generics type parameters can be bounded ([PR](https://github.com/ruby/rbs/pull/844)).
+
+    ```rbs
+    # `T` must be compatible with the `_Output` interface.
+    # `PrettyPrint[String]` is ok, but `PrettyPrint[Integer]` is a type error.
+    class PrettyPrint[T < _Output]
+      interface _Output
+        def <<: (String) -> void
+      end
+
+      attr_reader output: T
+
+      def initialize: (T output) -> void
+    end
+    ```
+
+*   Type aliases can be generic. ([PR](https://github.com/ruby/rbs/pull/823))
+
+    ```rbs
+    # Defines a generic type `list`.
+    type list[T] = [ T, list[T] ]
+                 | nil
+
+    type str_list = list[String]
+    type int_list = list[Integer]
+    ```
+
 * [rbs collection](https://github.com/ruby/rbs/blob/master/docs/collection.md) has been introduced to manage gems’ RBSs.
+
 * Many signatures for built-in and standard libraries have been added/updated.
+
 * It includes many bug fixes and performance improvements too.
 
 See the [CHANGELOG.md](https://github.com/ruby/rbs/blob/master/CHANGELOG.md) for more information.
@@ -570,6 +604,7 @@ See [the repository](https://github.com/ruby/error_highlight) in detail.
 [Feature #17744]: https://bugs.ruby-lang.org/issues/17744
 [Feature #17750]: https://bugs.ruby-lang.org/issues/17750
 [Feature #17762]: https://bugs.ruby-lang.org/issues/17762
+[Feature #17763]: https://bugs.ruby-lang.org/issues/17763
 [Feature #17795]: https://bugs.ruby-lang.org/issues/17795
 [Feature #17798]: https://bugs.ruby-lang.org/issues/17798
 [Bug #17827]:     https://bugs.ruby-lang.org/issues/17827
