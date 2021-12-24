@@ -69,8 +69,11 @@ static void clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list);
 void
 rb_hook_list_free(rb_hook_list_t *hooks)
 {
-    hooks->need_clean = TRUE;
-    clean_hooks(GET_EC(), hooks);
+    hooks->need_clean = true;
+
+    if (hooks->running == 0) {
+        clean_hooks(GET_EC(), hooks);
+    }
 }
 
 /* ruby_vm_event_flags management */
@@ -78,9 +81,9 @@ rb_hook_list_free(rb_hook_list_t *hooks)
 void rb_clear_attr_ccs(void);
 
 static void
-update_global_event_hook(rb_event_flag_t vm_events)
+update_global_event_hook(rb_event_flag_t prev_events, rb_event_flag_t new_events)
 {
-    rb_event_flag_t new_iseq_events = vm_events & ISEQ_TRACE_EVENTS;
+    rb_event_flag_t new_iseq_events = new_events & ISEQ_TRACE_EVENTS;
     rb_event_flag_t enabled_iseq_events = ruby_vm_event_enabled_global_flags & ISEQ_TRACE_EVENTS;
 
     if (new_iseq_events & ~enabled_iseq_events) {
@@ -95,14 +98,18 @@ update_global_event_hook(rb_event_flag_t vm_events)
 	rb_iseq_trace_set_all(new_iseq_events | enabled_iseq_events);
     }
     else {
-        rb_clear_attr_ccs();
+        // if c_call or c_return is activated:
+        if (((prev_events & RUBY_EVENT_C_CALL)   == 0 && (new_events & RUBY_EVENT_C_CALL)) ||
+            ((prev_events & RUBY_EVENT_C_RETURN) == 0 && (new_events & RUBY_EVENT_C_RETURN))) {
+            rb_clear_attr_ccs();
+        }
     }
 
-    ruby_vm_event_flags = vm_events;
-    ruby_vm_event_enabled_global_flags |= vm_events;
-    rb_objspace_set_event_hook(vm_events);
+    ruby_vm_event_flags = new_events;
+    ruby_vm_event_enabled_global_flags |= new_events;
+    rb_objspace_set_event_hook(new_events);
 
-    if (vm_events & RUBY_EVENT_TRACEPOINT_ALL) {
+    if (new_events & RUBY_EVENT_TRACEPOINT_ALL) {
         // Invalidate all code if listening for any TracePoint event.
         // Internal events fire inside C routines so don't need special handling.
         // Do this last so other ractors see updated vm events when they wake up.
@@ -137,13 +144,14 @@ alloc_event_hook(rb_event_hook_func_t func, rb_event_flag_t events, VALUE data, 
 static void
 hook_list_connect(VALUE list_owner, rb_hook_list_t *list, rb_event_hook_t *hook, int global_p)
 {
+    rb_event_flag_t prev_events = list->events;
     hook->next = list->hooks;
     list->hooks = hook;
     list->events |= hook->events;
 
     if (global_p) {
         /* global hooks are root objects at GC mark. */
-        update_global_event_hook(list->events);
+        update_global_event_hook(prev_events, list->events);
     }
     else {
         RB_OBJ_WRITTEN(list_owner, Qundef, hook->data);
@@ -195,10 +203,13 @@ static void
 clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list)
 {
     rb_event_hook_t *hook, **nextp = &list->hooks;
-    VM_ASSERT(list->need_clean == TRUE);
+    rb_event_flag_t prev_events = list->events;
+
+    VM_ASSERT(list->running == 0);
+    VM_ASSERT(list->need_clean == true);
 
     list->events = 0;
-    list->need_clean = FALSE;
+    list->need_clean = false;
 
     while ((hook = *nextp) != 0) {
 	if (hook->hook_flags & RUBY_EVENT_HOOK_FLAG_DELETED) {
@@ -211,19 +222,21 @@ clean_hooks(const rb_execution_context_t *ec, rb_hook_list_t *list)
 	}
     }
 
-    if (list == rb_ec_ractor_hooks(ec)) {
-        /* global events */
-        update_global_event_hook(list->events);
+    if (list->is_local) {
+        if (list->events == 0) {
+            /* local events */
+            ruby_xfree(list);
+        }
     }
     else {
-        /* local events */
+        update_global_event_hook(prev_events, list->events);
     }
 }
 
 static void
 clean_hooks_check(const rb_execution_context_t *ec, rb_hook_list_t *list)
 {
-    if (UNLIKELY(list->need_clean != FALSE)) {
+    if (UNLIKELY(list->need_clean)) {
         if (list->running == 0) {
             clean_hooks(ec, list);
         }
@@ -246,7 +259,7 @@ remove_event_hook(const rb_execution_context_t *ec, const rb_thread_t *filter_th
 		if (data == Qundef || hook->data == data) {
 		    hook->hook_flags |= RUBY_EVENT_HOOK_FLAG_DELETED;
 		    ret+=1;
-		    list->need_clean = TRUE;
+		    list->need_clean = true;
 		}
 	    }
 	}
@@ -1244,10 +1257,11 @@ disable_local_event_iseq_i(VALUE target, VALUE iseq_p, VALUE tpval)
         rb_hook_list_t *hooks = def->body.bmethod.hooks;
         VM_ASSERT(hooks != NULL);
         rb_hook_list_remove_tracepoint(hooks, tpval);
-        if (hooks->running == 0) {
+
+        if (hooks->events == 0) {
             rb_hook_list_free(def->body.bmethod.hooks);
+            def->body.bmethod.hooks = NULL;
         }
-        def->body.bmethod.hooks = NULL;
     }
     return ST_CONTINUE;
 }
@@ -1296,9 +1310,9 @@ rb_hook_list_remove_tracepoint(rb_hook_list_t *list, VALUE tpval)
     while (hook) {
         if (hook->data == tpval) {
             hook->hook_flags |= RUBY_EVENT_HOOK_FLAG_DELETED;
-            list->need_clean = TRUE;
+            list->need_clean = true;
         }
-        else {
+        else if ((hook->hook_flags & RUBY_EVENT_HOOK_FLAG_DELETED) == 0) {
             events |= hook->events;
         }
         hook = hook->next;

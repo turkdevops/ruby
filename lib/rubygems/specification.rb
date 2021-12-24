@@ -9,6 +9,8 @@
 require_relative 'deprecate'
 require_relative 'basic_specification'
 require_relative 'stub_specification'
+require_relative 'platform'
+require_relative 'requirement'
 require_relative 'specification_policy'
 require_relative 'util/list'
 
@@ -179,17 +181,13 @@ class Gem::Specification < Gem::BasicSpecification
   end
 
   def self.clear_specs # :nodoc:
-    @@all_specs_mutex.synchronize do
-      @@all = nil
-      @@stubs = nil
-      @@stubs_by_name = {}
-      @@spec_with_requirable_file = {}
-      @@active_stub_with_requirable_file = {}
-    end
+    @@all = nil
+    @@stubs = nil
+    @@stubs_by_name = {}
+    @@spec_with_requirable_file = {}
+    @@active_stub_with_requirable_file = {}
   end
   private_class_method :clear_specs
-
-  @@all_specs_mutex = Thread::Mutex.new
 
   clear_specs
 
@@ -758,7 +756,7 @@ class Gem::Specification < Gem::BasicSpecification
   attr_accessor :specification_version
 
   def self._all # :nodoc:
-    @@all_specs_mutex.synchronize { @@all ||= Gem.loaded_specs.values | stubs.map(&:to_spec) }
+    @@all ||= Gem.loaded_specs.values | stubs.map(&:to_spec)
   end
 
   def self.clear_load_cache # :nodoc:
@@ -997,7 +995,6 @@ class Gem::Specification < Gem::BasicSpecification
   def self.find_by_path(path)
     path = path.dup.freeze
     spec = @@spec_with_requirable_file[path] ||= (stubs.find do |s|
-      next unless Gem::BundlerVersionFinder.compatible?(s)
       s.contains_requirable_file? path
     end || NOT_FOUND)
     spec.to_spec
@@ -1010,7 +1007,6 @@ class Gem::Specification < Gem::BasicSpecification
   def self.find_inactive_by_path(path)
     stub = stubs.find do |s|
       next if s.activated?
-      next unless Gem::BundlerVersionFinder.compatible?(s)
       s.contains_requirable_file? path
     end
     stub && stub.to_spec
@@ -1086,7 +1082,7 @@ class Gem::Specification < Gem::BasicSpecification
   # +prerelease+ is true.
 
   def self.latest_specs(prerelease = false)
-    _latest_specs Gem::Specification._all, prerelease
+    _latest_specs Gem::Specification.stubs, prerelease
   end
 
   ##

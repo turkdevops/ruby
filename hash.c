@@ -43,6 +43,9 @@
 #include "ruby_assert.h"
 #include "symbol.h"
 #include "transient_heap.h"
+#include "ruby/thread_native.h"
+#include "ruby/ractor.h"
+#include "vm_sync.h"
 
 #ifndef HASH_DEBUG
 #define HASH_DEBUG 0
@@ -4808,6 +4811,9 @@ extern char **environ;
 #define ENVNMATCH(s1, s2, n) (memcmp((s1), (s2), (n)) == 0)
 #endif
 
+#define ENV_LOCK()   RB_VM_LOCK_ENTER()
+#define ENV_UNLOCK() RB_VM_LOCK_LEAVE()
+
 static inline rb_encoding *
 env_encoding(void)
 {
@@ -4828,12 +4834,6 @@ env_enc_str_new(const char *ptr, long len, rb_encoding *enc)
 }
 
 static VALUE
-env_enc_str_new_cstr(const char *ptr, rb_encoding *enc)
-{
-    return env_enc_str_new(ptr, strlen(ptr), enc);
-}
-
-static VALUE
 env_str_new(const char *ptr, long len)
 {
     return env_enc_str_new(ptr, len, env_encoding());
@@ -4846,13 +4846,34 @@ env_str_new2(const char *ptr)
     return env_str_new(ptr, strlen(ptr));
 }
 
-static const char TZ_ENV[] = "TZ";
-
 static VALUE
-env_name_new(const char *name, const char *ptr)
+getenv_with_lock(const char *name)
 {
-    return env_enc_str_new_cstr(ptr, env_encoding());
+    VALUE ret;
+    ENV_LOCK();
+    {
+        const char *val = getenv(name);
+        ret = env_str_new2(val);
+    }
+    ENV_UNLOCK();
+    return ret;
 }
+
+static bool
+has_env_with_lock(const char *name)
+{
+    const char *val;
+
+    ENV_LOCK();
+    {
+        val = getenv(name);
+    }
+    ENV_UNLOCK();
+
+    return val ? true : false;
+}
+
+static const char TZ_ENV[] = "TZ";
 
 static void *
 get_env_cstr(
@@ -4906,17 +4927,13 @@ static VALUE
 env_delete(VALUE name)
 {
     const char *nam = env_name(name);
-    const char *val = getenv(nam);
-
     reset_by_modified_env(nam);
+    VALUE val = getenv_with_lock(nam);
 
-    if (val) {
-	VALUE value = env_str_new2(val);
-
-	ruby_setenv(nam, 0);
-	return value;
+    if (!NIL_P(val)) {
+        ruby_setenv(nam, 0);
     }
-    return Qnil;
+    return val;
 }
 
 /*
@@ -4969,14 +4986,9 @@ env_delete_m(VALUE obj, VALUE name)
 static VALUE
 rb_f_getenv(VALUE obj, VALUE name)
 {
-    const char *nam, *env;
-
-    nam = env_name(name);
-    env = getenv(nam);
-    if (env) {
-	return env_name_new(nam, env);
-    }
-    return Qnil;
+    const char *nam = env_name(name);
+    VALUE env = getenv_with_lock(nam);
+    return env;
 }
 
 /*
@@ -5009,7 +5021,8 @@ env_fetch(int argc, VALUE *argv, VALUE _)
 {
     VALUE key;
     long block_given;
-    const char *nam, *env;
+    const char *nam;
+    VALUE env;
 
     rb_check_arity(argc, 1, 2);
     key = argv[0];
@@ -5018,15 +5031,16 @@ env_fetch(int argc, VALUE *argv, VALUE _)
 	rb_warn("block supersedes default value argument");
     }
     nam = env_name(key);
-    env = getenv(nam);
-    if (!env) {
+    env = getenv_with_lock(nam);
+
+    if (NIL_P(env)) {
 	if (block_given) return rb_yield(key);
 	if (argc == 1) {
 	    rb_key_err_raise(rb_sprintf("key not found: \"%"PRIsVALUE"\"", key), envtbl, key);
 	}
 	return argv[1];
     }
-    return env_name_new(nam, env);
+    return env;
 }
 
 int
@@ -5051,6 +5065,8 @@ in_origenv(const char *str)
 static int
 envix(const char *nam)
 {
+    // should be locked
+
     register int i, len = strlen(nam);
     char **env;
 
@@ -5160,11 +5176,17 @@ ruby_setenv(const char *name, const char *value)
 	wname[len-1] = L'=';
 #endif
     }
+
+    ENV_LOCK();
+    {
 #ifndef HAVE__WPUTENV_S
-    failed = _wputenv(wname);
+        failed = _wputenv(wname);
 #else
-    failed = _wputenv_s(wname, wvalue);
+        failed = _wputenv_s(wname, wvalue);
 #endif
+    }
+    ENV_UNLOCK();
+
     ALLOCV_END(buf);
     /* even if putenv() failed, clean up and try to delete the
      * variable from the system area. */
@@ -5179,15 +5201,31 @@ ruby_setenv(const char *name, const char *value)
     }
 #elif defined(HAVE_SETENV) && defined(HAVE_UNSETENV)
     if (value) {
-	if (setenv(name, value, 1))
-	    rb_sys_fail_str(rb_sprintf("setenv(%s)", name));
+        int ret;
+        ENV_LOCK();
+        {
+            ret = setenv(name, value, 1);
+        }
+        ENV_UNLOCK();
+
+        if (ret) rb_sys_fail_str(rb_sprintf("setenv(%s)", name));
     }
     else {
 #ifdef VOID_UNSETENV
-	unsetenv(name);
+        ENV_LOCK();
+        {
+            unsetenv(name);
+        }
+        ENV_UNLOCK();
 #else
-	if (unsetenv(name))
-	    rb_sys_fail_str(rb_sprintf("unsetenv(%s)", name));
+        int ret;
+        ENV_LOCK();
+        {
+            ret = unsetenv(name);
+        }
+        ENV_UNLOCK();
+
+        if (ret) rb_sys_fail_str(rb_sprintf("unsetenv(%s)", name));
 #endif
     }
 #elif defined __sun
@@ -5201,64 +5239,85 @@ ruby_setenv(const char *name, const char *value)
     check_envname(name);
     len = strlen(name);
     if (value) {
-	mem_size = len + strlen(value) + 2;
-	mem_ptr = malloc(mem_size);
-	if (mem_ptr == NULL)
-	    rb_sys_fail_str(rb_sprintf("malloc("PRIuSIZE")", mem_size));
-	snprintf(mem_ptr, mem_size, "%s=%s", name, value);
+        mem_size = len + strlen(value) + 2;
+        mem_ptr = malloc(mem_size);
+        if (mem_ptr == NULL)
+            rb_sys_fail_str(rb_sprintf("malloc(%"PRIuSIZE")", mem_size));
+        snprintf(mem_ptr, mem_size, "%s=%s", name, value);
     }
-    for (env_ptr = GET_ENVIRON(environ); (str = *env_ptr) != 0; ++env_ptr) {
-	if (!strncmp(str, name, len) && str[len] == '=') {
-	    if (!in_origenv(str)) free(str);
-	    while ((env_ptr[0] = env_ptr[1]) != 0) env_ptr++;
-	    break;
-	}
+
+    ENV_LOCK();
+    {
+        for (env_ptr = GET_ENVIRON(environ); (str = *env_ptr) != 0; ++env_ptr) {
+            if (!strncmp(str, name, len) && str[len] == '=') {
+                if (!in_origenv(str)) free(str);
+                while ((env_ptr[0] = env_ptr[1]) != 0) env_ptr++;
+                break;
+            }
+        }
     }
+    ENV_UNLOCK();
+
     if (value) {
-	if (putenv(mem_ptr)) {
+        int ret;
+        ENV_LOCK();
+        {
+            ret = putenv(mem_ptr);
+        }
+        ENV_UNLOCK();
+
+        if (ret) {
 	    free(mem_ptr);
-	    rb_sys_fail_str(rb_sprintf("putenv(%s)", name));
-	}
+            rb_sys_fail_str(rb_sprintf("putenv(%s)", name));
+        }
     }
 #else  /* WIN32 */
     size_t len;
     int i;
 
-    i=envix(name);		        /* where does it go? */
+    ENV_LOCK();
+    {
+        i = envix(name);		/* where does it go? */
 
-    if (environ == origenviron) {	/* need we copy environment? */
-	int j;
-	int max;
-	char **tmpenv;
+        if (environ == origenviron) {	/* need we copy environment? */
+            int j;
+            int max;
+            char **tmpenv;
 
-	for (max = i; environ[max]; max++) ;
-	tmpenv = ALLOC_N(char*, max+2);
-	for (j=0; j<max; j++)		/* copy environment */
-	    tmpenv[j] = ruby_strdup(environ[j]);
-	tmpenv[max] = 0;
-	environ = tmpenv;		/* tell exec where it is now */
+            for (max = i; environ[max]; max++) ;
+            tmpenv = ALLOC_N(char*, max+2);
+            for (j=0; j<max; j++)		/* copy environment */
+                tmpenv[j] = ruby_strdup(environ[j]);
+            tmpenv[max] = 0;
+            environ = tmpenv;		/* tell exec where it is now */
+        }
+
+        if (environ[i]) {
+            char **envp = origenviron;
+            while (*envp && *envp != environ[i]) envp++;
+            if (!*envp)
+                xfree(environ[i]);
+            if (!value) {
+                while (environ[i]) {
+                    environ[i] = environ[i+1];
+                    i++;
+                }
+                goto finish;
+            }
+        }
+        else {			/* does not exist yet */
+            if (!value) goto finish;
+            REALLOC_N(environ, char*, i+2);	/* just expand it a bit */
+            environ[i+1] = 0;	/* make sure it's null terminated */
+        }
+
+        len = strlen(name) + strlen(value) + 2;
+        environ[i] = ALLOC_N(char, len);
+        snprintf(environ[i],len,"%s=%s",name,value); /* all that work just for this */
+
+      finish:;
     }
-    if (environ[i]) {
-	char **envp = origenviron;
-	while (*envp && *envp != environ[i]) envp++;
-	if (!*envp)
-	    xfree(environ[i]);
-	if (!value) {
-	    while (environ[i]) {
-		environ[i] = environ[i+1];
-		i++;
-	    }
-	    return;
-	}
-    }
-    else {			/* does not exist yet */
-	if (!value) return;
-	REALLOC_N(environ, char*, i+2);	/* just expand it a bit */
-	environ[i+1] = 0;	/* make sure it's null terminated */
-    }
-    len = strlen(name) + strlen(value) + 2;
-    environ[i] = ALLOC_N(char, len);
-    snprintf(environ[i],len,"%s=%s",name,value); /* all that work just for this */
+    ENV_UNLOCK();
 #endif /* WIN32 */
 }
 
@@ -5342,23 +5401,26 @@ env_aset(VALUE nm, VALUE val)
 static VALUE
 env_keys(int raw)
 {
-    char **env;
-    VALUE ary;
     rb_encoding *enc = raw ? 0 : rb_locale_encoding();
+    VALUE ary = rb_ary_new();
 
-    ary = rb_ary_new();
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-            const char *p = *env;
-            size_t l = s - p;
-            VALUE e = raw ? rb_utf8_str_new(p, l) : env_enc_str_new(p, l, enc);
-            rb_ary_push(ary, e);
-	}
-	env++;
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s) {
+                const char *p = *env;
+                size_t l = s - p;
+                VALUE e = raw ? rb_utf8_str_new(p, l) : env_enc_str_new(p, l, enc);
+                rb_ary_push(ary, e);
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     return ary;
 }
 
@@ -5387,13 +5449,18 @@ rb_env_size(VALUE ehash, VALUE args, VALUE eobj)
     char **env;
     long cnt = 0;
 
-    env = GET_ENVIRON(environ);
-    for (; *env ; ++env) {
-	if (strchr(*env, '=')) {
-	    cnt++;
-	}
+    ENV_LOCK();
+    {
+        env = GET_ENVIRON(environ);
+        for (; *env ; ++env) {
+            if (strchr(*env, '=')) {
+                cnt++;
+            }
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     return LONG2FIX(cnt);
 }
 
@@ -5431,19 +5498,23 @@ env_each_key(VALUE ehash)
 static VALUE
 env_values(void)
 {
-    VALUE ary;
-    char **env;
+    VALUE ary = rb_ary_new();
 
-    ary = rb_ary_new();
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-	    rb_ary_push(ary, env_str_new2(s+1));
-	}
-	env++;
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s) {
+                rb_ary_push(ary, env_str_new2(s+1));
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     return ary;
 }
 
@@ -5517,26 +5588,30 @@ env_each_value(VALUE ehash)
 static VALUE
 env_each_pair(VALUE ehash)
 {
-    char **env;
-    VALUE ary;
     long i;
 
     RETURN_SIZED_ENUMERATOR(ehash, 0, 0, rb_env_size);
 
-    ary = rb_ary_new();
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-	    rb_ary_push(ary, env_str_new(*env, s-*env));
-	    rb_ary_push(ary, env_str_new2(s+1));
-	}
-	env++;
+    VALUE ary = rb_ary_new();
+
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s) {
+                rb_ary_push(ary, env_str_new(*env, s-*env));
+                rb_ary_push(ary, env_str_new2(s+1));
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
 
     if (rb_block_pair_yield_optimizable()) {
-	for (i=0; i<RARRAY_LEN(ary); i+=2) {
+        for (i=0; i<RARRAY_LEN(ary); i+=2) {
 	    rb_yield_values(2, RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1));
 	}
     }
@@ -5545,6 +5620,7 @@ env_each_pair(VALUE ehash)
 	    rb_yield(rb_assoc_new(RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1)));
 	}
     }
+
     return ehash;
 }
 
@@ -5873,27 +5949,31 @@ env_to_s(VALUE _)
 static VALUE
 env_inspect(VALUE _)
 {
-    char **env;
-    VALUE str, i;
+    VALUE i;
+    VALUE str = rb_str_buf_new2("{");
 
-    str = rb_str_buf_new2("{");
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
 
-	if (env != environ) {
-	    rb_str_buf_cat2(str, ", ");
-	}
-	if (s) {
-	    rb_str_buf_cat2(str, "\"");
-	    rb_str_buf_cat(str, *env, s-*env);
-	    rb_str_buf_cat2(str, "\"=>");
-	    i = rb_inspect(rb_str_new2(s+1));
-	    rb_str_buf_append(str, i);
-	}
-	env++;
+            if (env != environ) {
+                rb_str_buf_cat2(str, ", ");
+            }
+            if (s) {
+                rb_str_buf_cat2(str, "\"");
+                rb_str_buf_cat(str, *env, s-*env);
+                rb_str_buf_cat2(str, "\"=>");
+                i = rb_inspect(rb_str_new2(s+1));
+                rb_str_buf_append(str, i);
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     rb_str_buf_cat2(str, "}");
 
     return str;
@@ -5911,20 +5991,23 @@ env_inspect(VALUE _)
 static VALUE
 env_to_a(VALUE _)
 {
-    char **env;
-    VALUE ary;
+    VALUE ary = rb_ary_new();
 
-    ary = rb_ary_new();
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-	    rb_ary_push(ary, rb_assoc_new(env_str_new(*env, s-*env),
-					  env_str_new2(s+1)));
-	}
-	env++;
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s) {
+                rb_ary_push(ary, rb_assoc_new(env_str_new(*env, s-*env),
+                                              env_str_new2(s+1)));
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     return ary;
 }
 
@@ -5942,6 +6025,22 @@ env_none(VALUE _)
     return Qnil;
 }
 
+static int
+env_size_with_lock(void)
+{
+    int i = 0;
+
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (env[i]) i++;
+        FREE_ENVIRON(environ);
+    }
+    ENV_UNLOCK();
+
+    return i;
+}
+
 /*
  * call-seq:
  *   ENV.length -> an_integer
@@ -5955,14 +6054,7 @@ env_none(VALUE _)
 static VALUE
 env_size(VALUE _)
 {
-    int i;
-    char **env;
-
-    env = GET_ENVIRON(environ);
-    for (i=0; env[i]; i++)
-	;
-    FREE_ENVIRON(environ);
-    return INT2FIX(i);
+    return INT2FIX(env_size_with_lock());
 }
 
 /*
@@ -5978,15 +6070,19 @@ env_size(VALUE _)
 static VALUE
 env_empty_p(VALUE _)
 {
-    char **env;
+    bool empty = true;
 
-    env = GET_ENVIRON(environ);
-    if (env[0] == 0) {
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        if (env[0] != 0) {
+            empty = false;
+        }
 	FREE_ENVIRON(environ);
-	return Qtrue;
     }
-    FREE_ENVIRON(environ);
-    return Qfalse;
+    ENV_UNLOCK();
+
+    return RBOOL(empty);
 }
 
 /*
@@ -6017,10 +6113,8 @@ env_empty_p(VALUE _)
 static VALUE
 env_has_key(VALUE env, VALUE key)
 {
-    const char *s;
-
-    s = env_name(key);
-    return RBOOL(getenv(s));
+    const char *s = env_name(key);
+    return RBOOL(has_env_with_lock(s));
 }
 
 /*
@@ -6046,12 +6140,15 @@ env_has_key(VALUE env, VALUE key)
 static VALUE
 env_assoc(VALUE env, VALUE key)
 {
-    const char *s, *e;
+    const char *s = env_name(key);
+    VALUE e = getenv_with_lock(s);
 
-    s = env_name(key);
-    e = getenv(s);
-    if (e) return rb_assoc_new(key, env_str_new2(e));
-    return Qnil;
+    if (!NIL_P(e)) {
+        return rb_assoc_new(key, e);
+    }
+    else {
+        return Qnil;
+    }
 }
 
 /*
@@ -6069,24 +6166,30 @@ env_assoc(VALUE env, VALUE key)
 static VALUE
 env_has_value(VALUE dmy, VALUE obj)
 {
-    char **env;
-
     obj = rb_check_string_type(obj);
     if (NIL_P(obj)) return Qnil;
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s++) {
-	    long len = strlen(s);
-	    if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
-		FREE_ENVIRON(environ);
-		return Qtrue;
-	    }
-	}
-	env++;
+
+    VALUE ret = Qfalse;
+
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s++) {
+                long len = strlen(s);
+                if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
+                    ret = Qtrue;
+                    break;
+                }
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
-    return Qfalse;
+    ENV_UNLOCK();
+
+    return ret;
 }
 
 /*
@@ -6106,25 +6209,32 @@ env_has_value(VALUE dmy, VALUE obj)
 static VALUE
 env_rassoc(VALUE dmy, VALUE obj)
 {
-    char **env;
-
     obj = rb_check_string_type(obj);
     if (NIL_P(obj)) return Qnil;
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s++) {
-	    long len = strlen(s);
-	    if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
-                VALUE result = rb_assoc_new(rb_str_new(*env, s-*env-1), obj);
-		FREE_ENVIRON(environ);
-		return result;
-	    }
-	}
-	env++;
+
+    VALUE result = Qnil;
+
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+
+        while (*env) {
+            const char *p = *env;
+            char *s = strchr(p, '=');
+            if (s++) {
+                long len = strlen(s);
+                if (RSTRING_LEN(obj) == len && strncmp(s, RSTRING_PTR(obj), len) == 0) {
+                    result = rb_assoc_new(rb_str_new(p, s-p-1), obj);
+                    break;
+                }
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
-    return Qnil;
+    ENV_UNLOCK();
+
+    return result;
 }
 
 /*
@@ -6146,44 +6256,50 @@ env_rassoc(VALUE dmy, VALUE obj)
 static VALUE
 env_key(VALUE dmy, VALUE value)
 {
-    char **env;
-    VALUE str;
-
     SafeStringValue(value);
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s++) {
-	    long len = strlen(s);
-	    if (RSTRING_LEN(value) == len && strncmp(s, RSTRING_PTR(value), len) == 0) {
-		str = env_str_new(*env, s-*env-1);
-		FREE_ENVIRON(environ);
-		return str;
-	    }
-	}
-	env++;
+    VALUE str = Qnil;
+
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s++) {
+                long len = strlen(s);
+                if (RSTRING_LEN(value) == len && strncmp(s, RSTRING_PTR(value), len) == 0) {
+                    str = env_str_new(*env, s-*env-1);
+                    break;
+                }
+            }
+            env++;
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
-    return Qnil;
+    ENV_UNLOCK();
+
+    return str;
 }
 
 static VALUE
 env_to_hash(void)
 {
-    char **env;
-    VALUE hash;
+    VALUE hash = rb_hash_new();
 
-    hash = rb_hash_new();
-    env = GET_ENVIRON(environ);
-    while (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-	    rb_hash_aset(hash, env_str_new(*env, s-*env),
-			       env_str_new2(s+1));
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        while (*env) {
+            char *s = strchr(*env, '=');
+            if (s) {
+                rb_hash_aset(hash, env_str_new(*env, s-*env),
+                             env_str_new2(s+1));
+            }
+            env++;
 	}
-	env++;
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
     return hash;
 }
 
@@ -6319,20 +6435,29 @@ env_freeze(VALUE self)
 static VALUE
 env_shift(VALUE _)
 {
-    char **env;
     VALUE result = Qnil;
+    VALUE key = Qnil;
 
-    env = GET_ENVIRON(environ);
-    if (*env) {
-	char *s = strchr(*env, '=');
-	if (s) {
-	    VALUE key = env_str_new(*env, s-*env);
-	    VALUE val = env_str_new2(getenv(RSTRING_PTR(key)));
-            env_delete(key);
-	    result = rb_assoc_new(key, val);
-	}
+    ENV_LOCK();
+    {
+        char **env = GET_ENVIRON(environ);
+        if (*env) {
+            const char *p = *env;
+            char *s = strchr(p, '=');
+            if (s) {
+                key = env_str_new(p, s-p);
+                VALUE val = env_str_new2(getenv(RSTRING_PTR(key)));
+                result = rb_assoc_new(key, val);
+            }
+        }
+        FREE_ENVIRON(environ);
     }
-    FREE_ENVIRON(environ);
+    ENV_UNLOCK();
+
+    if (!NIL_P(key)) {
+        env_delete(key);
+    }
+
     return result;
 }
 
@@ -6528,6 +6653,17 @@ env_dup(VALUE obj)
     rb_raise(rb_eTypeError, "Cannot dup ENV, use ENV.to_h to get a copy of ENV as a hash");
 }
 
+static const rb_data_type_t env_data_type = {
+    "ENV",
+    {
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+    },
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
+};
+
 /*
  *  A \Hash maps each of its unique keys to a specific value.
  *
@@ -6564,6 +6700,14 @@ env_dup(VALUE obj)
  *
  *    # Raises SyntaxError (syntax error, unexpected ':', expecting =>):
  *    h = {0: 'zero'}
+ *
+ *  Hash value can be omitted, meaning that value will be fetched from the context
+ *  by the name of the key:
+ *
+ *    x = 0
+ *    y = 100
+ *    h = {x:, y:}
+ *    h # => {:x=>0, :y=>100}
  *
  *  === Common Uses
  *
@@ -7176,6 +7320,86 @@ Init_Hash(void)
      * so most example snippets begin by resetting the contents of ENV:
      * - ENV.replace replaces ENV with a new collection of entries.
      * - ENV.clear empties ENV.
+     *
+     * == What's Here
+     *
+     * First, what's elsewhere. \Class \ENV:
+     *
+     * - Inherits from {class Object}[Object.html#class-Object-label-What-27s+Here].
+     * - Extends {module Enumerable}[Enumerable.html#module-Enumerable-label-What-27s+Here],
+     *
+     * Here, class \ENV provides methods that are useful for:
+     *
+     * - {Querying}[#class-ENV-label-Methods+for+Querying]
+     * - {Assigning}[#class-ENV-label-Methods+for+Assigning]
+     * - {Deleting}[#class-ENV-label-Methods+for+Deleting]
+     * - {Iterating}[#class-ENV-label-Methods+for+Iterating]
+     * - {Converting}[#class-ENV-label-Methods+for+Converting]
+     * - {And more ....}[#class-ENV-label-More+Methods]
+     *
+     * === Methods for Querying
+     *
+     * - ::[]:: Returns the value for the given environment variable name if it exists:
+     * - ::empty?:: Returns whether \ENV is empty.
+     * - ::has_value?, ::value?:: Returns whether the given value is in \ENV.
+     * - ::include?, ::has_key?, ::key?, ::member?:: Returns whether the given name
+                                                     is in \ENV.
+     * - ::key:: Returns the name of the first entry with the given value.
+     * - ::size, ::length:: Returns the number of entries.
+     * - ::value?:: Returns whether any entry has the given value.
+     *
+     * === Methods for Assigning
+     *
+     * - ::[]=, ::store:: Creates, updates, or deletes the named environment variable.
+     * - ::clear:: Removes every environment variable; returns \ENV:
+     * - ::update, ::merge!:: Adds to \ENV each key/value pair in the given hash.
+     * - ::replace:: Replaces the entire content of the \ENV
+     *               with the name/value pairs in the given hash.
+     *
+     * === Methods for Deleting
+     *
+     * - ::delete:: Deletes the named environment variable name if it exists.
+     * - ::delete_if:: Deletes entries selected by the block.
+     * - ::keep_if:: Deletes entries not selected by the block.
+     * - ::reject!:: Similar to #delete_if, but returns +nil+ if no change was made.
+     * - ::select!, ::filter!:: Deletes entries selected by the block.
+     * - ::shift:: Removes and returns the first entry.
+     *
+     * === Methods for Iterating
+     *
+     * - ::each, ::each_pair:: Calls the block with each name/value pair.
+     * - ::each_key:: Calls the block with each name.
+     * - ::each_value:: Calls the block with each value.
+     *
+     * === Methods for Converting
+     *
+     * - ::assoc:: Returns a 2-element array containing the name and value
+     *             of the named environment variable if it exists:
+     * - ::clone:: Returns \ENV (and issues a warning).
+     * - ::except:: Returns a hash of all name/value pairs except those given.
+     * - ::fetch:: Returns the value for the given name.
+     * - ::inspect:: Returns the contents of \ENV as a string.
+     * - ::invert:: Returns a hash whose keys are the ENV values,
+                    and whose values are the corresponding ENV names.
+     * - ::keys:: Returns an array of all names.
+     * - ::rassoc:: Returns the name and value of the first found entry
+     *              that has the given value.
+     * - ::reject:: Returns a hash of those entries not rejected by the block.
+     * - ::select, ::filter:: Returns a hash of name/value pairs selected by the block.
+     * - ::slice:: Returns a hash of the given names and their corresponding values.
+     * - ::to_a:: Returns the entries as an array of 2-element Arrays.
+     * - ::to_h:: Returns a hash of entries selected by the block.
+     * - ::to_hash:: Returns a hash of all entries.
+     * - ::to_s:: Returns the string <tt>'ENV'</tt>.
+     * - ::values:: Returns all values as an array.
+     * - ::values_at:: Returns an array of the values for the given name.
+     *
+     * === More Methods
+     *
+     * - ::dup:: Raises an exception.
+     * - ::freeze:: Raises an exception.
+     * - ::rehash:: Returns +nil+, without modifying \ENV.
+     *
      */
 
     /*
@@ -7183,8 +7407,10 @@ Init_Hash(void)
      * envtbl = rb_define_class("ENV", rb_cObject);
      */
     origenviron = environ;
-    envtbl = rb_obj_alloc(rb_cObject);
+    envtbl = TypedData_Wrap_Struct(rb_cObject, &env_data_type, NULL);
     rb_extend_object(envtbl, rb_mEnumerable);
+    FL_SET_RAW(envtbl, RUBY_FL_SHAREABLE);
+
 
     rb_define_singleton_method(envtbl, "[]", rb_f_getenv, 1);
     rb_define_singleton_method(envtbl, "fetch", env_fetch, -1);

@@ -739,6 +739,16 @@ begin
       EOC
     end
 
+    def test_not_meta_key
+      start_terminal(5, 30, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl}, startup_message: 'Multiline REPL.')
+      write("おだんご") # "だ" in UTF-8 contains "\xA0"
+      close
+      assert_screen(<<~EOC)
+        Multiline REPL.
+        prompt> おだんご
+      EOC
+    end
+
     def test_force_enter
       start_terminal(30, 120, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl}, startup_message: 'Multiline REPL.')
       write("def hoge\nend\C-p\C-e")
@@ -1184,6 +1194,37 @@ begin
         prompt> 0+ ra
         prompt> 123rand 901234
                    raise
+      EOC
+    end
+
+    def test_scroll_at_bottom_for_dialog
+      start_terminal(10, 40, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl --autocomplete}, startup_message: 'Multiline REPL.')
+      write("\n\n\n\n\n\n")
+      write("def hoge\n\n\n\n\n\n\nend\C-p\C-p\C-p\C-e")
+      write("  S")
+      close
+      assert_screen(<<~'EOC')
+        prompt> def hoge
+        prompt>
+        prompt>
+        prompt>
+        prompt>   S
+        prompt>   String
+        prompt>   Struct
+        prompt> enSymbol
+                  ScriptError
+                  Signal
+      EOC
+    end
+
+    def test_clear_dialog_in_pasting
+      start_terminal(10, 40, %W{ruby -I#{@pwd}/lib #{@pwd}/test/reline/yamatanooroti/multiline_repl --autocomplete}, startup_message: 'Multiline REPL.')
+      write("S")
+      write("tring ")
+      close
+      assert_screen(<<~'EOC')
+        Multiline REPL.
+        prompt> String
       EOC
     end
 

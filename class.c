@@ -201,7 +201,10 @@ class_alloc(VALUE flags, VALUE klass)
     alloc_size += sizeof(rb_classext_t);
 #endif
 
-    RVARGC_NEWOBJ_OF(obj, struct RClass, klass, (flags & T_MASK) | FL_PROMOTED1 /* start from age == 2 */ | (RGENGC_WB_PROTECTED_CLASS ? FL_WB_PROTECTED : 0), alloc_size);
+    flags &= T_MASK;
+    flags |= FL_PROMOTED1 /* start from age == 2 */;
+    if (RGENGC_WB_PROTECTED_CLASS) flags |= FL_WB_PROTECTED;
+    RVARGC_NEWOBJ_OF(obj, struct RClass, klass, flags, alloc_size);
 
 #if USE_RVARGC
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
@@ -1426,31 +1429,6 @@ class_descendants(VALUE klass, bool immediate_only)
 
     return data.buffer;
 }
-
-/*
- *  call-seq:
- *     descendants -> array
- *
- *  Returns an array of classes where the receiver is one of
- *  the ancestors of the class, excluding the receiver and
- *  singleton classes. The order of the returned array is not
- *  defined.
- *
- *     class A; end
- *     class B < A; end
- *     class C < B; end
- *
- *     A.descendants        #=> [B, C]
- *     B.descendants        #=> [C]
- *     C.descendants        #=> []
- */
-
-VALUE
-rb_class_descendants(VALUE klass)
-{
-    return class_descendants(klass, false);
-}
-
 
 /*
  *  call-seq:

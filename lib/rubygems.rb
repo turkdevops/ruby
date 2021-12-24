@@ -8,7 +8,7 @@
 require 'rbconfig'
 
 module Gem
-  VERSION = "3.3.0.dev".freeze
+  VERSION = "3.3.1".freeze
 end
 
 # Must be first since it unloads the prelude from 1.9.2
@@ -272,9 +272,6 @@ module Gem
 
     unless spec = specs.first
       msg = "can't find gem #{dep} with executable #{exec_name}"
-      if dep.filters_bundler? && bundler_message = Gem::BundlerVersionFinder.missing_version_message
-        msg = bundler_message
-      end
       raise Gem::GemNotFoundException, msg
     end
 
@@ -800,7 +797,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
   ##
   # Safely write a file in binary mode on all platforms.
   def self.write_binary(path, data)
-    File.open(path, File::RDWR | File::CREAT | File::BINARY | File::LOCK_EX) do |io|
+    File.open(path, File::RDWR | File::CREAT | File::LOCK_EX, binmode: true) do |io|
       io.write data
     end
   rescue *WRITE_BINARY_ERRORS
@@ -854,7 +851,7 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
     fetcher      = Gem::SpecFetcher.fetcher
     spec_tuples, = fetcher.spec_for_dependency dependency
 
-    spec, = spec_tuples.first
+    spec, = spec_tuples.last
 
     spec
   end
@@ -1293,7 +1290,12 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
     end
 
     def default_gem_load_paths
-      @default_gem_load_paths ||= $LOAD_PATH[load_path_insert_index..-1]
+      @default_gem_load_paths ||= $LOAD_PATH[load_path_insert_index..-1].map do |lp|
+        expanded = File.expand_path(lp)
+        next expanded unless File.exist?(expanded)
+
+        File.realpath(expanded)
+      end
     end
   end
 
@@ -1310,37 +1312,19 @@ An Array (#{env.inspect}) was passed in from #{caller[3]}
   autoload :Licenses,           File.expand_path('rubygems/util/licenses', __dir__)
   autoload :NameTuple,          File.expand_path('rubygems/name_tuple', __dir__)
   autoload :PathSupport,        File.expand_path('rubygems/path_support', __dir__)
-  autoload :Platform,           File.expand_path('rubygems/platform', __dir__)
   autoload :RequestSet,         File.expand_path('rubygems/request_set', __dir__)
-  autoload :Requirement,        File.expand_path('rubygems/requirement', __dir__)
   autoload :Resolver,           File.expand_path('rubygems/resolver', __dir__)
   autoload :Source,             File.expand_path('rubygems/source', __dir__)
   autoload :SourceList,         File.expand_path('rubygems/source_list', __dir__)
   autoload :SpecFetcher,        File.expand_path('rubygems/spec_fetcher', __dir__)
-  autoload :Specification,      File.expand_path('rubygems/specification', __dir__)
   autoload :Util,               File.expand_path('rubygems/util', __dir__)
   autoload :Version,            File.expand_path('rubygems/version', __dir__)
 end
 
 require_relative 'rubygems/exceptions'
+require_relative 'rubygems/specification'
 
 # REFACTOR: This should be pulled out into some kind of hacks file.
-begin
-  ##
-  # Defaults the Ruby implementation wants to provide for RubyGems
-
-  require "rubygems/defaults/#{RUBY_ENGINE}"
-rescue LoadError
-end
-
-##
-# Loads the default specs.
-Gem::Specification.load_defaults
-
-require_relative 'rubygems/core_ext/kernel_gem'
-require_relative 'rubygems/core_ext/kernel_require'
-require_relative 'rubygems/core_ext/kernel_warn'
-
 begin
   ##
   # Defaults the operating system (or packager) wants to provide for RubyGems.
@@ -1356,3 +1340,19 @@ rescue StandardError => e
     "the problem and ask for help."
   raise e.class, msg
 end
+
+begin
+  ##
+  # Defaults the Ruby implementation wants to provide for RubyGems
+
+  require "rubygems/defaults/#{RUBY_ENGINE}"
+rescue LoadError
+end
+
+##
+# Loads the default specs.
+Gem::Specification.load_defaults
+
+require_relative 'rubygems/core_ext/kernel_gem'
+require_relative 'rubygems/core_ext/kernel_require'
+require_relative 'rubygems/core_ext/kernel_warn'

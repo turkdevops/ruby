@@ -61,6 +61,8 @@ module Bundler
         Bundler.reset_settings_and_root!
       end
 
+      Bundler.self_manager.restart_with_locked_bundler_if_needed
+
       Bundler.settings.set_command_option_if_given :retry, options[:retry]
 
       current_cmd = args.last[:current_command].name
@@ -369,7 +371,9 @@ module Bundler
     method_option "source", :aliases => "-s", :type => :string
     method_option "require", :aliases => "-r", :type => :string, :banner => "Adds require path to gem. Provide false, or a path as a string."
     method_option "git", :type => :string
+    method_option "github", :type => :string
     method_option "branch", :type => :string
+    method_option "ref", :type => :string
     method_option "skip-install", :type => :boolean, :banner =>
       "Adds gem to the Gemfile but does not install it"
     method_option "optimistic", :type => :boolean, :banner => "Adds optimistic declaration of version to gem"

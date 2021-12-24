@@ -63,6 +63,7 @@ enum shareability {
 
 struct lex_context {
     unsigned int in_defined: 1;
+    unsigned int in_kwarg: 1;
     unsigned int in_argdef: 1;
     unsigned int in_def: 1;
     unsigned int in_class: 1;
@@ -165,10 +166,8 @@ enum lex_state_e {
 #define IS_lex_state_all(ls)	IS_lex_state_all_for(p->lex.state, (ls))
 
 # define SET_LEX_STATE(ls) \
-    (p->lex.state = \
-     (p->debug ? \
-      rb_parser_trace_lex_state(p, p->lex.state, (ls), __LINE__) : \
-      (enum lex_state_e)(ls)))
+    parser_set_lex_state(p, ls, __LINE__)
+static inline enum lex_state_e parser_set_lex_state(struct parser_params *p, enum lex_state_e ls, int line);
 
 typedef VALUE stack_type;
 
@@ -1760,13 +1759,13 @@ expr		: command_call
 			SET_LEX_STATE(EXPR_BEG|EXPR_LABEL);
 			p->command_start = FALSE;
 			$<ctxt>2 = p->ctxt;
-			p->ctxt.in_argdef = 1;
+			p->ctxt.in_kwarg = 1;
 			$<tbl>$ = push_pvtbl(p);
 		    }
 		  p_top_expr_body
 		    {
 			pop_pvtbl(p, $<tbl>3);
-			p->ctxt.in_argdef = $<ctxt>2.in_argdef;
+			p->ctxt.in_kwarg = $<ctxt>2.in_kwarg;
 		    /*%%%*/
 			$$ = NEW_CASE3($1, NEW_IN($4, 0, 0, &@4), &@$);
 		    /*% %*/
@@ -1778,13 +1777,13 @@ expr		: command_call
 			SET_LEX_STATE(EXPR_BEG|EXPR_LABEL);
 			p->command_start = FALSE;
 			$<ctxt>2 = p->ctxt;
-			p->ctxt.in_argdef = 1;
+			p->ctxt.in_kwarg = 1;
 			$<tbl>$ = push_pvtbl(p);
 		    }
 		  p_top_expr_body
 		    {
 			pop_pvtbl(p, $<tbl>3);
-			p->ctxt.in_argdef = $<ctxt>1.in_argdef;
+			p->ctxt.in_kwarg = $<ctxt>1.in_kwarg;
 		    /*%%%*/
 			$$ = NEW_CASE3($1, NEW_IN($4, NEW_TRUE(&@4), NEW_FALSE(&@4), &@4), &@$);
 		    /*% %*/
@@ -1819,7 +1818,12 @@ defn_head	: k_def def_name
 		    }
 		;
 
-defs_head	: k_def singleton dot_or_colon {SET_LEX_STATE(EXPR_FNAME);} def_name
+defs_head	: k_def singleton dot_or_colon
+		    {
+			SET_LEX_STATE(EXPR_FNAME);
+			p->ctxt.in_argdef = 1;
+		    }
+		  def_name
 		    {
 			SET_LEX_STATE(EXPR_ENDFN|EXPR_LABEL); /* force for args */
 			$$ = $5;
@@ -3177,8 +3181,7 @@ primary		: literal
 
 			switch (nd_type($2)) {
 			  case NODE_LASGN:
-			  case NODE_DASGN:
-			  case NODE_DASGN_CURR: /* e.each {|internal_var| a = internal_var; ... } */
+			  case NODE_DASGN: /* e.each {|internal_var| a = internal_var; ... } */
 			    $2->nd_value = internal_var;
 			    id = 0;
 			    m->nd_plen = 1;
@@ -3399,6 +3402,7 @@ k_module	: keyword_module
 k_def		: keyword_def
 		    {
 			token_info_push(p, "def", &@$);
+			p->ctxt.in_argdef = 1;
 		    }
 		;
 
@@ -3594,6 +3598,8 @@ f_any_kwrest	: f_kwrest
 		| f_no_kwarg {$$ = ID2VAL(idNil);}
 		;
 
+f_eq		: {p->ctxt.in_argdef = 0;} '=';
+
 block_args_tail	: f_block_kwarg ',' f_kwrest opt_f_block_arg
 		    {
 			$$ = new_args_tail(p, $1, $3, $4, &@3);
@@ -3706,6 +3712,7 @@ block_param_def	: '|' opt_bv_decl '|'
 		    {
 			p->cur_arg = 0;
 			p->max_numparam = ORDINAL_PARAM;
+			p->ctxt.in_argdef = 0;
 		    /*%%%*/
 			$$ = 0;
 		    /*% %*/
@@ -3715,6 +3722,7 @@ block_param_def	: '|' opt_bv_decl '|'
 		    {
 			p->cur_arg = 0;
 			p->max_numparam = ORDINAL_PARAM;
+			p->ctxt.in_argdef = 0;
 		    /*%%%*/
 			$$ = $2;
 		    /*% %*/
@@ -3725,7 +3733,7 @@ block_param_def	: '|' opt_bv_decl '|'
 
 opt_bv_decl	: opt_nl
 		    {
-		      $$ = 0;
+			$$ = 0;
 		    }
 		| opt_nl ';' bv_decls opt_nl
 		    {
@@ -3795,6 +3803,7 @@ lambda		: tLAMBDA
 
 f_larglist	: '(' f_args opt_bv_decl ')'
 		    {
+			p->ctxt.in_argdef = 0;
 		    /*%%%*/
 			$$ = $2;
 			p->max_numparam = ORDINAL_PARAM;
@@ -3803,6 +3812,7 @@ f_larglist	: '(' f_args opt_bv_decl ')'
 		    }
 		| f_args
 		    {
+			p->ctxt.in_argdef = 0;
 		    /*%%%*/
 			if (!args_info_empty_p($1->nd_ainfo))
 			    p->max_numparam = ORDINAL_PARAM;
@@ -4061,7 +4071,7 @@ p_case_body	: keyword_in
 			SET_LEX_STATE(EXPR_BEG|EXPR_LABEL);
 			p->command_start = FALSE;
 			$<ctxt>1 = p->ctxt;
-			p->ctxt.in_argdef = 1;
+			p->ctxt.in_kwarg = 1;
 			$<tbl>$ = push_pvtbl(p);
 		    }
 		    {
@@ -4071,7 +4081,7 @@ p_case_body	: keyword_in
 		    {
 			pop_pktbl(p, $<tbl>3);
 			pop_pvtbl(p, $<tbl>2);
-			p->ctxt.in_argdef = $<ctxt>1.in_argdef;
+			p->ctxt.in_kwarg = $<ctxt>1.in_kwarg;
 		    }
 		  compstmt
 		  p_cases
@@ -4245,12 +4255,12 @@ p_expr_basic	: p_value
 		    {
 			$<tbl>$ = push_pktbl(p);
 			$<ctxt>1 = p->ctxt;
-			p->ctxt.in_argdef = 0;
+			p->ctxt.in_kwarg = 0;
 		    }
 		  p_kwargs rbrace
 		    {
 			pop_pktbl(p, $<tbl>2);
-			p->ctxt.in_argdef = $<ctxt>1.in_argdef;
+			p->ctxt.in_kwarg = $<ctxt>1.in_kwarg;
 			$$ = new_hash_pattern(p, Qnone, $3, &@$);
 		    }
 		| tLBRACE rbrace
@@ -5125,6 +5135,7 @@ superclass	: '<'
 f_opt_paren_args: f_paren_args
 		| none
 		    {
+			p->ctxt.in_argdef = 0;
 			$$ = new_args_tail(p, Qnone, Qnone, Qnone, &@0);
 			$$ = new_args(p, Qnone, Qnone, Qnone, Qnone, $$, &@0);
 		    }
@@ -5138,18 +5149,21 @@ f_paren_args	: '(' f_args rparen
 		    /*% ripper: paren!($2) %*/
 			SET_LEX_STATE(EXPR_BEG);
 			p->command_start = TRUE;
+			p->ctxt.in_argdef = 0;
 		    }
                 ;
 
 f_arglist	: f_paren_args
 		|   {
 			$<ctxt>$ = p->ctxt;
+			p->ctxt.in_kwarg = 1;
 			p->ctxt.in_argdef = 1;
 			SET_LEX_STATE(p->lex.state|EXPR_LABEL); /* force for args */
 		    }
 		  f_args term
 		    {
-			p->ctxt.in_argdef = $<ctxt>1.in_argdef;
+			p->ctxt.in_kwarg = $<ctxt>1.in_kwarg;
+			p->ctxt.in_argdef = 0;
 			$$ = $2;
 			SET_LEX_STATE(EXPR_BEG);
 			p->command_start = TRUE;
@@ -5366,6 +5380,7 @@ f_label 	: tLABEL
 			arg_var(p, formal_argument(p, $1));
 			p->cur_arg = get_id($1);
 			p->max_numparam = ORDINAL_PARAM;
+			p->ctxt.in_argdef = 0;
 			$$ = $1;
 		    }
 		;
@@ -5373,6 +5388,7 @@ f_label 	: tLABEL
 f_kw		: f_label arg_value
 		    {
 			p->cur_arg = 0;
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = new_kw_arg(p, assignable(p, $1, $2, &@$), &@$);
 		    /*% %*/
@@ -5381,6 +5397,7 @@ f_kw		: f_label arg_value
 		| f_label
 		    {
 			p->cur_arg = 0;
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = new_kw_arg(p, assignable(p, $1, NODE_SPECIAL_REQUIRED_KEYWORD, &@$), &@$);
 		    /*% %*/
@@ -5390,6 +5407,7 @@ f_kw		: f_label arg_value
 
 f_block_kw	: f_label primary_value
 		    {
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = new_kw_arg(p, assignable(p, $1, $2, &@$), &@$);
 		    /*% %*/
@@ -5397,6 +5415,7 @@ f_block_kw	: f_label primary_value
 		    }
 		| f_label
 		    {
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = new_kw_arg(p, assignable(p, $1, NODE_SPECIAL_REQUIRED_KEYWORD, &@$), &@$);
 		    /*% %*/
@@ -5467,9 +5486,10 @@ f_kwrest	: kwrest_mark tIDENTIFIER
 		    }
 		;
 
-f_opt		: f_arg_asgn '=' arg_value
+f_opt		: f_arg_asgn f_eq arg_value
 		    {
 			p->cur_arg = 0;
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = NEW_OPT_ARG(0, assignable(p, $1, $3, &@$), &@$);
 		    /*% %*/
@@ -5477,9 +5497,10 @@ f_opt		: f_arg_asgn '=' arg_value
 		    }
 		;
 
-f_block_opt	: f_arg_asgn '=' primary_value
+f_block_opt	: f_arg_asgn f_eq primary_value
 		    {
 			p->cur_arg = 0;
+			p->ctxt.in_argdef = 1;
 		    /*%%%*/
 			$$ = NEW_OPT_ARG(0, assignable(p, $1, $3, &@$), &@$);
 		    /*% %*/
@@ -9296,7 +9317,7 @@ parser_yylex(struct parser_params *p)
                 dispatch_scan_event(p, tIGNORED_NL);
             }
             fallthru = FALSE;
-	    if (!c && p->ctxt.in_argdef) {
+	    if (!c && p->ctxt.in_kwarg) {
 		goto normal_newline;
 	    }
 	    goto retry;
@@ -9662,13 +9683,11 @@ parser_yylex(struct parser_params *p)
 	SET_LEX_STATE(EXPR_BEG);
 	if ((c = nextc(p)) == '.') {
 	    if ((c = nextc(p)) == '.') {
+		if (p->ctxt.in_argdef) {
+		    SET_LEX_STATE(EXPR_ENDARG);
+		    return tBDOT3;
+		}
 		if (p->lex.paren_nest == 0 && looking_at_eol_p(p)) {
-		    if (p->ctxt.in_argdef || /* def foo a, ... */
-			IS_lex_state_for(last_state, EXPR_ENDFN) || /* def foo ... */
-			0) {
-			SET_LEX_STATE(EXPR_ENDARG);
-			return tBDOT3;
-		    }
 		    rb_warn0("... at EOL, should be parenthesized?");
 		}
 		else if (p->lex.lpar_beg >= 0 && p->lex.lpar_beg+1 == p->lex.paren_nest) {
@@ -10695,6 +10714,14 @@ new_regexp(struct parser_params *p, VALUE re, VALUE opt, const YYLTYPE *loc)
 }
 #endif /* !RIPPER */
 
+static inline enum lex_state_e
+parser_set_lex_state(struct parser_params *p, enum lex_state_e ls, int line)
+{
+    if (p->debug) {
+	ls = rb_parser_trace_lex_state(p, p->lex.state, ls, line);
+    }
+    return p->lex.state = ls;
+}
 
 #ifndef RIPPER
 static const char rb_parser_lex_state_names[][8] = {
@@ -10808,14 +10835,9 @@ rb_parser_fatal(struct parser_params *p, const char *fmt, ...)
     p->debug = TRUE;
 }
 
-YYLTYPE *
-rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc)
+static YYLTYPE *
+rb_parser_set_pos(YYLTYPE *yylloc, int sourceline, int beg_pos, int end_pos)
 {
-    int sourceline = here->sourceline;
-    int beg_pos = (int)here->offset - here->quote
-	- (rb_strlen_lit("<<-") - !(here->func & STR_FUNC_INDENT));
-    int end_pos = (int)here->offset + here->length + here->quote;
-
     yylloc->beg_pos.lineno = sourceline;
     yylloc->beg_pos.column = beg_pos;
     yylloc->end_pos.lineno = sourceline;
@@ -10824,23 +10846,32 @@ rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_
 }
 
 YYLTYPE *
+rb_parser_set_location_from_strterm_heredoc(struct parser_params *p, rb_strterm_heredoc_t *here, YYLTYPE *yylloc)
+{
+    int sourceline = here->sourceline;
+    int beg_pos = (int)here->offset - here->quote
+	- (rb_strlen_lit("<<-") - !(here->func & STR_FUNC_INDENT));
+    int end_pos = (int)here->offset + here->length + here->quote;
+
+    return rb_parser_set_pos(yylloc, sourceline, beg_pos, end_pos);
+}
+
+YYLTYPE *
 rb_parser_set_location_of_none(struct parser_params *p, YYLTYPE *yylloc)
 {
-    yylloc->beg_pos.lineno = p->ruby_sourceline;
-    yylloc->beg_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
-    yylloc->end_pos.lineno = p->ruby_sourceline;
-    yylloc->end_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
-    return yylloc;
+    int sourceline = p->ruby_sourceline;
+    int beg_pos = (int)(p->lex.ptok - p->lex.pbeg);
+    int end_pos = (int)(p->lex.ptok - p->lex.pbeg);
+    return rb_parser_set_pos(yylloc, sourceline, beg_pos, end_pos);
 }
 
 YYLTYPE *
 rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc)
 {
-    yylloc->beg_pos.lineno = p->ruby_sourceline;
-    yylloc->beg_pos.column = (int)(p->lex.ptok - p->lex.pbeg);
-    yylloc->end_pos.lineno = p->ruby_sourceline;
-    yylloc->end_pos.column = (int)(p->lex.pcur - p->lex.pbeg);
-    return yylloc;
+    int sourceline = p->ruby_sourceline;
+    int beg_pos = (int)(p->lex.ptok - p->lex.pbeg);
+    int end_pos = (int)(p->lex.pcur - p->lex.pbeg);
+    return rb_parser_set_pos(yylloc, sourceline, beg_pos, end_pos);
 }
 #endif /* !RIPPER */
 
@@ -10879,11 +10910,11 @@ assignable0(struct parser_params *p, ID id, const char **err)
 			      NUMPARAM_ID_TO_IDX(id));
 		return -1;
 	    }
-	    if (dvar_curr(p, id)) return NODE_DASGN_CURR;
+	    if (dvar_curr(p, id)) return NODE_DASGN;
 	    if (dvar_defined(p, id)) return NODE_DASGN;
 	    if (local_id(p, id)) return NODE_LASGN;
 	    dyna_var(p, id);
-	    return NODE_DASGN_CURR;
+	    return NODE_DASGN;
 	}
 	else {
 	    if (!local_id(p, id)) local_var(p, id);
@@ -10910,7 +10941,6 @@ assignable(struct parser_params *p, ID id, NODE *val, const YYLTYPE *loc)
     const char *err = 0;
     int node_type = assignable0(p, id, &err);
     switch (node_type) {
-      case NODE_DASGN_CURR: return NEW_DASGN_CURR(id, val, loc);
       case NODE_DASGN: return NEW_DASGN(id, val, loc);
       case NODE_LASGN: return NEW_LASGN(id, val, loc);
       case NODE_GASGN: return NEW_GASGN(id, val, loc);
@@ -11122,7 +11152,6 @@ mark_lvar_used(struct parser_params *p, NODE *rhs)
 	}
 	break;
       case NODE_DASGN:
-      case NODE_DASGN_CURR:
 	if (dvar_defined_ref(p, rhs->nd_vid, &vidp)) {
 	    if (vidp) *vidp |= LVAR_USED;
 	}
@@ -11397,7 +11426,6 @@ node_assign(struct parser_params *p, NODE *lhs, NODE *rhs, struct lex_context ct
       case NODE_IASGN:
       case NODE_LASGN:
       case NODE_DASGN:
-      case NODE_DASGN_CURR:
       case NODE_MASGN:
       case NODE_CVASGN:
 	lhs->nd_value = rhs;
@@ -11477,7 +11505,6 @@ value_expr_check(struct parser_params *p, NODE *node)
 
 	  case NODE_LASGN:
 	  case NODE_DASGN:
-	  case NODE_DASGN_CURR:
 	  case NODE_MASGN:
 	    mark_lvar_used(p, node);
 	    return NULL;
@@ -11713,7 +11740,6 @@ assign_in_cond(struct parser_params *p, NODE *node)
       case NODE_MASGN:
       case NODE_LASGN:
       case NODE_DASGN:
-      case NODE_DASGN_CURR:
       case NODE_GASGN:
       case NODE_IASGN:
 	break;

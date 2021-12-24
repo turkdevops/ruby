@@ -1293,6 +1293,21 @@ random_s_bytes(VALUE obj, VALUE len)
     return rand_bytes(&random_mt_if, rnd, NUM2LONG(rb_to_int(len)));
 }
 
+/*
+ * call-seq: Random.seed -> integer
+ *
+ * Returns the seed value used to initialize the Ruby system PRNG.
+ * This may be used to initialize another generator with the same
+ * state at a later time, causing it to produce the same sequence of
+ * numbers.
+ *
+ *   Random.seed      #=> 1234
+ *   prng1 = Random.new(Random.seed)
+ *   prng1.seed       #=> 1234
+ *   prng1.rand(100)  #=> 47
+ *   Random.seed      #=> 1234
+ *   Random.rand(100) #=> 47
+ */
 static VALUE
 random_s_seed(VALUE obj)
 {
@@ -1469,6 +1484,7 @@ static VALUE rand_random(int argc, VALUE *argv, VALUE obj, rb_random_t *rnd);
  * call-seq:
  *   prng.rand -> float
  *   prng.rand(max) -> number
+ *   prng.rand(range) -> number
  *
  * When +max+ is an Integer, +rand+ returns a random integer greater than
  * or equal to zero and less than +max+. Unlike Kernel.rand, when +max+
@@ -1482,8 +1498,8 @@ static VALUE rand_random(int argc, VALUE *argv, VALUE obj, rb_random_t *rnd);
  *
  *   prng.rand(1.5)       # => 1.4600282860034115
  *
- * When +max+ is a Range, +rand+ returns a random number where
- * range.member?(number) == true.
+ * When +range+ is a Range, +rand+ returns a random number where
+ * <code>range.member?(number) == true</code>.
  *
  *   prng.rand(5..9)      # => one of [5, 6, 7, 8, 9]
  *   prng.rand(5...9)     # => one of [5, 6, 7, 8]
@@ -1533,10 +1549,12 @@ rand_random(int argc, VALUE *argv, VALUE obj, rb_random_t *rnd)
 
 /*
  * call-seq:
- *   prng.random_number      -> float
- *   prng.random_number(max) -> number
- *   prng.rand               -> float
- *   prng.rand(max)          -> number
+ *   prng.random_number        -> float
+ *   prng.random_number(max)   -> number
+ *   prng.random_number(range) -> number
+ *   prng.rand                 -> float
+ *   prng.rand(max)            -> number
+ *   prng.rand(range)          -> number
  *
  * Generates formatted random number from raw random bytes.
  * See Random#rand.
@@ -1641,8 +1659,12 @@ rb_f_rand(int argc, VALUE *argv, VALUE obj)
  * call-seq:
  *   Random.rand -> float
  *   Random.rand(max) -> number
+ *   Random.rand(range) -> number
+ *
+ * Returns a random number using the Ruby system PRNG.
+ *
+ * See also Random#rand.
  */
-
 static VALUE
 random_s_rand(int argc, VALUE *argv, VALUE obj)
 {
@@ -1807,7 +1829,16 @@ InitVM_Random(void)
     rb_define_private_method(CLASS_OF(rb_cRandom), "left", random_s_left, 0);
 
     {
-	/* Format raw random number as Random does */
+	/*
+         * Generate a random number in the given range as Random does
+         *
+         *   prng.random_number       #=> 0.5816771641321361
+         *   prng.random_number(1000) #=> 485
+         *   prng.random_number(1..6) #=> 3
+         *   prng.rand                #=> 0.5816771641321361
+         *   prng.rand(1000)          #=> 485
+         *   prng.rand(1..6)          #=> 3
+         */
 	VALUE m = rb_define_module_under(rb_cRandom, "Formatter");
 	rb_include_module(base, m);
 	rb_extend_object(base, m);

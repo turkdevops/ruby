@@ -294,7 +294,7 @@ module Bundler
 
         if updating_major = locked_major < current_major
           Bundler.ui.warn "Warning: the lockfile is being updated to Bundler #{current_major}, " \
-                          "after which you will be unable to return to Bundler #{@locked_bundler_version.segments.first}."
+                          "after which you will be unable to return to Bundler #{locked_major}."
         end
       end
 
@@ -379,7 +379,12 @@ module Bundler
 
       both_sources = Hash.new {|h, k| h[k] = [] }
       @dependencies.each {|d| both_sources[d.name][0] = d }
-      locked_dependencies.each {|d| both_sources[d.name][1] = d }
+
+      locked_dependencies.each do |d|
+        next if !Bundler.feature_flag.bundler_3_mode? && @locked_specs[d.name].empty?
+
+        both_sources[d.name][1] = d
+      end
 
       both_sources.each do |name, (dep, lock_dep)|
         next if dep.nil? || lock_dep.nil?

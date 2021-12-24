@@ -151,33 +151,6 @@ class Reline::LineEditor
     @screen_size = Reline::IOGate.get_screen_size
     @screen_height = @screen_size.first
     reset_variables(prompt, encoding: encoding)
-    @old_trap = Signal.trap('INT') {
-      clear_dialog
-      if @scroll_partial_screen
-        move_cursor_down(@screen_height - (@line_index - @scroll_partial_screen) - 1)
-      else
-        move_cursor_down(@highest_in_all - @line_index - 1)
-      end
-      Reline::IOGate.move_cursor_column(0)
-      scroll_down(1)
-      case @old_trap
-      when 'DEFAULT', 'SYSTEM_DEFAULT'
-        raise Interrupt
-      when 'IGNORE'
-        # Do nothing
-      when 'EXIT'
-        exit
-      else
-        @old_trap.call
-      end
-    }
-    begin
-      @old_tstp_trap = Signal.trap('TSTP') {
-        Reline::IOGate.ungetc("\C-z".ord)
-        @old_tstp_trap.call if @old_tstp_trap.respond_to?(:call)
-      }
-    rescue ArgumentError
-    end
     Reline::IOGate.set_winch_handler do
       @resized = true
     end
@@ -241,6 +214,36 @@ class Reline::LineEditor
       Reline::IOGate.move_cursor_column((prompt_width + @cursor) % @screen_size.last)
       @highest_in_this = calculate_height_by_width(prompt_width + @cursor_max)
       @rerender_all = true
+    end
+  end
+
+  def set_signal_handlers
+    @old_trap = Signal.trap('INT') {
+      clear_dialog
+      if @scroll_partial_screen
+        move_cursor_down(@screen_height - (@line_index - @scroll_partial_screen) - 1)
+      else
+        move_cursor_down(@highest_in_all - @line_index - 1)
+      end
+      Reline::IOGate.move_cursor_column(0)
+      scroll_down(1)
+      case @old_trap
+      when 'DEFAULT', 'SYSTEM_DEFAULT'
+        raise Interrupt
+      when 'IGNORE'
+        # Do nothing
+      when 'EXIT'
+        exit
+      else
+        @old_trap.call if @old_trap.respond_to?(:call)
+      end
+    }
+    begin
+      @old_tstp_trap = Signal.trap('TSTP') {
+        Reline::IOGate.ungetc("\C-z".ord)
+        @old_tstp_trap.call if @old_tstp_trap.respond_to?(:call)
+      }
+    rescue ArgumentError
     end
   end
 
@@ -634,8 +637,12 @@ class Reline::LineEditor
   end
 
   def add_dialog_proc(name, p, context = nil)
-    return if @dialogs.any? { |d| d.name == name }
-    @dialogs << Dialog.new(name, @config, DialogProcScope.new(self, @config, p, context))
+    dialog = Dialog.new(name, @config, DialogProcScope.new(self, @config, p, context))
+    if index = @dialogs.find_index { |d| d.name == name }
+      @dialogs[index] = dialog
+    else
+      @dialogs << dialog
+    end
   end
 
   DIALOG_DEFAULT_HEIGHT = 20
@@ -651,6 +658,7 @@ class Reline::LineEditor
 
   private def render_each_dialog(dialog, cursor_column)
     if @in_pasting
+      clear_each_dialog(dialog)
       dialog.contents = nil
       dialog.trap_key = nil
       return
@@ -706,19 +714,18 @@ class Reline::LineEditor
       dialog.scrollbar_pos = nil
     end
     upper_space = @first_line_started_from - @started_from
-    lower_space = @highest_in_all - @first_line_started_from - @started_from - 1
     dialog.column = dialog_render_info.pos.x
     dialog.width += @block_elem_width if dialog.scrollbar_pos
     diff = (dialog.column + dialog.width) - (@screen_size.last)
     if diff > 0
       dialog.column -= diff
     end
-    if (lower_space + @rest_height - dialog_render_info.pos.y) >= height
+    if (@rest_height - dialog_render_info.pos.y) >= height
       dialog.vertical_offset = dialog_render_info.pos.y + 1
     elsif upper_space >= height
       dialog.vertical_offset = dialog_render_info.pos.y - height
     else
-      if (lower_space + @rest_height - dialog_render_info.pos.y) < height
+      if (@rest_height - dialog_render_info.pos.y) < height
         scroll_down(height + dialog_render_info.pos.y)
         move_cursor_up(height + dialog_render_info.pos.y)
       end
@@ -2022,8 +2029,16 @@ class Reline::LineEditor
     last_byte_size = Reline::Unicode.get_prev_mbchar_size(@line, @byte_pointer)
     @byte_pointer += bytesize
     last_mbchar = @line.byteslice((@byte_pointer - bytesize - last_byte_size), last_byte_size)
-    if last_byte_size != 0 and (last_mbchar + str).grapheme_clusters.size == 1
-      width = 0
+    combined_char = last_mbchar + str
+    if last_byte_size != 0 and combined_char.grapheme_clusters.size == 1
+      # combined char
+      last_mbchar_width = Reline::Unicode.get_mbchar_width(last_mbchar)
+      combined_char_width = Reline::Unicode.get_mbchar_width(combined_char)
+      if combined_char_width > last_mbchar_width
+        width = combined_char_width - last_mbchar_width
+      else
+        width = 0
+      end
     end
     @cursor += width
     @cursor_max += width

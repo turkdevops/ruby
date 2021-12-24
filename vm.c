@@ -1182,7 +1182,9 @@ rb_proc_ractor_make_shareable(VALUE self)
         if (proc->block.type != block_type_iseq) rb_raise(rb_eRuntimeError, "not supported yet");
 
         if (!rb_ractor_shareable_p(vm_block_self(&proc->block))) {
-            rb_raise(rb_eRactorIsolationError, "Proc's self is not shareable");
+            rb_raise(rb_eRactorIsolationError,
+                     "Proc's self is not shareable: %" PRIsVALUE,
+                     self);
         }
 
         VALUE read_only_variables = Qfalse;
@@ -1863,8 +1865,13 @@ rb_vm_check_optimizable_mid(VALUE mid)
 }
 
 static int
-vm_redefinition_check_method_type(const rb_method_definition_t *def)
+vm_redefinition_check_method_type(const rb_method_entry_t *me)
 {
+    if (me->called_id != me->def->original_id) {
+        return FALSE;
+    }
+
+    const rb_method_definition_t *def = me->def;
     switch (def->type) {
       case VM_METHOD_TYPE_CFUNC:
       case VM_METHOD_TYPE_OPTIMIZED:
@@ -1882,12 +1889,14 @@ rb_vm_check_redefinition_opt_method(const rb_method_entry_t *me, VALUE klass)
             RB_TYPE_P(RBASIC_CLASS(klass), T_CLASS)) {
        klass = RBASIC_CLASS(klass);
     }
-    if (vm_redefinition_check_method_type(me->def)) {
+    if (vm_redefinition_check_method_type(me)) {
         if (st_lookup(vm_opt_method_def_table, (st_data_t)me->def, &bop)) {
             int flag = vm_redefinition_check_flag(klass);
-            rb_yjit_bop_redefined(klass, me, (enum ruby_basic_operators)bop);
-	    ruby_vm_redefined_flag[bop] |= flag;
-	}
+            if (flag != 0) {
+                rb_yjit_bop_redefined(klass, me, (enum ruby_basic_operators)bop);
+                ruby_vm_redefined_flag[bop] |= flag;
+            }
+        }
     }
 }
 
@@ -1915,7 +1924,7 @@ add_opt_method(VALUE klass, ID mid, VALUE bop)
 {
     const rb_method_entry_t *me = rb_method_entry_at(klass, mid);
 
-    if (me && vm_redefinition_check_method_type(me->def)) {
+    if (me && vm_redefinition_check_method_type(me)) {
 	st_insert(vm_opt_method_def_table, (st_data_t)me->def, (st_data_t)bop);
 	st_insert(vm_opt_mid_table, (st_data_t)mid, (st_data_t)Qtrue);
     }
@@ -2533,6 +2542,8 @@ rb_vm_update_references(void *ptr)
         vm->top_self = rb_gc_location(vm->top_self);
         vm->orig_progname = rb_gc_location(vm->orig_progname);
 
+        rb_gc_update_tbl_refs(vm->overloaded_cme_table);
+
         if (vm->coverages) {
             vm->coverages = rb_gc_location(vm->coverages);
             vm->me2counter = rb_gc_location(vm->me2counter);
@@ -2630,9 +2641,10 @@ rb_vm_mark(void *ptr)
 	    rb_mark_tbl(vm->loading_table);
 	}
 
-	rb_gc_mark_values(RUBY_NSIG, vm->trap_list.cmd);
+        rb_gc_mark_values(RUBY_NSIG, vm->trap_list.cmd);
 
         rb_id_table_foreach_values(vm->negative_cme_table, vm_mark_negative_cme, NULL);
+        rb_mark_tbl_no_pin(vm->overloaded_cme_table);
         for (i=0; i<VM_GLOBAL_CC_CACHE_TABLE_SIZE; i++) {
             const struct rb_callcache *cc = vm->global_cc_cache_table[i];
 
@@ -3261,13 +3273,13 @@ core_hash_merge_kwd(VALUE hash, VALUE kw)
 
 /* Returns true if JIT is enabled */
 static VALUE
-jit_enabled_p(VALUE _)
+mjit_enabled_p(VALUE _)
 {
     return RBOOL(mjit_enabled);
 }
 
 static VALUE
-jit_pause_m(int argc, VALUE *argv, RB_UNUSED_VAR(VALUE self))
+mjit_pause_m(int argc, VALUE *argv, RB_UNUSED_VAR(VALUE self))
 {
     VALUE options = Qnil;
     VALUE wait = Qtrue;
@@ -3284,7 +3296,7 @@ jit_pause_m(int argc, VALUE *argv, RB_UNUSED_VAR(VALUE self))
 }
 
 static VALUE
-jit_resume_m(VALUE _)
+mjit_resume_m(VALUE _)
 {
     return mjit_resume();
 }
@@ -3421,7 +3433,6 @@ Init_VM(void)
     VALUE opts;
     VALUE klass;
     VALUE fcore;
-    VALUE jit;
 
     /*
      * Document-class: RubyVM
@@ -3470,17 +3481,14 @@ Init_VM(void)
     rb_gc_register_mark_object(fcore);
     rb_mRubyVMFrozenCore = fcore;
 
-    /* ::RubyVM::JIT
+    /* ::RubyVM::MJIT
      * Provides access to the Method JIT compiler of MRI.
      * Of course, this module is MRI specific.
      */
-    jit = rb_define_module_under(rb_cRubyVM, "JIT");
-    rb_define_singleton_method(jit, "enabled?", jit_enabled_p, 0);
-    rb_define_singleton_method(jit, "pause", jit_pause_m, -1);
-    rb_define_singleton_method(jit, "resume", jit_resume_m, 0);
-    /* RubyVM::MJIT for short-term backward compatibility */
-    rb_const_set(rb_cRubyVM, rb_intern("MJIT"), jit);
-    rb_deprecate_constant(rb_cRubyVM, "MJIT");
+    VALUE mjit = rb_define_module_under(rb_cRubyVM, "MJIT");
+    rb_define_singleton_method(mjit, "enabled?", mjit_enabled_p, 0);
+    rb_define_singleton_method(mjit, "pause", mjit_pause_m, -1);
+    rb_define_singleton_method(mjit, "resume", mjit_resume_m, 0);
 
     /*
      * Document-class: Thread
@@ -3798,6 +3806,7 @@ Init_BareVM(void)
     vm->objspace = rb_objspace_alloc();
     ruby_current_vm_ptr = vm;
     vm->negative_cme_table = rb_id_table_create(16);
+    vm->overloaded_cme_table = st_init_numtable();
 
     Init_native_thread(th);
     th->vm = vm;

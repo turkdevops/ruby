@@ -1,3 +1,18 @@
+assert_equal '18374962167983112447', %q{
+  # regression test for incorrectly discarding 32 bits of a pointer when it
+  # comes to default values.
+  def large_literal_default(n: 0xff00_fabcafe0_00ff)
+    n
+  end
+
+  def call_graph_root
+    large_literal_default
+  end
+
+  call_graph_root
+  call_graph_root
+}
+
 assert_normal_exit %q{
   # regression test for a leak caught by an asert on --yjit-call-threshold=2
   Foo = 1
@@ -2211,6 +2226,22 @@ assert_equal '[1]', %q{
   5.times.map { kwargs(value: 1) }.uniq
 }
 
+assert_equal '[:ok]', %q{
+  def kwargs(value:)
+    value
+  end
+
+  5.times.map { kwargs() rescue :ok }.uniq
+}
+
+assert_equal '[:ok]', %q{
+  def kwargs(a:, b: nil)
+    value
+  end
+
+  5.times.map { kwargs(b: 123) rescue :ok }.uniq
+}
+
 assert_equal '[[1, 2]]', %q{
   def kwargs(left:, right:)
     [left, right]
@@ -2231,6 +2262,24 @@ assert_equal '[[1, 2]]', %q{
 
   5.times.map { kwargs(1, kwarg: 2) }.uniq
 }
+
+# optional and keyword args
+assert_equal '[[1, 2, 3]]', %q{
+  def opt_and_kwargs(a, b=2, c: nil)
+    [a,b,c]
+  end
+
+  5.times.map { opt_and_kwargs(1, c: 3) }.uniq
+}
+
+assert_equal '[[1, 2, 3]]', %q{
+  def opt_and_kwargs(a, b=nil, c: nil)
+    [a,b,c]
+  end
+
+  5.times.map { opt_and_kwargs(1, 2, c: 3) }.uniq
+}
+
 
 # leading and keyword arguments are swapped into the right order
 assert_equal '[[1, 2, 3, 4, 5, 6]]', %q{

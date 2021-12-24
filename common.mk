@@ -176,6 +176,7 @@ GOLFPRELUDES  = {$(srcdir)}golf_prelude.c
 
 SCRIPT_ARGS   =	--dest-dir="$(DESTDIR)" \
 		--extout="$(EXTOUT)" \
+		--ext-build-dir="./ext" \
 		--mflags="$(MFLAGS)" \
 		--make-flags="$(MAKEFLAGS)"
 EXTMK_ARGS    =	$(SCRIPT_ARGS) --extension $(EXTS) --extstatic $(EXTSTATIC) \
@@ -7172,12 +7173,16 @@ hash.$(OBJEXT): {$(VPATH)}onigmo.h
 hash.$(OBJEXT): {$(VPATH)}oniguruma.h
 hash.$(OBJEXT): {$(VPATH)}probes.dmyh
 hash.$(OBJEXT): {$(VPATH)}probes.h
+hash.$(OBJEXT): {$(VPATH)}ractor.h
 hash.$(OBJEXT): {$(VPATH)}ruby_assert.h
 hash.$(OBJEXT): {$(VPATH)}st.h
 hash.$(OBJEXT): {$(VPATH)}subst.h
 hash.$(OBJEXT): {$(VPATH)}symbol.h
+hash.$(OBJEXT): {$(VPATH)}thread_native.h
 hash.$(OBJEXT): {$(VPATH)}transient_heap.h
 hash.$(OBJEXT): {$(VPATH)}util.h
+hash.$(OBJEXT): {$(VPATH)}vm_debug.h
+hash.$(OBJEXT): {$(VPATH)}vm_sync.h
 inits.$(OBJEXT): $(hdrdir)/ruby.h
 inits.$(OBJEXT): $(hdrdir)/ruby/ruby.h
 inits.$(OBJEXT): $(top_srcdir)/internal/compilers.h
@@ -7580,7 +7585,9 @@ io_buffer.$(OBJEXT): {$(VPATH)}backward/2/stdarg.h
 io_buffer.$(OBJEXT): {$(VPATH)}config.h
 io_buffer.$(OBJEXT): {$(VPATH)}defines.h
 io_buffer.$(OBJEXT): {$(VPATH)}encoding.h
+io_buffer.$(OBJEXT): {$(VPATH)}fiber/scheduler.h
 io_buffer.$(OBJEXT): {$(VPATH)}intern.h
+io_buffer.$(OBJEXT): {$(VPATH)}internal.h
 io_buffer.$(OBJEXT): {$(VPATH)}internal/anyargs.h
 io_buffer.$(OBJEXT): {$(VPATH)}internal/arithmetic.h
 io_buffer.$(OBJEXT): {$(VPATH)}internal/arithmetic/char.h
