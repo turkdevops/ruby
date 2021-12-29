@@ -964,8 +964,6 @@ void
 rb_transient_heap_finish_marking(void)
 {
     ASSERT_vm_locking();
-    RUBY_DEBUG_LOG("");
-
     struct transient_heap* theap = transient_heap_get();
 
     RUBY_DEBUG_LOG("objects:%d, marked:%d",

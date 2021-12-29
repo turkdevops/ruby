@@ -847,8 +847,15 @@ typedef struct rb_objspace {
 } rb_objspace_t;
 
 
+#if defined(__APPLE__) && defined(__LP64__) && !defined(HEAP_PAGE_ALIGN_LOG)
+/* for slow mmap: 64KiB */
+#define HEAP_PAGE_ALIGN_LOG 16
+#endif
+
+#ifndef HEAP_PAGE_ALIGN_LOG
 /* default tiny heap size: 16KB */
 #define HEAP_PAGE_ALIGN_LOG 14
+#endif
 #define CEILDIV(i, mod) (((i) + (mod) - 1)/(mod))
 enum {
     HEAP_PAGE_ALIGN = (1UL << HEAP_PAGE_ALIGN_LOG),
@@ -2730,10 +2737,7 @@ rb_data_object_check(VALUE klass)
 {
     if (klass != rb_cObject && (rb_get_alloc_func(klass) == rb_class_allocate_instance)) {
         rb_undef_alloc_func(klass);
-#if RUBY_VERSION_SINCE(3, 2)
-        RBIMPL_TODO("enable the warning at this release");
         rb_warn("undefining the allocator of T_DATA class %"PRIsVALUE, klass);
-#endif
     }
 }
 

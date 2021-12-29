@@ -1064,25 +1064,17 @@ $stderr = $stdout; raise "\x82\xa0"') do |outs, errs, status|
   end
 
   def test_warn_deprecated_backwards_compatibility_category
-    warning = capture_warning_warn { Dir.exists?("non-existent") }
+    skip "no method to test"
+
+    warning = capture_warning_warn { }
 
     assert_match(/deprecated/, warning[0])
   end
 
   def test_warn_deprecated_category
-    warning = capture_warning_warn(category: true) { Dir.exists?("non-existent") }
+    skip "no method to test"
 
-    assert_equal :deprecated, warning[0][1]
-  end
-
-  def test_warn_deprecated_to_remove_backwards_compatibility_category
-    warning = capture_warning_warn { Object.new.tainted? }
-
-    assert_match(/deprecated/, warning[0])
-  end
-
-  def test_warn_deprecated_to_remove_category
-    warning = capture_warning_warn(category: true) { Object.new.tainted? }
+    warning = capture_warning_warn(category: true) { }
 
     assert_equal :deprecated, warning[0][1]
   end

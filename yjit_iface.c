@@ -1180,7 +1180,8 @@ rb_yjit_call_threshold(void)
     return rb_yjit_opts.call_threshold;
 }
 
-# define PTR2NUM(x)   (LONG2NUM((long)(x)))
+/* assume sizeof(void*) == sizeof(size_t) */
+# define PTR2NUM(x)   (SSIZET2NUM((ssize_t)(x)))
 
 /**
  *  call-seq: block.id -> unique_id
@@ -1277,6 +1278,7 @@ rb_yjit_init(struct rb_yjit_options *options)
 
     // YJIT::Block (block version, code block)
     cYjitBlock = rb_define_class_under(mYjit, "Block", rb_cObject);
+    rb_undef_alloc_func(cYjitBlock);
     rb_define_method(cYjitBlock, "address", block_address, 0);
     rb_define_method(cYjitBlock, "id", block_id, 0);
     rb_define_method(cYjitBlock, "code", block_code, 0);
