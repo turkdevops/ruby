@@ -7,6 +7,19 @@ Note that each entry is kept to a minimum, see links for details.
 
 ## Language changes
 
+* Anonymous rest and keyword rest arguments can now be passed as
+  arguments, instead of just used in method parameters.
+  [[Feature #18351]]
+
+    ```ruby
+    def foo(*)
+      bar(*)
+    end
+    def baz(**)
+      quux(**)
+    end
+    ```
+
 ## Command line options
 
 ## Core classes updates
@@ -19,6 +32,7 @@ Note: We're only listing outstanding class updates.
     * RubyGems 3.4.0.dev
     * bundler 2.4.0.dev
     * io-console 0.5.11
+    * reline 0.3.1
 *   The following bundled gems are updated.
     * typeprof 0.21.2
 *   The following default gems are now bundled gems.
@@ -27,9 +41,23 @@ Note: We're only listing outstanding class updates.
 
 Note: Excluding feature bug fixes.
 
+### Removed methods
+
+The following deprecated methods are removed.
+
+* `Dir.exists?`
+* `File.exists?`
+
 ## Stdlib compatibility issues
 
 ## C API updates
+
+### Removed C APIs
+
+The following deprecated APIs are removed.
+
+* `rb_cData` variable.
+* "taintedness" and "trustedness" functions.
 
 ## Implementation improvements
 
@@ -52,3 +80,5 @@ Note: Excluding feature bug fixes.
 ## IRB Autocomplete and Document Display
 
 ## Miscellaneous changes
+
+[Feature #18351]: https://bugs.ruby-lang.org/issues/18351
