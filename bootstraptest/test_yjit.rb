@@ -1,3 +1,34 @@
+assert_equal '2022', %q{
+ def contrivance(hash, key)
+    # Expect this to compile to an `opt_aref`.
+    hash[key]
+
+    # The [] call above tracks that the `hash` local has a VALUE that
+    # is a heap pointer and the guard for the Kernel#itself call below
+    # doesn't check that it's a heap pointer VALUE.
+    #
+    # As you can see from the crash, the call to rb_hash_aref() can set the
+    # `hash` local, making eliding the heap object guard unsound.
+    hash.itself
+  end
+
+  # This is similar to ->(recv, mid) { send(recv, mid).local_variable_set(...) }.
+  # By composing we avoid creating new Ruby frames and so sending :binding
+  # captures the environment of the frame that does the missing key lookup.
+  # We use it to capture the environment inside of `contrivance`.
+  cap_then_set =
+    Kernel.instance_method(:send).method(:bind_call).to_proc >>
+      ->(binding) { binding.local_variable_set(:hash, 2022) }
+  special_missing = Hash.new(&cap_then_set)
+
+  # Make YJIT speculate that it's a hash and generate code
+  # that calls rb_hash_aref().
+  contrivance({}, :warmup)
+  contrivance({}, :warmup)
+
+  contrivance(special_missing, :binding)
+}
+
 assert_equal '18374962167983112447', %q{
   # regression test for incorrectly discarding 32 bits of a pointer when it
   # comes to default values.
@@ -2431,6 +2462,57 @@ assert_equal '[[1, 2, 3, 4]]', %q{
   5.times.map { foo(specified: 2, required: 1) }.uniq
 }
 
+# cfunc kwargs
+assert_equal '{:foo=>123}', %q{
+  def foo(bar)
+    bar.store(:value, foo: 123)
+    bar[:value]
+  end
+
+  foo({})
+  foo({})
+}
+
+# cfunc kwargs
+assert_equal '{:foo=>123}', %q{
+  def foo(bar)
+    bar.replace(foo: 123)
+  end
+
+  foo({})
+  foo({})
+}
+
+# cfunc kwargs
+assert_equal '{:foo=>123, :bar=>456}', %q{
+  def foo(bar)
+    bar.replace(foo: 123, bar: 456)
+  end
+
+  foo({})
+  foo({})
+}
+
+# variadic cfunc kwargs
+assert_equal '{:foo=>123}', %q{
+  def foo(bar)
+    bar.merge(foo: 123)
+  end
+
+  foo({})
+  foo({})
+}
+
+# optimized cfunc kwargs
+assert_equal 'false', %q{
+  def foo
+    :foo.eql?(foo: :foo)
+  end
+
+  foo
+  foo
+}
+
 # attr_reader on frozen object
 assert_equal 'false', %q{
   class Foo
@@ -2734,4 +2816,24 @@ assert_equal 'ok', %q{
   end
   foo(s) rescue :ok
   foo(s) rescue :ok
+}
+
+# File.join is a cfunc accepting variable arguments as a Ruby array (argc = -2)
+assert_equal 'foo/bar', %q{
+  def foo
+    File.join("foo", "bar")
+  end
+
+  foo
+  foo
+}
+
+# File.join is a cfunc accepting variable arguments as a Ruby array (argc = -2)
+assert_equal '', %q{
+  def foo
+    File.join()
+  end
+
+  foo
+  foo
 }

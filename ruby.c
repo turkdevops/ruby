@@ -191,7 +191,9 @@ struct ruby_cmdline_options {
 #if USE_MJIT
     struct mjit_options mjit;
 #endif
+#if YJIT_SUPPORTED_P
     struct rb_yjit_options yjit;
+#endif
 
     int sflag, xflag;
     unsigned int warning: 1;
@@ -318,15 +320,19 @@ usage(const char *name, int help, int highlight, int columns)
 	M("-W[level=2|:category]",   "",	   "set warning level; 0=silence, 1=medium, 2=verbose"),
 	M("-x[directory]", "",			   "strip off text before #!ruby line and perhaps cd to directory"),
         M("--jit",         "",                     "enable JIT for the platform, same as " PLATFORM_JIT_OPTION " (experimental)"),
+#if USE_MJIT
         M("--mjit",        "",                     "enable C compiler-based JIT compiler (experimental)"),
+#endif
+#if YJIT_SUPPORTED_P
         M("--yjit",        "",                     "enable in-process JIT compiler (experimental)"),
+#endif
 	M("-h",		   "",			   "show this message, --help for more info"),
     };
     static const struct message help_msg[] = {
 	M("--copyright",                            "", "print the copyright"),
 	M("--dump={insns|parsetree|...}[,...]",     "",
           "dump debug information. see below for available dump list"),
-	M("--enable={mjit|rubyopt|...}[,...]", ", --disable={mjit|rubyopt|...}[,...]",
+	M("--enable={jit|rubyopt|...}[,...]", ", --disable={jit|rubyopt|...}[,...]",
 	  "enable or disable features. see below for available features"),
 	M("--external-encoding=encoding",           ", --internal-encoding=encoding",
 	  "specify the default external or internal character encoding"),
@@ -348,31 +354,39 @@ usage(const char *name, int help, int highlight, int columns)
 	M("did_you_mean", "",   "did_you_mean (default: "DEFAULT_RUBYGEMS_ENABLED")"),
 	M("rubyopt", "",        "RUBYOPT environment variable (default: enabled)"),
 	M("frozen-string-literal", "", "freeze all string literals (default: disabled)"),
+#if USE_MJIT
         M("mjit", "",           "C compiler-based JIT compiler (default: disabled)"),
+#endif
+#if YJIT_SUPPORTED_P
         M("yjit", "",           "in-process JIT compiler (default: disabled)"),
+#endif
     };
     static const struct message warn_categories[] = {
         M("deprecated", "",       "deprecated features"),
         M("experimental", "",     "experimental features"),
     };
+#if USE_MJIT
     static const struct message mjit_options[] = {
         M("--mjit-warnings",      "", "Enable printing JIT warnings"),
         M("--mjit-debug",         "", "Enable JIT debugging (very slow), or add cflags if specified"),
         M("--mjit-wait",          "", "Wait until JIT compilation finishes every time (for testing)"),
         M("--mjit-save-temps",    "", "Save JIT temporary files in $TMP or /tmp (for testing)"),
         M("--mjit-verbose=num",   "", "Print JIT logs of level num or less to stderr (default: 0)"),
-        M("--mjit-max-cache=num", "", "Max number of methods to be JIT-ed in a cache (default: 100)"),
+        M("--mjit-max-cache=num", "", "Max number of methods to be JIT-ed in a cache (default: 10000)"),
         M("--mjit-min-calls=num", "", "Number of calls to trigger JIT (for testing, default: 10000)"),
     };
+#endif
+#if YJIT_SUPPORTED_P
     static const struct message yjit_options[] = {
 #if YJIT_STATS
-        M("--yjit-stats",             "", "Enable collecting YJIT statistics"),
+        M("--yjit-stats",              "", "Enable collecting YJIT statistics"),
 #endif
-        M("--yjit-exec-mem-size=num", "", "Size of executable memory block in MiB (default: 256)"),
-        M("--yjit-call-threshold",    "", "Number of calls to trigger JIT (default: 10)"),
-        M("--yjit-max-versions",      "", "Maximum number of versions per basic block (default: 4)"),
-        M("--yjit-greedy-versioning", "", "Greedy versioning mode (default: disabled)"),
+        M("--yjit-exec-mem-size=num",  "", "Size of executable memory block in MiB (default: 256)"),
+        M("--yjit-call-threshold=num", "", "Number of calls to trigger JIT (default: 10)"),
+        M("--yjit-max-versions=num",   "", "Maximum number of versions per basic block (default: 4)"),
+        M("--yjit-greedy-versioning",  "", "Greedy versioning mode (default: disabled)"),
     };
+#endif
     int i;
     const char *sb = highlight ? esc_standout+1 : esc_none;
     const char *se = highlight ? esc_reset : esc_none;
@@ -399,12 +413,16 @@ usage(const char *name, int help, int highlight, int columns)
     printf("%s""Warning categories:%s\n", sb, se);
     for (i = 0; i < numberof(warn_categories); ++i)
 	SHOW(warn_categories[i]);
+#if USE_MJIT
     printf("%s""MJIT options (experimental):%s\n", sb, se);
     for (i = 0; i < numberof(mjit_options); ++i)
 	SHOW(mjit_options[i]);
+#endif
+#if YJIT_SUPPORTED_P
     printf("%s""YJIT options (experimental):%s\n", sb, se);
     for (i = 0; i < numberof(yjit_options); ++i)
         SHOW(yjit_options[i]);
+#endif
 }
 
 #define rubylib_path_new rb_str_new
@@ -1082,20 +1100,15 @@ set_option_encoding_once(const char *type, VALUE *name, const char *e, long elen
 #define yjit_opt_match_arg(s, l, name) \
     opt_match(s, l, name) && (*(s) && *(s+1) ? 1 : (rb_raise(rb_eRuntimeError, "--yjit-" name " needs an argument"), 0))
 
-static bool
+#if YJIT_SUPPORTED_P
+static void
 setup_yjit_options(const char *s, struct rb_yjit_options *yjit_opt)
 {
-    const char prefix[] = "yjit-";
-    if (strncmp(prefix, s, sizeof(prefix)-1) != 0) {
-        return false;
-    }
-    s += sizeof(prefix)-1;
     const size_t l = strlen(s);
     if (l == 0) {
-        return false;
+        return;
     }
-
-    if (yjit_opt_match_arg(s, l, "exec-mem-size")) {
+    else if (yjit_opt_match_arg(s, l, "exec-mem-size")) {
         yjit_opt->exec_mem_size = atoi(s + 1);
     }
     else if (yjit_opt_match_arg(s, l, "call-threshold")) {
@@ -1117,16 +1130,17 @@ setup_yjit_options(const char *s, struct rb_yjit_options *yjit_opt)
         rb_raise(rb_eRuntimeError,
                  "invalid yjit option `%s' (--help will show valid yjit options)", s);
     }
-    return true;
 }
+#endif
 
 #if USE_MJIT
 static void
 setup_mjit_options(const char *s, struct mjit_options *mjit_opt)
 {
-    if (*s != '-') return;
-    const size_t l = strlen(++s);
-    if (*s == 0) return;
+    const size_t l = strlen(s);
+    if (l == 0) {
+        return;
+    }
     else if (opt_match_noarg(s, l, "warnings")) {
         mjit_opt->warnings = 1;
     }
@@ -1458,7 +1472,8 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
 #	define is_option_with_arg(name, allow_hyphen, allow_envopt)	\
 	    is_option_with_optarg(name, allow_hyphen, allow_envopt, Qtrue, Qtrue)
 #	define is_option_with_optarg(name, allow_hyphen, allow_envopt, needs_arg, next_arg) \
-	    (strncmp((name), s, n = sizeof(name) - 1) == 0 && is_option_end(s[n], (allow_hyphen)) ? \
+	    (strncmp((name), s, n = sizeof(name) - 1) == 0 && is_option_end(s[n], (allow_hyphen)) && \
+             (s[n] != '-' || s[n+1]) ? \
 	     (check_envopt(name, (allow_envopt)), s += n, \
 	      need_argument(name, s, needs_arg, next_arg), 1) : 0)
 
@@ -1534,17 +1549,18 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
                 FEATURE_SET(opt->features, FEATURE_BIT(yjit));
 #endif
             }
-            else if (strncmp("mjit", s, 4) == 0) {
+            else if (is_option_with_optarg("mjit", '-', true, false, false)) {
 #if USE_MJIT
                 FEATURE_SET(opt->features, FEATURE_BIT(mjit));
-                setup_mjit_options(s + 4, &opt->mjit);
+                setup_mjit_options(s, &opt->mjit);
 #else
                 rb_warn("MJIT support is disabled.");
 #endif
             }
-            else if (strcmp("yjit", s) == 0 || setup_yjit_options(s, &opt->yjit)) {
-#if USE_MJIT
+            else if (is_option_with_optarg("yjit", '-', true, false, false)) {
+#if YJIT_SUPPORTED_P
                 FEATURE_SET(opt->features, FEATURE_BIT(yjit));
+                setup_yjit_options(s, &opt->yjit);
 #else
                 rb_warn("Ruby was built without JIT support");
 #endif
@@ -1921,7 +1937,9 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
             exit(1);
         }
 #endif
+#if YJIT_SUPPORTED_P
         rb_yjit_init(&opt->yjit);
+#endif
     }
     if (opt->dump & (DUMP_BIT(version) | DUMP_BIT(version_v))) {
 #if USE_MJIT
@@ -2062,7 +2080,10 @@ process_options(int argc, char **argv, ruby_cmdline_options_t *opt)
         for (long i = loaded_before_enc; i < RARRAY_LEN(loaded_features); ++i) {
 	    VALUE path = RARRAY_AREF(loaded_features, i);
             if (!(path = copy_str(path, IF_UTF8_PATH(uenc, lenc), true))) continue;
-            modified = true;
+            if (!modified) {
+                rb_ary_modify(loaded_features);
+                modified = true;
+            }
 	    RARRAY_ASET(loaded_features, i, path);
         }
         if (modified) {

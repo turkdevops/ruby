@@ -208,6 +208,9 @@ class_alloc(VALUE flags, VALUE klass)
 
 #if USE_RVARGC
     memset(RCLASS_EXT(obj), 0, sizeof(rb_classext_t));
+# if SIZEOF_SERIAL_T != SIZEOF_VALUE
+    RCLASS(obj)->class_serial_ptr = ZALLOC(rb_serial_t);
+# endif
 #else
     obj->ptr = ZALLOC(rb_classext_t);
 #endif
@@ -406,7 +409,6 @@ rb_module_check_initializable(VALUE mod)
     if (!RMODULE_UNINITIALIZED(mod)) {
         rb_raise(rb_eTypeError, "already initialized module");
     }
-    RB_OBJ_WRITE(mod, &RCLASS(mod)->super, 0);
 }
 
 /* :nodoc: */

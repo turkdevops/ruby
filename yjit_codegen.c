@@ -184,6 +184,10 @@ jit_prepare_routine_call(jitstate_t *jit, ctx_t *ctx, x86opnd_t scratch_reg)
     jit->record_boundary_patch_point = true;
     jit_save_pc(jit, scratch_reg);
     jit_save_sp(jit, ctx);
+
+    // In case the routine calls Ruby methods, it can set local variables
+    // through Kernel#binding and other means.
+    ctx_clear_local_types(ctx);
 }
 
 // Record the current codeblock write position for rewriting into a jump into
@@ -927,7 +931,7 @@ gen_newarray(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     // Save the PC and SP because we are allocating
     jit_prepare_routine_call(jit, ctx, REG0);
 
-    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(sizeof(VALUE) * (uint32_t)n));
+    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(int32_t)(sizeof(VALUE) * (uint32_t)n));
 
     // call rb_ec_ary_new_from_values(struct rb_execution_context_struct *ec, long n, const VALUE *elts);
     mov(cb, C_ARG_REGS[0], REG_EC);
@@ -1308,14 +1312,29 @@ gen_get_ep(codeblock_t *cb, x86opnd_t reg, uint32_t level)
     }
 }
 
-// Compute the index of a local variable from its slot index
+// Compute the local table index of a variable from its index relative to the
+// environment object.
 static uint32_t
 slot_to_local_idx(const rb_iseq_t *iseq, int32_t slot_idx)
 {
-    // Convoluted rules from local_var_name() in iseq.c
+    // Layout illustration
+    // This is an array of VALUE
+    //                                           | VM_ENV_DATA_SIZE |
+    //                                           v                  v
+    // low addr <+-------+-------+-------+-------+------------------+
+    //           |local 0|local 1|  ...  |local n|       ....       |
+    //           +-------+-------+-------+-------+------------------+
+    //           ^       ^                       ^                  ^
+    //           +-------+---local_table_size----+         cfp->ep--+
+    //                   |                                          |
+    //                   +------------------slot_idx----------------+
+    //
+    // See usages of local_var_name() from iseq.c for similar calculation.
+
+    // FIXME: unsigned to signed cast below can truncate
     int32_t local_table_size = iseq->body->local_table_size;
     int32_t op = slot_idx - VM_ENV_DATA_SIZE;
-    int32_t local_idx = local_idx = local_table_size - op - 1;
+    int32_t local_idx = local_table_size - op - 1;
     RUBY_ASSERT(local_idx >= 0 && local_idx < local_table_size);
     return (uint32_t)local_idx;
 }
@@ -1324,6 +1343,8 @@ static codegen_status_t
 gen_getlocal_wc0(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 {
     // Compute the offset from BP to the local
+    // TODO: Type is lindex_t in interpter. The following cast can truncate.
+    //       Not in the mood to dance around signed multiplication UB at the moment...
     int32_t slot_idx = (int32_t)jit_get_arg(jit, 0);
     const int32_t offs = -(SIZEOF_VALUE * slot_idx);
     uint32_t local_idx = slot_to_local_idx(jit->iseq, slot_idx);
@@ -1348,7 +1369,7 @@ gen_getlocal_generic(ctx_t *ctx, uint32_t local_idx, uint32_t level)
 
     // Load the local from the block
     // val = *(vm_get_ep(GET_EP(), level) - idx);
-    const int32_t offs = -(SIZEOF_VALUE * local_idx);
+    const int32_t offs = -(int32_t)(SIZEOF_VALUE * local_idx);
     mov(cb, REG0, mem_opnd(64, REG0, offs));
 
     // Write the local at SP
@@ -1480,7 +1501,7 @@ gen_setlocal_generic(jitstate_t *jit, ctx_t *ctx, uint32_t local_idx, uint32_t l
     mov(cb, REG1, stack_top);
 
     // Write the value at the environment pointer
-    const int32_t offs = -(SIZEOF_VALUE * local_idx);
+    const int32_t offs = -(int32_t)(SIZEOF_VALUE * local_idx);
     mov(cb, mem_opnd(64, REG0, offs), REG1);
 
     return YJIT_KEEP_COMPILING;
@@ -1931,7 +1952,7 @@ gen_concatstrings(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     // Save the PC and SP because we are allocating
     jit_prepare_routine_call(jit, ctx, REG0);
 
-    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(sizeof(VALUE) * (uint32_t)n));
+    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(int32_t)(sizeof(VALUE) * (uint32_t)n));
 
     // call rb_str_concat_literals(long n, const VALUE *strings);
     mov(cb, C_ARG_REGS[0], imm_opnd(n));
@@ -3218,25 +3239,40 @@ c_method_tracing_currently_enabled(const jitstate_t *jit)
     return tracing_events & (RUBY_EVENT_C_CALL | RUBY_EVENT_C_RETURN);
 }
 
+// Called at runtime to build hashes of passed kwargs
+static VALUE
+yjit_runtime_build_kwhash(const struct rb_callinfo *ci, const VALUE *sp) {
+    // similar to args_kw_argv_to_hash
+    const VALUE *const passed_keywords = vm_ci_kwarg(ci)->keywords;
+    const int kw_len = vm_ci_kwarg(ci)->keyword_len;
+    const VALUE h = rb_hash_new_with_size(kw_len);
+
+    for (int i = 0; i < kw_len; i++) {
+        rb_hash_aset(h, passed_keywords[i], (sp - kw_len)[i]);
+    }
+    return h;
+}
+
 static codegen_status_t
 gen_send_cfunc(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const rb_callable_method_entry_t *cme, rb_iseq_t *block, const int32_t argc, VALUE *recv_known_klass)
 {
     const rb_method_cfunc_t *cfunc = UNALIGNED_MEMBER_PTR(cme->def, body.cfunc);
 
-    // If the function expects a Ruby array of arguments
-    if (cfunc->argc < 0 && cfunc->argc != -1) {
-        GEN_COUNTER_INC(cb, send_cfunc_ruby_array_varg);
-        return YJIT_CANT_COMPILE;
-    }
+    const struct rb_callinfo_kwarg *kw_arg = vm_ci_kwarg(ci);
+    const int kw_arg_num = kw_arg ? kw_arg->keyword_len : 0;
+
+    // Number of args which will be passed through to the callee
+    // This is adjusted by the kwargs being combined into a hash.
+    const int passed_argc = kw_arg ? argc - kw_arg_num + 1 : argc;
 
     // If the argument count doesn't match
-    if (cfunc->argc >= 0 && cfunc->argc != argc) {
+    if (cfunc->argc >= 0 && cfunc->argc != passed_argc) {
         GEN_COUNTER_INC(cb, send_cfunc_argc_mismatch);
         return YJIT_CANT_COMPILE;
     }
 
     // Don't JIT functions that need C stack arguments for now
-    if (cfunc->argc >= 0 && argc + 1 > NUM_C_ARG_REGS) {
+    if (cfunc->argc >= 0 && passed_argc + 1 > NUM_C_ARG_REGS) {
         GEN_COUNTER_INC(cb, send_cfunc_toomany_args);
         return YJIT_CANT_COMPILE;
     }
@@ -3250,7 +3286,7 @@ gen_send_cfunc(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const 
     // Delegate to codegen for C methods if we have it.
     {
         method_codegen_t known_cfunc_codegen;
-        if ((known_cfunc_codegen = lookup_cfunc_codegen(cme->def))) {
+        if (!kw_arg && (known_cfunc_codegen = lookup_cfunc_codegen(cme->def))) {
             if (known_cfunc_codegen(jit, ctx, ci, cme, block, argc, recv_known_klass)) {
                 // cfunc codegen generated code. Terminate the block so
                 // there isn't multiple calls in the same block.
@@ -3322,6 +3358,9 @@ gen_send_cfunc(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const 
     // Write env flags at sp[-1]
     // sp[-1] = frame_type;
     uint64_t frame_type = VM_FRAME_MAGIC_CFUNC | VM_FRAME_FLAG_CFRAME | VM_ENV_FLAG_LOCAL;
+    if (kw_arg) {
+        frame_type |= VM_FRAME_FLAG_CFRAME_KW;
+    }
     mov(cb, mem_opnd(64, REG0, 8 * -1), imm_opnd(frame_type));
 
     // Allocate a new CFP (ec->cfp--)
@@ -3362,23 +3401,24 @@ gen_send_cfunc(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const 
         call_ptr(cb, REG0, (void *)&check_cfunc_dispatch);
     }
 
-    // Copy SP into RAX because REG_SP will get overwritten
-    lea(cb, RAX, ctx_sp_opnd(ctx, 0));
+    if (kw_arg) {
+        // Build a hash from all kwargs passed
+        jit_mov_gc_ptr(jit, cb, C_ARG_REGS[0], (VALUE)ci);
+        lea(cb, C_ARG_REGS[1], ctx_sp_opnd(ctx, 0));
+        call_ptr(cb, REG0, (void *)&yjit_runtime_build_kwhash);
 
-    // Pop the C function arguments from the stack (in the caller)
-    ctx_stack_pop(ctx, argc + 1);
-
-    // Write interpreter SP into CFP.
-    // Needed in case the callee yields to the block.
-    jit_save_sp(jit, ctx);
+        // Replace the stack location at the start of kwargs with the new hash
+        x86opnd_t stack_opnd = ctx_stack_opnd(ctx, argc - passed_argc);
+        mov(cb, stack_opnd, RAX);
+    }
 
     // Non-variadic method
     if (cfunc->argc >= 0) {
         // Copy the arguments from the stack to the C argument registers
         // self is the 0th argument and is at index argc from the stack top
-        for (int32_t i = 0; i < argc + 1; ++i)
+        for (int32_t i = 0; i < passed_argc + 1; ++i)
         {
-            x86opnd_t stack_opnd = mem_opnd(64, RAX, -(argc + 1 - i) * SIZEOF_VALUE);
+            x86opnd_t stack_opnd = ctx_stack_opnd(ctx, argc - i);
             x86opnd_t c_arg_reg = C_ARG_REGS[i];
             mov(cb, c_arg_reg, stack_opnd);
         }
@@ -3387,10 +3427,39 @@ gen_send_cfunc(jitstate_t *jit, ctx_t *ctx, const struct rb_callinfo *ci, const 
     if (cfunc->argc == -1) {
         // The method gets a pointer to the first argument
         // rb_f_puts(int argc, VALUE *argv, VALUE recv)
-        mov(cb, C_ARG_REGS[0], imm_opnd(argc));
-        lea(cb, C_ARG_REGS[1], mem_opnd(64, RAX, -(argc) * SIZEOF_VALUE));
-        mov(cb, C_ARG_REGS[2], mem_opnd(64, RAX, -(argc + 1) * SIZEOF_VALUE));
+        mov(cb, C_ARG_REGS[0], imm_opnd(passed_argc));
+        lea(cb, C_ARG_REGS[1], ctx_stack_opnd(ctx, argc - 1));
+        mov(cb, C_ARG_REGS[2], ctx_stack_opnd(ctx, argc));
     }
+    // Variadic method with Ruby array
+    if (cfunc->argc == -2) {
+        // Create a Ruby array from the arguments.
+        //
+        // This follows similar behaviour to vm_call_cfunc_with_frame() and
+        // call_cfunc_m2(). We use rb_ec_ary_new_from_values() instead of
+        // rb_ary_new4() since we have REG_EC available.
+        //
+        // Before getting here we will have set the new CFP in the EC, and the
+        // stack at CFP's SP will contain the values we are inserting into the
+        // Array, so they will be properly marked if we hit a GC.
+
+        // rb_ec_ary_new_from_values(rb_execution_context_t *ec, long n, const VLAUE *elts)
+        mov(cb, C_ARG_REGS[0], REG_EC);
+        mov(cb, C_ARG_REGS[1], imm_opnd(passed_argc));
+        lea(cb, C_ARG_REGS[2], ctx_stack_opnd(ctx, argc - 1));
+        call_ptr(cb, REG0, (void *)rb_ec_ary_new_from_values);
+
+        // rb_file_s_join(VALUE recv, VALUE args)
+        mov(cb, C_ARG_REGS[0], ctx_stack_opnd(ctx, argc));
+        mov(cb, C_ARG_REGS[1], RAX);
+    }
+
+    // Pop the C function arguments from the stack (in the caller)
+    ctx_stack_pop(ctx, argc + 1);
+
+    // Write interpreter SP into CFP.
+    // Needed in case the callee yields to the block.
+    jit_save_sp(jit, ctx);
 
     // Call the C function
     // VALUE ret = (cfunc->func)(recv, argv[0], argv[1]);
@@ -4088,10 +4157,6 @@ gen_send_general(jitstate_t *jit, ctx_t *ctx, struct rb_call_data *cd, rb_iseq_t
           case VM_METHOD_TYPE_ISEQ:
             return gen_send_iseq(jit, ctx, ci, cme, block, argc);
           case VM_METHOD_TYPE_CFUNC:
-            if ((vm_ci_flag(ci) & VM_CALL_KWARG) != 0) {
-                GEN_COUNTER_INC(cb, send_cfunc_kwargs);
-                return YJIT_CANT_COMPILE;
-            }
             return gen_send_cfunc(jit, ctx, ci, cme, block, argc, &comptime_recv_klass);
           case VM_METHOD_TYPE_IVAR:
             if (argc != 0) {
@@ -4401,7 +4466,7 @@ gen_setglobal(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     ID gid = jit_get_arg(jit, 0);
 
     // Save the PC and SP because we might make a Ruby call for
-    // Kernel#set_trace_var
+    // Kernel#trace_var
     jit_prepare_routine_call(jit, ctx, REG0);
 
     mov(cb, C_ARG_REGS[0], imm_opnd(gid));
@@ -4418,8 +4483,7 @@ gen_setglobal(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 static codegen_status_t
 gen_anytostring(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 {
-    // Save the PC and SP because we might make a Ruby call for
-    // Kernel#set_trace_var
+    // Might allocate in rb_obj_as_string_result().
     jit_prepare_routine_call(jit, ctx, REG0);
 
     x86opnd_t str = ctx_stack_pop(ctx, 1);
@@ -4472,7 +4536,7 @@ gen_toregexp(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
     // raise an exception.
     jit_prepare_routine_call(jit, ctx, REG0);
 
-    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(sizeof(VALUE) * (uint32_t)cnt));
+    x86opnd_t values_ptr = ctx_sp_opnd(ctx, -(int32_t)(sizeof(VALUE) * (uint32_t)cnt));
     ctx_stack_pop(ctx, cnt);
 
     mov(cb, C_ARG_REGS[0], imm_opnd(0));
@@ -4802,7 +4866,7 @@ gen_opt_invokebuiltin_delegate(jitstate_t *jit, ctx_t *ctx, codeblock_t *cb)
 
     // Copy arguments from locals
     for (int32_t i = 0; i < bf->argc; i++) {
-        const int32_t offs = -jit->iseq->body->local_table_size - VM_ENV_DATA_SIZE + 1 + start_index + i;
+        const int32_t offs = start_index + i - jit->iseq->body->local_table_size - VM_ENV_DATA_SIZE + 1;
         x86opnd_t local_opnd = mem_opnd(64, REG0, offs * SIZEOF_VALUE);
         x86opnd_t c_arg_reg = C_ARG_REGS[i + 2];
         mov(cb, c_arg_reg, local_opnd);

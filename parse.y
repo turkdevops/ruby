@@ -4319,21 +4319,13 @@ p_args		: p_expr
 			$$ = new_array_pattern_tail(p, pre_args, 0, 0, Qnone, &@$);
 		    %*/
 		    }
-		| p_args_head tSTAR tIDENTIFIER
+		| p_args_head p_rest
 		    {
-			$$ = new_array_pattern_tail(p, $1, 1, $3, Qnone, &@$);
+			$$ = new_array_pattern_tail(p, $1, 1, $2, Qnone, &@$);
 		    }
-		| p_args_head tSTAR tIDENTIFIER ',' p_args_post
+		| p_args_head p_rest ',' p_args_post
 		    {
-			$$ = new_array_pattern_tail(p, $1, 1, $3, $5, &@$);
-		    }
-		| p_args_head tSTAR
-		    {
-			$$ = new_array_pattern_tail(p, $1, 1, 0, Qnone, &@$);
-		    }
-		| p_args_head tSTAR ',' p_args_post
-		    {
-			$$ = new_array_pattern_tail(p, $1, 1, 0, $4, &@$);
+			$$ = new_array_pattern_tail(p, $1, 1, $2, $4, &@$);
 		    }
 		| p_args_tail
 		;
@@ -13114,6 +13106,8 @@ parser_append_options(struct parser_params *p, NODE *node)
     }
 
     if (p->do_loop) {
+	NODE *irs = NEW_LIST(NEW_GVAR(rb_intern("$/"), LOC), LOC);
+
 	if (p->do_split) {
 	    ID ifs = rb_intern("$;");
 	    ID fields = rb_intern("$F");
@@ -13125,12 +13119,12 @@ parser_append_options(struct parser_params *p, NODE *node)
 	    node = block_append(p, split, node);
 	}
 	if (p->do_chomp) {
-	    NODE *chomp = NEW_CALL(NEW_GVAR(idLASTLINE, LOC),
-				   rb_intern("chomp!"), 0, LOC);
-	    node = block_append(p, chomp, node);
+	    NODE *chomp = NEW_LIT(ID2SYM(rb_intern("chomp")), LOC);
+	    chomp = list_append(p, NEW_LIST(chomp, LOC), NEW_TRUE(LOC));
+	    irs = list_append(p, irs, NEW_HASH(chomp, LOC));
 	}
 
-	node = NEW_WHILE(NEW_VCALL(idGets, LOC), node, 1, LOC);
+	node = NEW_WHILE(NEW_FCALL(idGets, irs, LOC), node, 1, LOC);
     }
 
     return node;

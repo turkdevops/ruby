@@ -199,6 +199,11 @@ class TestMethod < Test::Unit::TestCase
     assert_equal(o.method(:foo), o.method(:foo))
     assert_equal(o.method(:foo), o.method(:bar))
     assert_not_equal(o.method(:foo), o.method(:baz))
+
+    class << o
+      private :bar
+    end
+    assert_not_equal(o.method(:foo), o.method(:bar))
   end
 
   def test_hash
@@ -1200,6 +1205,31 @@ class TestMethod < Test::Unit::TestCase
     assert_equal(false, Visibility.instance_method(:mv1).protected?)
   end
 
+  class VisibilitySub < Visibility
+    protected :mv1
+    public :mv2
+    private :mv3
+  end
+
+  def test_method_visibility_predicates_with_subclass_visbility_change
+    v = VisibilitySub.new
+    assert_equal(false, v.method(:mv1).public?)
+    assert_equal(false, v.method(:mv2).private?)
+    assert_equal(false, v.method(:mv3).protected?)
+    assert_equal(true, v.method(:mv2).public?)
+    assert_equal(true, v.method(:mv3).private?)
+    assert_equal(true, v.method(:mv1).protected?)
+  end
+
+  def test_unbound_method_visibility_predicates_with_subclass_visbility_change
+    assert_equal(false, VisibilitySub.instance_method(:mv1).public?)
+    assert_equal(false, VisibilitySub.instance_method(:mv2).private?)
+    assert_equal(false, VisibilitySub.instance_method(:mv3).protected?)
+    assert_equal(true, VisibilitySub.instance_method(:mv2).public?)
+    assert_equal(true, VisibilitySub.instance_method(:mv3).private?)
+    assert_equal(true, VisibilitySub.instance_method(:mv1).protected?)
+  end
+
   def rest_parameter(*rest)
     rest
   end
@@ -1207,7 +1237,7 @@ class TestMethod < Test::Unit::TestCase
   def test_splat_long_array
     if File.exist?('/etc/os-release') && File.read('/etc/os-release').include?('openSUSE Leap')
       # For RubyCI's openSUSE machine http://rubyci.s3.amazonaws.com/opensuseleap/ruby-trunk/recent.html, which tends to die with NoMemoryError here.
-      skip 'do not exhaust memory on RubyCI openSUSE Leap machine'
+      omit 'do not exhaust memory on RubyCI openSUSE Leap machine'
     end
     n = 10_000_000
     assert_equal n  , rest_parameter(*(1..n)).size, '[Feature #10440]'
@@ -1409,7 +1439,7 @@ class TestMethod < Test::Unit::TestCase
     # use_symbol = Object.instance_methods[0].is_a?(Symbol)
     nummodule = nummethod = 0
     mods = []
-    ObjectSpace.each_object(Module) {|m| mods << m if m.name }
+    ObjectSpace.each_object(Module) {|m| mods << m if String === m.name }
     mods = mods.sort_by {|m| m.name }
     mods.each {|mod|
       nummodule += 1

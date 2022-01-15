@@ -1005,6 +1005,28 @@ rb_class_search_ancestor(VALUE cl, VALUE c)
  */
 #define rb_obj_singleton_method_undefined rb_obj_dummy1
 
+/* Document-method: const_added
+ *
+ * call-seq:
+ *   const_added(const_name)
+ *
+ * Invoked as a callback whenever a constant is assigned on the receiver
+ *
+ *   module Chatty
+ *     def self.const_added(const_name)
+ *       super
+ *       puts "Added #{const_name.inspect}"
+ *     end
+ *     FOO = 1
+ *   end
+ *
+ * <em>produces:</em>
+ *
+ *   Added :FOO
+ *
+ */
+#define rb_obj_mod_const_added rb_obj_dummy1
+
 /*
  * Document-method: extended
  *
@@ -1214,6 +1236,8 @@ nil_inspect(VALUE obj)
  *     nil =~ other  -> nil
  *
  *  Dummy pattern matching -- always returns nil.
+ *
+ *  This method makes it possible to `while gets =~ /re/ do`.
  */
 
 static VALUE
@@ -1391,27 +1415,6 @@ MJIT_FUNC_EXPORTED VALUE
 rb_false(VALUE obj)
 {
     return Qfalse;
-}
-
-
-/*
- *  call-seq:
- *     obj =~ other  -> nil
- *
- * This method is deprecated.
- *
- * This is not only useless but also troublesome because it may hide a
- * type error.
- */
-
-static VALUE
-rb_obj_match(VALUE obj1, VALUE obj2)
-{
-    if (rb_warning_category_enabled_p(RB_WARN_CATEGORY_DEPRECATED)) {
-        rb_category_warn(RB_WARN_CATEGORY_DEPRECATED, "deprecated Object#=~ is called on %"PRIsVALUE
-                "; it always returns nil", rb_obj_class(obj1));
-    }
-    return Qnil;
 }
 
 /*
@@ -1708,7 +1711,6 @@ static VALUE rb_mod_initialize_exec(VALUE module);
 static VALUE
 rb_mod_initialize(VALUE module)
 {
-    rb_module_check_initializable(module);
     return rb_mod_initialize_exec(module);
 }
 
@@ -4439,12 +4441,12 @@ InitVM_Object(void)
     rb_define_private_method(rb_cModule, "extended", rb_obj_mod_extended, 1);
     rb_define_private_method(rb_cModule, "prepended", rb_obj_mod_prepended, 1);
     rb_define_private_method(rb_cModule, "method_added", rb_obj_mod_method_added, 1);
+    rb_define_private_method(rb_cModule, "const_added", rb_obj_mod_const_added, 1);
     rb_define_private_method(rb_cModule, "method_removed", rb_obj_mod_method_removed, 1);
     rb_define_private_method(rb_cModule, "method_undefined", rb_obj_mod_method_undefined, 1);
 
     rb_define_method(rb_mKernel, "nil?", rb_false, 0);
     rb_define_method(rb_mKernel, "===", case_equal, 1);
-    rb_define_method(rb_mKernel, "=~", rb_obj_match, 1);
     rb_define_method(rb_mKernel, "!~", rb_obj_not_match, 1);
     rb_define_method(rb_mKernel, "eql?", rb_obj_equal, 1);
     rb_define_method(rb_mKernel, "hash", rb_obj_hash, 0); /* in hash.c */
