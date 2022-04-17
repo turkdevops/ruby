@@ -855,7 +855,7 @@ socklist_lookup(SOCKET sock, int *flagp)
 
     thread_exclusive(socklist) {
 	if (!socklist) continue;
-	ret = st_lookup(socklist, (st_data_t)sock, (st_data_t *)&data);
+	ret = st_lookup(socklist, (st_data_t)sock, &data);
 	if (ret && flagp)
 	    *flagp = (int)data;
     }
@@ -3085,7 +3085,7 @@ is_console(SOCKET sock) /* DONT call this for SOCKET! */
     INPUT_RECORD ir;
 
     RUBY_CRITICAL {
-	ret = (PeekConsoleInput((HANDLE)sock, &ir, 1, &n));
+	ret = (PeekConsoleInputW((HANDLE)sock, &ir, 1, &n));
     }
 
     return ret;
@@ -3100,13 +3100,13 @@ is_readable_console(SOCKET sock) /* call this for console only */
     INPUT_RECORD ir;
 
     RUBY_CRITICAL {
-	if (PeekConsoleInput((HANDLE)sock, &ir, 1, &n) && n > 0) {
+	if (PeekConsoleInputW((HANDLE)sock, &ir, 1, &n) && n > 0) {
 	    if (ir.EventType == KEY_EVENT && ir.Event.KeyEvent.bKeyDown &&
 		ir.Event.KeyEvent.uChar.AsciiChar) {
 		ret = 1;
 	    }
 	    else {
-		ReadConsoleInput((HANDLE)sock, &ir, 1, &n);
+		ReadConsoleInputW((HANDLE)sock, &ir, 1, &n);
 	    }
 	}
     }
@@ -4871,7 +4871,7 @@ rb_w32_ulchown(const char *path, int owner, int group)
 
 /* License: Ruby's */
 int
-kill(int pid, int sig)
+kill(rb_pid_t pid, int sig)
 {
     int ret = 0;
     DWORD err;
@@ -5613,10 +5613,8 @@ filetime_to_nsec(const FILETIME *ft)
 
 /* License: Ruby's */
 static unsigned
-fileattr_to_unixmode(DWORD attr, const WCHAR *path)
+fileattr_to_unixmode(DWORD attr, const WCHAR *path, unsigned mode)
 {
-    unsigned mode = 0;
-
     if (attr & FILE_ATTRIBUTE_READONLY) {
 	mode |= S_IREAD;
     }
@@ -5624,7 +5622,10 @@ fileattr_to_unixmode(DWORD attr, const WCHAR *path)
 	mode |= S_IREAD | S_IWRITE | S_IWUSR;
     }
 
-    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+    if (mode & S_IFMT) {
+	/* format is already set */
+    }
+    else if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
 	if (rb_w32_reparse_symlink_p(path))
 	    mode |= S_IFLNK | S_IEXEC;
 	else
@@ -5719,7 +5720,7 @@ stat_by_find(const WCHAR *path, struct stati128 *st)
 	return -1;
     }
     FindClose(h);
-    st->st_mode  = fileattr_to_unixmode(wfd.dwFileAttributes, path);
+    st->st_mode  = fileattr_to_unixmode(wfd.dwFileAttributes, path, 0);
     st->st_atime = filetime_to_unixtime(&wfd.ftLastAccessTime);
     st->st_atimensec = filetime_to_nsec(&wfd.ftLastAccessTime);
     st->st_mtime = filetime_to_unixtime(&wfd.ftLastWriteTime);
@@ -5752,6 +5753,15 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
     if (f != INVALID_HANDLE_VALUE) {
 	DWORD attr = stati128_handle(f, st);
 	const DWORD len = get_final_path(f, finalname, numberof(finalname), 0);
+	unsigned mode = 0;
+	switch (GetFileType(f)) {
+	  case FILE_TYPE_CHAR:
+	    mode = S_IFCHR;
+	    break;
+	  case FILE_TYPE_PIPE:
+	    mode = S_IFIFO;
+	    break;
+	}
 	CloseHandle(f);
 	if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
 	    /* TODO: size in which encoding? */
@@ -5763,7 +5773,7 @@ winnt_stat(const WCHAR *path, struct stati128 *st, BOOL lstat)
 	if (attr & FILE_ATTRIBUTE_DIRECTORY) {
 	    if (check_valid_dir(path)) return -1;
 	}
-	st->st_mode = fileattr_to_unixmode(attr, path);
+	st->st_mode = fileattr_to_unixmode(attr, path, mode);
 	if (len) {
 	    finalname[min(len, numberof(finalname)-1)] = L'\0';
 	    path = finalname;

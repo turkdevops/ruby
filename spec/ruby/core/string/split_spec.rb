@@ -224,6 +224,17 @@ describe "String#split with String" do
       end
     end
   end
+
+  it "returns an empty array when whitespace is split on whitespace" do
+    " ".split(" ").should == []
+    " \n ".split(" ").should == []
+    "  ".split(" ").should == []
+    " \t ".split(" ").should == []
+  end
+
+  it "doesn't split on non-ascii whitespace" do
+    "a\u{2008}b".split(" ").should == ["a\u{2008}b"]
+  end
 end
 
 describe "String#split with Regexp" do
@@ -577,5 +588,12 @@ describe "String#split with Regexp" do
         last.should == "b"
       end
     end
+  end
+
+  it "raises a TypeError when not called with nil, String, or Regexp" do
+    -> { "hello".split(42) }.should raise_error(TypeError)
+    -> { "hello".split(:ll) }.should raise_error(TypeError)
+    -> { "hello".split(false) }.should raise_error(TypeError)
+    -> { "hello".split(Object.new) }.should raise_error(TypeError)
   end
 end

@@ -302,10 +302,14 @@ class Gem::TestCase < Test::Unit::TestCase
   # or <tt>i686-darwin8.10.1</tt> otherwise.
 
   def setup
+    @orig_hooks = {}
     @orig_env = ENV.to_hash
     @tmp = File.expand_path("tmp")
 
     FileUtils.mkdir_p @tmp
+
+    @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
+    @tempdir.tap(&Gem::UNTAINT)
 
     ENV['GEM_VENDOR'] = nil
     ENV['GEMRC'] = nil
@@ -324,9 +328,6 @@ class Gem::TestCase < Test::Unit::TestCase
     # capture output
     Gem::DefaultUserInteraction.ui = Gem::MockGemUi.new
 
-    @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
-    @tempdir.tap(&Gem::UNTAINT)
-
     ENV["TMPDIR"] = @tempdir
 
     @orig_SYSTEM_WIDE_CONFIG_FILE = Gem::ConfigFile::SYSTEM_WIDE_CONFIG_FILE
@@ -339,10 +340,10 @@ class Gem::TestCase < Test::Unit::TestCase
     ENV["GEM_SPEC_CACHE"] = File.join @tempdir, 'spec_cache'
 
     @orig_ruby = if ENV['RUBY']
-                   ruby = Gem.ruby
-                   Gem.ruby = ENV['RUBY']
-                   ruby
-                 end
+      ruby = Gem.ruby
+      Gem.ruby = ENV['RUBY']
+      ruby
+    end
 
     @git = ENV['GIT'] || (win_platform? ? 'git.exe' : 'git')
 
@@ -426,7 +427,6 @@ class Gem::TestCase < Test::Unit::TestCase
       util_set_arch 'i686-darwin8.10.1'
     end
 
-    @orig_hooks = {}
     %w[post_install_hooks done_installing_hooks post_uninstall_hooks pre_uninstall_hooks pre_install_hooks pre_reset_hooks post_reset_hooks post_build_hooks].each do |name|
       @orig_hooks[name] = Gem.send(name).dup
     end
@@ -685,10 +685,10 @@ class Gem::TestCase < Test::Unit::TestCase
   # Load a YAML string, the psych 3 way
 
   def load_yaml(yaml)
-    if YAML.respond_to?(:unsafe_load)
-      YAML.unsafe_load(yaml)
+    if Psych.respond_to?(:unsafe_load)
+      Psych.unsafe_load(yaml)
     else
-      YAML.load(yaml)
+      Psych.load(yaml)
     end
   end
 
@@ -696,10 +696,10 @@ class Gem::TestCase < Test::Unit::TestCase
   # Load a YAML file, the psych 3 way
 
   def load_yaml_file(file)
-    if YAML.respond_to?(:unsafe_load_file)
-      YAML.unsafe_load_file(file)
+    if Psych.respond_to?(:unsafe_load_file)
+      Psych.unsafe_load_file(file)
     else
-      YAML.load_file(file)
+      Psych.load_file(file)
     end
   end
 

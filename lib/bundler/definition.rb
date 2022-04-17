@@ -266,7 +266,7 @@ module Bundler
         else
           # Run a resolve against the locally available gems
           Bundler.ui.debug("Found changes from the lockfile, re-resolving dependencies because #{change_reason}")
-          expanded_dependencies = expand_dependencies(dependencies + metadata_dependencies, @remote)
+          expanded_dependencies = expand_dependencies(dependencies + metadata_dependencies, true)
           Resolver.resolve(expanded_dependencies, source_requirements, last_resolve, gem_version_promoter, additional_base_requirements_for_resolve, platforms)
         end
       end
@@ -308,14 +308,6 @@ module Bundler
       SharedHelpers.filesystem_access(file) do |p|
         File.open(p, "wb") {|f| f.puts(contents) }
       end
-    end
-
-    def locked_bundler_version
-      if @locked_bundler_version && @locked_bundler_version < Gem::Version.new(Bundler::VERSION)
-        new_version = Bundler::VERSION
-      end
-
-      new_version || @locked_bundler_version || Bundler::VERSION
     end
 
     def locked_ruby_version
@@ -441,7 +433,7 @@ module Bundler
 
       raise ProductionError, "Your bundle only supports platforms #{@platforms.map(&:to_s)} " \
         "but your local platform is #{Bundler.local_platform}. " \
-        "Add the current platform to the lockfile with `bundle lock --add-platform #{Bundler.local_platform}` and try again."
+        "Add the current platform to the lockfile with\n`bundle lock --add-platform #{Bundler.local_platform}` and try again."
     end
 
     def add_platform(platform)
@@ -504,6 +496,7 @@ module Bundler
 
     def current_ruby_platform_locked?
       return false unless generic_local_platform == Gem::Platform::RUBY
+      return false if Bundler.settings[:force_ruby_platform] && !@platforms.include?(Gem::Platform::RUBY)
 
       current_platform_locked?
     end
@@ -793,6 +786,7 @@ module Bundler
       else
         { :default => Source::RubygemsAggregate.new(sources, source_map) }.merge(source_map.direct_requirements)
       end
+      source_requirements.merge!(source_map.locked_requirements) unless @remote
       metadata_dependencies.each do |dep|
         source_requirements[dep.name] = sources.metadata_source
       end
@@ -839,7 +833,7 @@ module Bundler
     end
 
     def source_map
-      @source_map ||= SourceMap.new(sources, dependencies)
+      @source_map ||= SourceMap.new(sources, dependencies, @locked_specs)
     end
   end
 end

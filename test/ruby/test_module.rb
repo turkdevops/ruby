@@ -475,6 +475,15 @@ class TestModule < Test::Unit::TestCase
     assert_not_include(mod.ancestor_list, BasicObject)
   end
 
+  def test_module_collected_extended_object
+    m1 = labeled_module("m1")
+    m2 = labeled_module("m2")
+    Object.new.extend(m1)
+    GC.start
+    m1.include(m2)
+    assert_equal([m1, m2], m1.ancestors)
+  end
+
   def test_dup
     OtherSetup.call
 
@@ -561,6 +570,26 @@ class TestModule < Test::Unit::TestCase
       def b; 1 end
     end
     assert_equal(2, a2.b)
+  end
+
+  def test_ancestry_of_duped_classes
+    m = Module.new
+    sc = Class.new
+    a = Class.new(sc) do
+      def b; 2 end
+      prepend m
+    end
+
+    a2 = a.dup.new
+
+    assert_kind_of Object, a2
+    assert_kind_of sc, a2
+    refute_kind_of a, a2
+    assert_kind_of m, a2
+
+    assert_kind_of Class, a2.class
+    assert_kind_of sc.singleton_class, a2.class
+    assert_same sc, a2.class.superclass
   end
 
   def test_gc_prepend_chain
@@ -745,6 +774,25 @@ class TestModule < Test::Unit::TestCase
     sc.prepend m1
     sc.prepend m1
     assert_equal([:m1, :m0, :m, :sc, :m1, :m0, :c], sc.new.m)
+  end
+
+  def test_protected_include_into_included_module
+    m1 = Module.new do
+      def other_foo(other)
+        other.foo
+      end
+
+      protected
+      def foo
+        :ok
+      end
+    end
+    m2 = Module.new
+    c1 = Class.new { include m2 }
+    c2 = Class.new { include m2 }
+    m2.include(m1)
+
+    assert_equal :ok, c1.new.other_foo(c2.new)
   end
 
   def test_instance_methods

@@ -2104,7 +2104,7 @@ autoload_data(VALUE mod, ID id)
 }
 
 struct autoload_const {
-    struct list_node cnode; /* <=> autoload_data_i.constants */
+    struct ccan_list_node cnode; /* <=> autoload_data_i.constants */
     VALUE mod;
     VALUE ad; /* autoload_data_i */
     VALUE value;
@@ -2119,14 +2119,14 @@ struct autoload_state {
     struct autoload_const *ac;
     VALUE result;
     VALUE thread;
-    struct list_head waitq;
+    struct ccan_list_head waitq;
 };
 
 struct autoload_data_i {
     VALUE feature;
     struct autoload_state *state; /* points to on-stack struct */
     rb_serial_t fork_gen;
-    struct list_head constants; /* <=> autoload_const.cnode */
+    struct ccan_list_head constants; /* <=> autoload_const.cnode */
 };
 
 static void
@@ -2144,7 +2144,7 @@ autoload_i_mark(void *ptr)
     rb_gc_mark_movable(p->feature);
 
     /* allow GC to free us if no modules refer to this via autoload_const.ad */
-    if (list_empty(&p->constants)) {
+    if (ccan_list_empty(&p->constants)) {
         rb_hash_delete(autoload_featuremap, p->feature);
     }
 }
@@ -2155,7 +2155,7 @@ autoload_i_free(void *ptr)
     struct autoload_data_i *p = ptr;
 
     /* we may leak some memory at VM shutdown time, no big deal */
-    if (list_empty(&p->constants)) {
+    if (ccan_list_empty(&p->constants)) {
 	xfree(p);
     }
 }
@@ -2198,7 +2198,7 @@ static void
 autoload_c_free(void *ptr)
 {
     struct autoload_const *ac = ptr;
-    list_del(&ac->cnode);
+    ccan_list_del(&ac->cnode);
     xfree(ac);
 }
 
@@ -2239,6 +2239,9 @@ rb_autoload(VALUE mod, ID id, const char *file)
     rb_autoload_str(mod, id, rb_fstring_cstr(file));
 }
 
+static void const_set(VALUE klass, ID id, VALUE val);
+static void const_added(VALUE klass, ID const_name);
+
 void
 rb_autoload_str(VALUE mod, ID id, VALUE file)
 {
@@ -2263,7 +2266,7 @@ rb_autoload_str(VALUE mod, ID id, VALUE file)
 	return;
     }
 
-    rb_const_set(mod, id, Qundef);
+    const_set(mod, id, Qundef);
     tbl = RCLASS_IV_TBL(mod);
     if (tbl && st_lookup(tbl, (st_data_t)autoload, &av)) {
 	tbl = check_autoload_table((VALUE)av);
@@ -2288,7 +2291,7 @@ rb_autoload_str(VALUE mod, ID id, VALUE file)
                                     &autoload_data_i_type, ele);
         ele->feature = file;
         ele->state = 0;
-        list_head_init(&ele->constants);
+        ccan_list_head_init(&ele->constants);
         rb_hash_aset(autoload_featuremap, file, ad);
     }
     else {
@@ -2304,9 +2307,11 @@ rb_autoload_str(VALUE mod, ID id, VALUE file)
         ac->value = Qundef;
         ac->flag = CONST_PUBLIC;
         ac->ad = ad;
-        list_add_tail(&ele->constants, &ac->cnode);
+        ccan_list_add_tail(&ele->constants, &ac->cnode);
         st_insert(tbl, (st_data_t)id, (st_data_t)acv);
     }
+
+    const_added(mod, id);
 }
 
 static void
@@ -2325,7 +2330,7 @@ autoload_delete(VALUE mod, ID id)
             ele = get_autoload_data((VALUE)load, &ac);
             VM_ASSERT(ele);
             if (ele) {
-                VM_ASSERT(!list_empty(&ele->constants));
+                VM_ASSERT(!ccan_list_empty(&ele->constants));
             }
 
             /*
@@ -2333,7 +2338,7 @@ autoload_delete(VALUE mod, ID id)
              * with parallel autoload.  Using list_del_init here so list_del
              * works in autoload_c_free
              */
-            list_del_init(&ac->cnode);
+            ccan_list_del_init(&ac->cnode);
 
             if (tbl->num_entries == 0) {
                 n = autoload;
@@ -2480,7 +2485,7 @@ autoload_reset(VALUE arg)
     if (RTEST(state->result)) {
         struct autoload_const *next;
 
-        list_for_each_safe(&ele->constants, ac, next, cnode) {
+        ccan_list_for_each_safe(&ele->constants, ac, next, cnode) {
             if (ac->value != Qundef) {
                 autoload_const_set(ac);
             }
@@ -2491,11 +2496,11 @@ autoload_reset(VALUE arg)
     if (need_wakeups) {
 	struct autoload_state *cur = 0, *nxt;
 
-	list_for_each_safe(&state->waitq, cur, nxt, waitq.n) {
+	ccan_list_for_each_safe(&state->waitq, cur, nxt, waitq.n) {
 	    VALUE th = cur->thread;
 
 	    cur->thread = Qfalse;
-	    list_del_init(&cur->waitq.n); /* idempotent */
+	    ccan_list_del_init(&cur->waitq.n); /* idempotent */
 
 	    /*
 	     * cur is stored on the stack of cur->waiting_th,
@@ -2530,7 +2535,7 @@ autoload_sleep_done(VALUE arg)
     struct autoload_state *state = (struct autoload_state *)arg;
 
     if (state->thread != Qfalse && rb_thread_to_be_killed(state->thread)) {
-	list_del(&state->waitq.n); /* idempotent after list_del_init */
+        ccan_list_del(&state->waitq.n); /* idempotent after list_del_init */
     }
 
     return Qfalse;
@@ -2575,13 +2580,13 @@ rb_autoload_load(VALUE mod, ID id)
 	 * autoload_reset will wake up any threads added to this
 	 * if and only if the GVL is released during autoload_require
 	 */
-	list_head_init(&state.waitq);
+	ccan_list_head_init(&state.waitq);
     }
     else if (state.thread == ele->state->thread) {
 	return Qfalse;
     }
     else {
-	list_add_tail(&ele->state->waitq, &state.waitq.n);
+	ccan_list_add_tail(&ele->state->waitq, &state.waitq.n);
 
 	rb_ensure(autoload_sleep, (VALUE)&state,
 		autoload_sleep_done, (VALUE)&state);
@@ -2848,7 +2853,7 @@ rb_const_remove(VALUE mod, ID id)
         undefined_constant(mod, ID2SYM(id));
     }
 
-    rb_clear_constant_cache();
+    rb_clear_constant_cache_for_id(id);
 
     val = ce->value;
     if (val == Qundef) {
@@ -3111,14 +3116,14 @@ const_added(VALUE klass, ID const_name)
     }
 }
 
-void
-rb_const_set(VALUE klass, ID id, VALUE val)
+static void
+const_set(VALUE klass, ID id, VALUE val)
 {
     rb_const_entry_t *ce;
 
     if (NIL_P(klass)) {
-	rb_raise(rb_eTypeError, "no class/module to define constant %"PRIsVALUE"",
-		 QUOTE_ID(id));
+        rb_raise(rb_eTypeError, "no class/module to define constant %"PRIsVALUE"",
+                 QUOTE_ID(id));
     }
 
     if (!rb_ractor_main_p() && !rb_ractor_shareable_p(val)) {
@@ -3132,7 +3137,7 @@ rb_const_set(VALUE klass, ID id, VALUE val)
         struct rb_id_table *tbl = RCLASS_CONST_TBL(klass);
         if (!tbl) {
             RCLASS_CONST_TBL(klass) = tbl = rb_id_table_create(0);
-            rb_clear_constant_cache();
+            rb_clear_constant_cache_for_id(id);
             ce = ZALLOC(rb_const_entry_t);
             rb_id_table_insert(tbl, id, (VALUE)ce);
             setup_const_entry(ce, klass, val, CONST_PUBLIC);
@@ -3156,10 +3161,10 @@ rb_const_set(VALUE klass, ID id, VALUE val)
         int val_path_permanent;
         VALUE val_path = classname(val, &val_path_permanent);
         if (NIL_P(val_path) || !val_path_permanent) {
-	    if (klass == rb_cObject) {
+            if (klass == rb_cObject) {
                 set_namespace_path(val, rb_id2str(id));
-	    }
-	    else {
+            }
+            else {
                 int parental_path_permanent;
                 VALUE parental_path = classname(klass, &parental_path_permanent);
                 if (NIL_P(parental_path)) {
@@ -3172,9 +3177,15 @@ rb_const_set(VALUE klass, ID id, VALUE val)
                 else if (!parental_path_permanent && NIL_P(val_path)) {
                     ivar_set(val, tmp_classpath, build_const_path(parental_path, id));
                 }
-	    }
-	}
+            }
+        }
     }
+}
+
+void
+rb_const_set(VALUE klass, ID id, VALUE val)
+{
+    const_set(klass, id, val);
     const_added(klass, id);
 }
 
@@ -3210,7 +3221,7 @@ const_tbl_update(struct autoload_const *ac)
 	    struct autoload_data_i *ele = current_autoload_data(klass, id, &ac);
 
 	    if (ele) {
-		rb_clear_constant_cache();
+		rb_clear_constant_cache_for_id(id);
 
 		ac->value = val; /* autoload_i is non-WB-protected */
                 ac->file = rb_source_location(&ac->line);
@@ -3238,11 +3249,11 @@ const_tbl_update(struct autoload_const *ac)
 				"previous definition of %"PRIsVALUE" was here", name);
 	    }
 	}
-	rb_clear_constant_cache();
+	rb_clear_constant_cache_for_id(id);
 	setup_const_entry(ce, klass, val, visibility);
     }
     else {
-	rb_clear_constant_cache();
+	rb_clear_constant_cache_for_id(id);
 
 	ce = ZALLOC(rb_const_entry_t);
 	rb_id_table_insert(tbl, id, (VALUE)ce);
@@ -3297,10 +3308,6 @@ set_const_visibility(VALUE mod, int argc, const VALUE *argv,
 	VALUE val = argv[i];
 	id = rb_check_id(&val);
 	if (!id) {
-	    if (i > 0) {
-		rb_clear_constant_cache();
-	    }
-
             undefined_constant(mod, val);
 	}
 	if ((ce = rb_const_lookup(mod, id))) {
@@ -3315,15 +3322,12 @@ set_const_visibility(VALUE mod, int argc, const VALUE *argv,
 		    ac->flag |= flag;
 		}
 	    }
+        rb_clear_constant_cache_for_id(id);
 	}
 	else {
-	    if (i > 0) {
-		rb_clear_constant_cache();
-	    }
             undefined_constant(mod, ID2SYM(id));
 	}
     }
-    rb_clear_constant_cache();
 }
 
 void

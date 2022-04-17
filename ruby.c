@@ -22,10 +22,6 @@
 # include <sys/cygwin.h>
 #endif
 
-#ifdef __hpux
-# include <sys/pstat.h>
-#endif
-
 #if defined(LOAD_RELATIVE) && defined(HAVE_DLADDR)
 # include <dlfcn.h>
 #endif
@@ -47,6 +43,7 @@
 #include "dln.h"
 #include "eval_intern.h"
 #include "internal.h"
+#include "internal/cmdlineopt.h"
 #include "internal/error.h"
 #include "internal/file.h"
 #include "internal/inits.h"
@@ -58,8 +55,6 @@
 #include "internal/parse.h"
 #include "internal/process.h"
 #include "internal/variable.h"
-#include "mjit.h"
-#include "yjit.h"
 #include "ruby/encoding.h"
 #include "ruby/thread.h"
 #include "ruby/util.h"
@@ -105,7 +100,7 @@ void rb_warning_category_update(unsigned int mask, unsigned int bits);
     SEP \
     X(mjit) \
     SEP \
-    X(yjit)
+    X(yjit) \
     /* END OF FEATURES */
 #define EACH_DEBUG_FEATURES(X, SEP) \
     X(frozen_string_literal) \
@@ -116,6 +111,11 @@ void rb_warning_category_update(unsigned int mask, unsigned int bits);
 enum feature_flag_bits {
     EACH_FEATURES(DEFINE_FEATURE, COMMA),
     feature_debug_flag_first,
+#if defined(MJIT_FORCE_ENABLE) || !YJIT_SUPPORTED_P
+    DEFINE_FEATURE(jit) = feature_mjit,
+#else
+    DEFINE_FEATURE(jit) = feature_yjit,
+#endif
     feature_debug_flag_begin = feature_debug_flag_first - 1,
     EACH_DEBUG_FEATURES(DEFINE_DEBUG_FEATURE, COMMA),
     feature_flag_count
@@ -154,13 +154,6 @@ enum dump_flag_bits {
 		      DUMP_BIT(insns) | DUMP_BIT(insns_without_opt))
 };
 
-typedef struct ruby_cmdline_options ruby_cmdline_options_t;
-
-typedef struct {
-    unsigned int mask;
-    unsigned int set;
-} ruby_features_t;
-
 static inline void
 rb_feature_set_to(ruby_features_t *feat, unsigned int bit_mask, unsigned int bit_set)
 {
@@ -173,38 +166,6 @@ rb_feature_set_to(ruby_features_t *feat, unsigned int bit_mask, unsigned int bit
 #define FEATURE_SET(feat, bits) FEATURE_SET_TO(feat, bits, bits)
 #define FEATURE_SET_RESTORE(feat, save) FEATURE_SET_TO(feat, (save).mask, (save).set & (save).mask)
 #define FEATURE_SET_P(feat, bits) ((feat).set & (bits))
-
-struct ruby_cmdline_options {
-    const char *script;
-    VALUE script_name;
-    VALUE e_script;
-    struct {
-	struct {
-	    VALUE name;
-	    int index;
-	} enc;
-    } src, ext, intern;
-    VALUE req_list;
-    ruby_features_t features;
-    ruby_features_t warn;
-    unsigned int dump;
-#if USE_MJIT
-    struct mjit_options mjit;
-#endif
-#if YJIT_SUPPORTED_P
-    struct rb_yjit_options yjit;
-#endif
-
-    int sflag, xflag;
-    unsigned int warning: 1;
-    unsigned int verbose: 1;
-    unsigned int do_loop: 1;
-    unsigned int do_print: 1;
-    unsigned int do_line: 1;
-    unsigned int do_split: 1;
-    unsigned int do_search: 1;
-    unsigned int setids: 2;
-};
 
 static void init_ids(ruby_cmdline_options_t *);
 
@@ -284,21 +245,14 @@ usage(const char *name, int help, int highlight, int columns)
     /* This message really ought to be max 23 lines.
      * Removed -h because the user already knows that option. Others? */
 
-    struct message {
-	const char *str;
-	unsigned short namelen, secondlen;
-    };
-#define M(shortopt, longopt, desc) { \
-    shortopt " " longopt " " desc, \
-    (unsigned short)sizeof(shortopt), \
-    (unsigned short)sizeof(longopt), \
-}
+#define M(shortopt, longopt, desc) RUBY_OPT_MESSAGE(shortopt, longopt, desc)
+
 #if YJIT_SUPPORTED_P
 # define PLATFORM_JIT_OPTION "--yjit"
 #else
 # define PLATFORM_JIT_OPTION "--mjit"
 #endif
-    static const struct message usage_msg[] = {
+    static const struct ruby_opt_message usage_msg[] = {
 	M("-0[octal]",	   "",			   "specify record separator (\\0, if no argument)"),
 	M("-a",		   "",			   "autosplit mode with -n or -p (splits $_ into $F)"),
 	M("-c",		   "",			   "check syntax only"),
@@ -328,7 +282,7 @@ usage(const char *name, int help, int highlight, int columns)
 #endif
 	M("-h",		   "",			   "show this message, --help for more info"),
     };
-    static const struct message help_msg[] = {
+    static const struct ruby_opt_message help_msg[] = {
 	M("--copyright",                            "", "print the copyright"),
 	M("--dump={insns|parsetree|...}[,...]",     "",
           "dump debug information. see below for available dump list"),
@@ -341,14 +295,14 @@ usage(const char *name, int help, int highlight, int columns)
 	M("--version",                              "", "print the version number, then exit"),
 	M("--help",			            "", "show this message, -h for short message"),
     };
-    static const struct message dumps[] = {
+    static const struct ruby_opt_message dumps[] = {
 	M("insns",                  "", "instruction sequences"),
 	M("insns_without_opt",      "", "instruction sequences compiled with no optimization"),
 	M("yydebug",                "", "yydebug of yacc parser generator"),
 	M("parsetree",              "", "AST"),
 	M("parsetree_with_comment", "", "AST with comments"),
     };
-    static const struct message features[] = {
+    static const struct ruby_opt_message features[] = {
 	M("gems",    "",        "rubygems (only for debugging, default: "DEFAULT_RUBYGEMS_ENABLED")"),
 	M("error_highlight", "", "error_highlight (default: "DEFAULT_RUBYGEMS_ENABLED")"),
 	M("did_you_mean", "",   "did_you_mean (default: "DEFAULT_RUBYGEMS_ENABLED")"),
@@ -361,23 +315,15 @@ usage(const char *name, int help, int highlight, int columns)
         M("yjit", "",           "in-process JIT compiler (default: disabled)"),
 #endif
     };
-    static const struct message warn_categories[] = {
+    static const struct ruby_opt_message warn_categories[] = {
         M("deprecated", "",       "deprecated features"),
         M("experimental", "",     "experimental features"),
     };
 #if USE_MJIT
-    static const struct message mjit_options[] = {
-        M("--mjit-warnings",      "", "Enable printing JIT warnings"),
-        M("--mjit-debug",         "", "Enable JIT debugging (very slow), or add cflags if specified"),
-        M("--mjit-wait",          "", "Wait until JIT compilation finishes every time (for testing)"),
-        M("--mjit-save-temps",    "", "Save JIT temporary files in $TMP or /tmp (for testing)"),
-        M("--mjit-verbose=num",   "", "Print JIT logs of level num or less to stderr (default: 0)"),
-        M("--mjit-max-cache=num", "", "Max number of methods to be JIT-ed in a cache (default: 10000)"),
-        M("--mjit-min-calls=num", "", "Number of calls to trigger JIT (for testing, default: 10000)"),
-    };
+    extern const struct ruby_opt_message mjit_option_messages[];
 #endif
 #if YJIT_SUPPORTED_P
-    static const struct message yjit_options[] = {
+    static const struct ruby_opt_message yjit_options[] = {
 #if YJIT_STATS
         M("--yjit-stats",              "", "Enable collecting YJIT statistics"),
 #endif
@@ -415,8 +361,8 @@ usage(const char *name, int help, int highlight, int columns)
 	SHOW(warn_categories[i]);
 #if USE_MJIT
     printf("%s""MJIT options (experimental):%s\n", sb, se);
-    for (i = 0; i < numberof(mjit_options); ++i)
-	SHOW(mjit_options[i]);
+    for (i = 0; mjit_option_messages[i].str; ++i)
+	SHOW(mjit_option_messages[i]);
 #endif
 #if YJIT_SUPPORTED_P
     printf("%s""YJIT options (experimental):%s\n", sb, se);
@@ -976,20 +922,12 @@ feature_option(const char *str, int len, void *arg, const unsigned int enable)
     if (NAME_MATCH_P(#bit, str, len)) {set |= mask = FEATURE_BIT(bit); FEATURE_FOUND;}
     EACH_FEATURES(SET_FEATURE, ;);
     if (NAME_MATCH_P("jit", str, len)) { // This allows you to cancel --jit
-#if defined(MJIT_FORCE_ENABLE) || !YJIT_SUPPORTED_P
-        set |= mask = FEATURE_BIT(mjit);
-#else
-        set |= mask = FEATURE_BIT(yjit);
-#endif
+        set |= mask = FEATURE_BIT(jit);
         goto found;
     }
     if (NAME_MATCH_P("all", str, len)) {
-        // YJIT and MJIT cannot be enabled at the same time. We enable only YJIT for --enable=all.
-#if defined(MJIT_FORCE_ENABLE) || !YJIT_SUPPORTED_P
-        mask &= ~(FEATURE_BIT(yjit));
-#else
-        mask &= ~(FEATURE_BIT(mjit));
-#endif
+        // YJIT and MJIT cannot be enabled at the same time. We enable only one for --enable=all.
+        mask &= ~(FEATURE_BIT(yjit) | FEATURE_BIT(mjit)) | FEATURE_BIT(jit);
         goto found;
     }
 #if AMBIGUOUS_FEATURE_NAMES
@@ -1085,16 +1023,6 @@ set_option_encoding_once(const char *type, VALUE *name, const char *e, long elen
 #define set_source_encoding_once(opt, e, elen) \
     set_option_encoding_once("source", &(opt)->src.enc.name, (e), (elen))
 
-#define opt_match(s, l, name) \
-    ((((l) > rb_strlen_lit(name)) ? (s)[rb_strlen_lit(name)] == '=' : \
-      (l) == rb_strlen_lit(name)) && \
-     memcmp((s), name, rb_strlen_lit(name)) == 0 && \
-     (((s) += rb_strlen_lit(name)), 1))
-#define opt_match_noarg(s, l, name) \
-    opt_match(s, l, name) && (*(s) ? (rb_warn("argument to --jit-" name " is ignored"), 1) : 1)
-#define opt_match_arg(s, l, name) \
-    opt_match(s, l, name) && (*(s) ? 1 : (rb_raise(rb_eRuntimeError, "--jit-" name " needs an argument"), 0))
-
 #define yjit_opt_match_noarg(s, l, name) \
     opt_match(s, l, name) && (*(s) ? (rb_warn("argument to --yjit-" name " is ignored"), 1) : 1)
 #define yjit_opt_match_arg(s, l, name) \
@@ -1129,45 +1057,6 @@ setup_yjit_options(const char *s, struct rb_yjit_options *yjit_opt)
     else {
         rb_raise(rb_eRuntimeError,
                  "invalid yjit option `%s' (--help will show valid yjit options)", s);
-    }
-}
-#endif
-
-#if USE_MJIT
-static void
-setup_mjit_options(const char *s, struct mjit_options *mjit_opt)
-{
-    const size_t l = strlen(s);
-    if (l == 0) {
-        return;
-    }
-    else if (opt_match_noarg(s, l, "warnings")) {
-        mjit_opt->warnings = 1;
-    }
-    else if (opt_match(s, l, "debug")) {
-        if (*s)
-            mjit_opt->debug_flags = strdup(s + 1);
-        else
-            mjit_opt->debug = 1;
-    }
-    else if (opt_match_noarg(s, l, "wait")) {
-        mjit_opt->wait = 1;
-    }
-    else if (opt_match_noarg(s, l, "save-temps")) {
-        mjit_opt->save_temps = 1;
-    }
-    else if (opt_match(s, l, "verbose")) {
-        mjit_opt->verbose = *s ? atoi(s + 1) : 1;
-    }
-    else if (opt_match_arg(s, l, "max-cache")) {
-        mjit_opt->max_cache_size = atoi(s + 1);
-    }
-    else if (opt_match_arg(s, l, "min-calls")) {
-        mjit_opt->min_calls = atoi(s + 1);
-    }
-    else {
-        rb_raise(rb_eRuntimeError,
-                 "invalid MJIT option `%s' (--help will show valid MJIT options)", s);
     }
 }
 #endif
@@ -1543,16 +1432,15 @@ proc_options(long argc, char **argv, ruby_cmdline_options_t *opt, int envopt)
             else if (strcmp("jit", s) == 0) {
 #if !USE_MJIT
                 rb_warn("Ruby was built without JIT support");
-#elif defined(MJIT_FORCE_ENABLE) || !YJIT_SUPPORTED_P
-                FEATURE_SET(opt->features, FEATURE_BIT(mjit));
 #else
-                FEATURE_SET(opt->features, FEATURE_BIT(yjit));
+                FEATURE_SET(opt->features, FEATURE_BIT(jit));
 #endif
             }
             else if (is_option_with_optarg("mjit", '-', true, false, false)) {
 #if USE_MJIT
+                extern void mjit_setup_options(const char *s, struct mjit_options *mjit_opt);
                 FEATURE_SET(opt->features, FEATURE_BIT(mjit));
-                setup_mjit_options(s, &opt->mjit);
+                mjit_setup_options(s, &opt->mjit);
 #else
                 rb_warn("MJIT support is disabled.");
 #endif
@@ -1636,6 +1524,15 @@ ruby_init_prelude(void)
 
 void rb_call_builtin_inits(void);
 
+// Initialize extra optional exts linked statically.
+// This empty definition will be replaced with the actual strong symbol by linker.
+#if RBIMPL_HAS_ATTRIBUTE(weak)
+__attribute__((weak))
+#endif
+void Init_extra_exts(void)
+{
+}
+
 static void
 ruby_opt_init(ruby_cmdline_options_t *opt)
 {
@@ -1654,6 +1551,7 @@ ruby_opt_init(ruby_cmdline_options_t *opt)
     rb_warning_category_update(opt->warn.mask, opt->warn.set);
 
     Init_ext(); /* load statically linked extensions before rubygems */
+    Init_extra_exts();
     rb_call_builtin_inits();
     ruby_init_prelude();
 
@@ -2431,14 +2329,15 @@ open_load_file(VALUE fname_v, int *xflag)
 	int fd;
 	/* open(2) may block if fname is point to FIFO and it's empty. Let's
 	   use O_NONBLOCK. */
-#if defined O_NONBLOCK && HAVE_FCNTL && !(O_NONBLOCK & O_ACCMODE)
+	const int MODE_TO_LOAD = O_RDONLY | (
+#if defined O_NONBLOCK && HAVE_FCNTL
 	/* TODO: fix conflicting O_NONBLOCK in ruby/win32.h */
-# define MODE_TO_LOAD (O_RDONLY | O_NONBLOCK)
-#elif defined O_NDELAY && HAVE_FCNTL && !(O_NDELAY & O_ACCMODE)
-# define MODE_TO_LOAD (O_RDONLY | O_NDELAY)
-#else
-# define MODE_TO_LOAD (O_RDONLY)
+	    !(O_NONBLOCK & O_ACCMODE) ? O_NONBLOCK :
 #endif
+#if defined O_NDELAY && HAVE_FCNTL
+            !(O_NDELAY & O_ACCMODE) ? O_NDELAY :
+#endif
+            0);
 	int mode = MODE_TO_LOAD;
 #if defined DOSISH || defined __CYGWIN__
 # define isdirsep(x) ((x) == '/' || (x) == '\\')

@@ -1792,6 +1792,9 @@ range_include_internal(VALUE range, VALUE val, int string_use_cover)
         else if (NIL_P(beg)) {
 	    VALUE r = rb_funcall(val, id_cmp, 1, end);
 	    if (NIL_P(r)) return Qfalse;
+            if (RANGE_EXCL(range)) {
+                return RBOOL(rb_cmpint(r, val, end) < 0);
+            }
             return RBOOL(rb_cmpint(r, val, end) <= 0);
         }
 	else if (NIL_P(end)) {
@@ -2052,7 +2055,7 @@ range_count(int argc, VALUE *argv, VALUE range)
  *
  * You can create an \Range object explicitly with:
  *
- * - A {range literal}[doc/syntax/literals_rdoc.html#label-Range+Literals]:
+ * - A {range literal}[rdoc-ref:syntax/literals.rdoc@Range+Literals]:
  *
  *     # Ranges that use '..' to include the given end value.
  *     (1..4).to_a      # => [1, 2, 3, 4]
@@ -2168,7 +2171,7 @@ range_count(int argc, VALUE *argv, VALUE range)
  *
  * A user-defined class that is to be used in a range
  * must implement instance <tt><=></tt>;
- * see {Integer#<=>}[Integer.html#label-method-i-3C-3D-3E].
+ * see Integer#<=>.
  * To make iteration available, it must also implement
  * instance method +succ+; see Integer#succ.
  *
@@ -2207,59 +2210,58 @@ range_count(int argc, VALUE *argv, VALUE range)
  *
  * First, what's elsewhere. \Class \Range:
  *
- * - Inherits from {class Object}[Object.html#class-Object-label-What-27s+Here].
- * - Includes {module Enumerable}[Enumerable.html#module-Enumerable-label-What-27s+Here],
+ * - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
+ * - Includes {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],
  *   which provides dozens of additional methods.
  *
  * Here, class \Range provides methods that are useful for:
  *
- * - {Creating a Range}[#class-Range-label-Methods+for+Creating+a+Range]
- * - {Querying}[#class-Range-label-Methods+for+Querying]
- * - {Comparing}[#class-Range-label-Methods+for+Comparing]
- * - {Iterating}[#class-Range-label-Methods+for+Iterating]
- * - {Converting}[#class-Range-label-Methods+for+Converting]
+ * - {Creating a Range}[rdoc-ref:Range@Methods+for+Creating+a+Range]
+ * - {Querying}[rdoc-ref:Range@Methods+for+Querying]
+ * - {Comparing}[rdoc-ref:Range@Methods+for+Comparing]
+ * - {Iterating}[rdoc-ref:Range@Methods+for+Iterating]
+ * - {Converting}[rdoc-ref:Range@Methods+for+Converting]
  *
  * === Methods for Creating a \Range
  *
- * - ::new:: Returns a new range.
+ * - ::new: Returns a new range.
  *
  * === Methods for Querying
  *
- * - #begin:: Returns the begin value given for +self+.
- * - #bsearch:: Returns an element from +self+ selected by a binary search.
- * - #count:: Returns a count of elements in +self+.
- * - #end:: Returns the end value given for +self+.
- * - #exclude_end?:: Returns whether the end object is excluded.
- * - #first:: Returns the first elements of +self+.
- * - #hash:: Returns the integer hash code.
- * - #last:: Returns the last elements of +self+.
- * - #max:: Returns the maximum values in +self+.
- * - #min:: Returns the minimum values in +self+.
- * - #minmax:: Returns the minimum and maximum values in +self+.
- * - #size:: Returns the count of elements in +self+.
+ * - #begin: Returns the begin value given for +self+.
+ * - #bsearch: Returns an element from +self+ selected by a binary search.
+ * - #count: Returns a count of elements in +self+.
+ * - #end: Returns the end value given for +self+.
+ * - #exclude_end?: Returns whether the end object is excluded.
+ * - #first: Returns the first elements of +self+.
+ * - #hash: Returns the integer hash code.
+ * - #last: Returns the last elements of +self+.
+ * - #max: Returns the maximum values in +self+.
+ * - #min: Returns the minimum values in +self+.
+ * - #minmax: Returns the minimum and maximum values in +self+.
+ * - #size: Returns the count of elements in +self+.
  *
  * === Methods for Comparing
  *
- * - {#==}[#method-i-3D-3D]:: Returns whether a given object is equal to +self+
- *                            (uses #==).
- * - #===:: Returns whether the given object is between the begin and end values.
- * - #cover?:: Returns whether a given object is within +self+.
- * - #eql?:: Returns whether a given object is equal to +self+ (uses #eql?).
- * - #include? (aliased as #member?):: Returns whether a given object
- *                                     is an element of +self+.
+ * - #==: Returns whether a given object is equal to +self+ (uses #==).
+ * - #===: Returns whether the given object is between the begin and end values.
+ * - #cover?: Returns whether a given object is within +self+.
+ * - #eql?: Returns whether a given object is equal to +self+ (uses #eql?).
+ * - #include? (aliased as #member?): Returns whether a given object
+ *   is an element of +self+.
  *
  * === Methods for Iterating
  *
- * - #%:: Requires argument +n+; calls the block with each +n+-th element of +self+.
- * - #each:: Calls the block with each element of +self+.
- * - #step:: Takes optional argument +n+ (defaults to 1);
-             calls the block with each +n+-th element of +self+.
+ * - #%: Requires argument +n+; calls the block with each +n+-th element of +self+.
+ * - #each: Calls the block with each element of +self+.
+ * - #step: Takes optional argument +n+ (defaults to 1);
+     calls the block with each +n+-th element of +self+.
  *
  * === Methods for Converting
  *
- * - #inspect:: Returns a string representation of +self+ (uses #inspect).
- * - #to_a (aliased as #entries):: Returns elements of +self+ in an array.
- * - #to_s:: Returns a string representation of +self+ (uses #to_s).
+ * - #inspect: Returns a string representation of +self+ (uses #inspect).
+ * - #to_a (aliased as #entries): Returns elements of +self+ in an array.
+ * - #to_s: Returns a string representation of +self+ (uses #to_s).
  *
  */
 

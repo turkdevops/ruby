@@ -576,8 +576,9 @@ rb_struct_s_def(int argc, VALUE *argv, VALUE klass)
     long i;
     VALUE st;
     st_table *tbl;
+    VALUE opt;
 
-    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+    argc = rb_scan_args(argc, argv, "1*:", NULL, NULL, &opt);
     name = argv[0];
     if (SYMBOL_P(name)) {
 	name = Qnil;
@@ -587,20 +588,19 @@ rb_struct_s_def(int argc, VALUE *argv, VALUE klass)
 	++argv;
     }
 
-    if (RB_TYPE_P(argv[argc-1], T_HASH)) {
+    if (!NIL_P(opt)) {
 	static ID keyword_ids[1];
 
 	if (!keyword_ids[0]) {
 	    keyword_ids[0] = rb_intern("keyword_init");
 	}
-        rb_get_kwargs(argv[argc-1], keyword_ids, 0, 1, &keyword_init);
+        rb_get_kwargs(opt, keyword_ids, 0, 1, &keyword_init);
         if (keyword_init == Qundef) {
             keyword_init = Qnil;
         }
         else if (RTEST(keyword_init)) {
             keyword_init = Qtrue;
         }
-	--argc;
     }
 
     rest = rb_ident_hash_new();
@@ -1169,7 +1169,7 @@ invalid_struct_pos(VALUE s, VALUE idx)
  *
  *  With integer argument +n+ given, returns <tt>self.values[n]</tt>
  *  if +n+ is in range;
- *  see {Array Indexes}[Array.html#class-Array-label-Array+Indexes]:
+ *  see Array@Array+Indexes:
  *
  *    joe[2]  # => 12345
  *    joe[-2] # => "123 Maple, Anytown NC"
@@ -1205,7 +1205,7 @@ rb_struct_aref(VALUE s, VALUE idx)
  *
  *  With integer argument +n+ given, assigns the given +value+
  *  to the +n+-th member if +n+ is in range;
- *  see {Array Indexes}[Array.html#class-Array-label-Array+Indexes]:
+ *  see Array@Array+Indexes:
  *
  *    joe = Customer.new("Joe Smith", "123 Maple, Anytown NC", 12345)
  *    joe[2] = 54321           # => 54321
@@ -1267,7 +1267,7 @@ struct_entry(VALUE s, long n)
  *    joe.values_at(0, -3)   # => ["Joe Smith", "Joe Smith"]
  *
  *  Raises IndexError if any of +integers+ is out of range;
- *  see {Array Indexes}[Array.html#class-Array-label-Array+Indexes].
+ *  see Array@Array+Indexes.
  *
  *  With integer range argument +integer_range+ given,
  *  returns an array containing each value given by the elements of the range;
@@ -1280,7 +1280,7 @@ struct_entry(VALUE s, long n)
  *    joe.values_at(1..4) # => ["123 Maple, Anytown NC", 12345, nil, nil]
  *
  *  Raises RangeError if any element of the range is negative and out of range;
- *  see {Array Indexes}[Array.html#class-Array-label-Array+Indexes].
+ *  see Array@Array+Indexes.
  *
  */
 
@@ -1433,12 +1433,12 @@ recursive_eql(VALUE s, VALUE s2, int recur)
  *  - <tt>other.class == self.class</tt>.
  *  - For each member name +name+, <tt>other.name.eql?(self.name)</tt>.
  *
- *    Customer = Struct.new(:name, :address, :zip)
- *    joe    = Customer.new("Joe Smith", "123 Maple, Anytown NC", 12345)
- *    joe_jr = Customer.new("Joe Smith", "123 Maple, Anytown NC", 12345)
- *    joe_jr.eql?(joe) # => true
- *    joe_jr[:name] = 'Joe Smith, Jr.'
- *    joe_jr.eql?(joe) # => false
+ *     Customer = Struct.new(:name, :address, :zip)
+ *     joe    = Customer.new("Joe Smith", "123 Maple, Anytown NC", 12345)
+ *     joe_jr = Customer.new("Joe Smith", "123 Maple, Anytown NC", 12345)
+ *     joe_jr.eql?(joe) # => true
+ *     joe_jr[:name] = 'Joe Smith, Jr.'
+ *     joe_jr.eql?(joe) # => false
  *
  *  Related: Object#==.
  */
@@ -1562,62 +1562,62 @@ rb_struct_dig(int argc, VALUE *argv, VALUE self)
  *
  *  First, what's elsewhere. \Class \Struct:
  *
- *  - Inherits from {class Object}[Object.html#class-Object-label-What-27s+Here].
- *  - Includes {module Enumerable}[Enumerable.html#module-Enumerable-label-What-27s+Here],
+ *  - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
+ *  - Includes {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],
  *    which provides dozens of additional methods.
  *
  *  Here, class \Struct provides methods that are useful for:
  *
- *  - {Creating a Struct Subclass}[#class-Struct-label-Methods+for+Creating+a+Struct+Subclass]
- *  - {Querying}[#class-Struct-label-Methods+for+Querying]
- *  - {Comparing}[#class-Struct-label-Methods+for+Comparing]
- *  - {Fetching}[#class-Struct-label-Methods+for+Fetching]
- *  - {Assigning}[#class-Struct-label-Methods+for+Assigning]
- *  - {Iterating}[#class-Struct-label-Methods+for+Iterating]
- *  - {Converting}[#class-Struct-label-Methods+for+Converting]
+ *  - {Creating a Struct Subclass}[rdoc-ref:Struct@Methods+for+Creating+a+Struct+Subclass]
+ *  - {Querying}[rdoc-ref:Struct@Methods+for+Querying]
+ *  - {Comparing}[rdoc-ref:Struct@Methods+for+Comparing]
+ *  - {Fetching}[rdoc-ref:Struct@Methods+for+Fetching]
+ *  - {Assigning}[rdoc-ref:Struct@Methods+for+Assigning]
+ *  - {Iterating}[rdoc-ref:Struct@Methods+for+Iterating]
+ *  - {Converting}[rdoc-ref:Struct@Methods+for+Converting]
  *
  *  === Methods for Creating a Struct Subclass
  *
- *  ::new:: Returns a new subclass of \Struct.
+ *  - ::new: Returns a new subclass of \Struct.
  *
  *  === Methods for Querying
  *
- *  #hash:: Returns the integer hash code.
- *  #length, #size:: Returns the number of members.
+ *  - #hash: Returns the integer hash code.
+ *  - #length, #size: Returns the number of members.
  *
  *  === Methods for Comparing
  *
- *  {#==}[#method-i-3D-3D]:: Returns whether a given object is equal to +self+,
- *                           using <tt>==</tt> to compare member values.
- *  #eql?:: Returns whether a given object is equal to +self+,
- *          using <tt>eql?</tt> to compare member values.
+ *  - #==: Returns whether a given object is equal to +self+, using <tt>==</tt>
+ *    to compare member values.
+ *  - #eql?: Returns whether a given object is equal to +self+,
+ *    using <tt>eql?</tt> to compare member values.
  *
  *  === Methods for Fetching
  *
- *  #[]:: Returns the value associated with a given member name.
- *  #to_a, #values, #deconstruct:: Returns the member values in +self+ as an array.
- *  #deconstruct_keys:: Returns a hash of the name/value pairs
- *                      for given member names.
- *  #dig:: Returns the object in nested objects that is specified
- *         by a given member name and additional arguments.
- *  #members:: Returns an array of the member names.
- *  #select, #filter:: Returns an array of member values from +self+,
- *                     as selected by the given block.
- *  #values_at:: Returns an array containing values for given member names.
+ *  - #[]: Returns the value associated with a given member name.
+ *  - #to_a, #values, #deconstruct: Returns the member values in +self+ as an array.
+ *  - #deconstruct_keys: Returns a hash of the name/value pairs
+ *    for given member names.
+ *  - #dig: Returns the object in nested objects that is specified
+ *    by a given member name and additional arguments.
+ *  - #members: Returns an array of the member names.
+ *  - #select, #filter: Returns an array of member values from +self+,
+ *    as selected by the given block.
+ *  - #values_at: Returns an array containing values for given member names.
  *
  *  === Methods for Assigning
  *
- *  #[]=:: Assigns a given value to a given member name.
+ *  - #[]=: Assigns a given value to a given member name.
  *
  *  === Methods for Iterating
  *
- *  #each:: Calls a given block with each member name.
- *  #each_pair:: Calls a given block with each member name/value pair.
+ *  - #each: Calls a given block with each member name.
+ *  - #each_pair: Calls a given block with each member name/value pair.
  *
  *  === Methods for Converting
  *
- *  #inspect, #to_s:: Returns a string representation of +self+.
- *  #to_h:: Returns a hash of the member name/value pairs in +self+.
+ *  - #inspect, #to_s: Returns a string representation of +self+.
+ *  - #to_h: Returns a hash of the member name/value pairs in +self+.
  *
  */
 void

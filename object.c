@@ -757,6 +757,26 @@ rb_obj_is_instance_of(VALUE obj, VALUE c)
     return RBOOL(rb_obj_class(obj) == c);
 }
 
+// Returns whether c is a proper (c != cl) subclass of cl
+// Both c and cl must be T_CLASS
+static VALUE
+class_search_class_ancestor(VALUE cl, VALUE c)
+{
+    RUBY_ASSERT(RB_TYPE_P(c, T_CLASS));
+    RUBY_ASSERT(RB_TYPE_P(cl, T_CLASS));
+
+    size_t c_depth = RCLASS_SUPERCLASS_DEPTH(c);
+    size_t cl_depth = RCLASS_SUPERCLASS_DEPTH(cl);
+    VALUE *classes = RCLASS_SUPERCLASSES(cl);
+
+    // If c's inheritance chain is longer, it cannot be an ancestor
+    // We are checking for a proper subclass so don't check if they are equal
+    if (cl_depth <= c_depth)
+        return Qfalse;
+
+    // Otherwise check that c is in cl's inheritance chain
+    return RBOOL(classes[c_depth] == c);
+}
 
 /*
  *  call-seq:
@@ -791,19 +811,54 @@ rb_obj_is_kind_of(VALUE obj, VALUE c)
 {
     VALUE cl = CLASS_OF(obj);
 
+    RUBY_ASSERT(RB_TYPE_P(cl, T_CLASS));
+
+    // Fastest path: If the object's class is an exact match we know `c` is a
+    // class without checking type and can return immediately.
+    if (cl == c) return Qtrue;
+
     // Note: YJIT needs this function to never allocate and never raise when
     // `c` is a class or a module.
-    c = class_or_module_required(c);
-    return RBOOL(class_search_ancestor(cl, RCLASS_ORIGIN(c)));
+
+    if (LIKELY(RB_TYPE_P(c, T_CLASS))) {
+        // Fast path: Both are T_CLASS
+        return class_search_class_ancestor(cl, c);
+    }
+    else if (RB_TYPE_P(c, T_ICLASS)) {
+        // First check if we inherit the includer
+        // If we do we can return true immediately
+        VALUE includer = RCLASS_INCLUDER(c);
+        if (cl == includer) return Qtrue;
+
+        // Usually includer is a T_CLASS here, except when including into an
+        // already included Module.
+        // If it is a class, attempt the fast class-to-class check and return
+        // true if there is a match.
+        if (RB_TYPE_P(includer, T_CLASS) && class_search_class_ancestor(cl, includer))
+            return Qtrue;
+
+        // We don't include the ICLASS directly, so must check if we inherit
+        // the module via another include
+        return RBOOL(class_search_ancestor(cl, RCLASS_ORIGIN(c)));
+    }
+    else if (RB_TYPE_P(c, T_MODULE)) {
+        // Slow path: check each ancestor in the linked list and its method table
+        return RBOOL(class_search_ancestor(cl, RCLASS_ORIGIN(c)));
+    }
+    else {
+        rb_raise(rb_eTypeError, "class or module required");
+        UNREACHABLE_RETURN(Qfalse);
+    }
 }
+
 
 static VALUE
 class_search_ancestor(VALUE cl, VALUE c)
 {
     while (cl) {
-	if (cl == c || RCLASS_M_TBL(cl) == RCLASS_M_TBL(c))
-	    return cl;
-	cl = RCLASS_SUPER(cl);
+        if (cl == c || RCLASS_M_TBL(cl) == RCLASS_M_TBL(c))
+            return cl;
+        cl = RCLASS_SUPER(cl);
     }
     return 0;
 }
@@ -1578,17 +1633,38 @@ VALUE
 rb_class_inherited_p(VALUE mod, VALUE arg)
 {
     if (mod == arg) return Qtrue;
-    if (!CLASS_OR_MODULE_P(arg) && !RB_TYPE_P(arg, T_ICLASS)) {
-	rb_raise(rb_eTypeError, "compared with non class/module");
+
+    if (RB_TYPE_P(arg, T_CLASS) && RB_TYPE_P(mod, T_CLASS)) {
+        // comparison between classes
+        size_t mod_depth = RCLASS_SUPERCLASS_DEPTH(mod);
+        size_t arg_depth = RCLASS_SUPERCLASS_DEPTH(arg);
+        if (arg_depth < mod_depth) {
+            // check if mod < arg
+            return RCLASS_SUPERCLASSES(mod)[arg_depth] == arg ?
+                Qtrue :
+                Qnil;
+        } else if (arg_depth > mod_depth) {
+            // check if mod > arg
+            return RCLASS_SUPERCLASSES(arg)[mod_depth] == mod ?
+                Qfalse :
+                Qnil;
+        } else {
+            // Depths match, and we know they aren't equal: no relation
+            return Qnil;
+        }
+    } else {
+        if (!CLASS_OR_MODULE_P(arg) && !RB_TYPE_P(arg, T_ICLASS)) {
+            rb_raise(rb_eTypeError, "compared with non class/module");
+        }
+        if (class_search_ancestor(mod, RCLASS_ORIGIN(arg))) {
+            return Qtrue;
+        }
+        /* not mod < arg; check if mod > arg */
+        if (class_search_ancestor(arg, mod)) {
+            return Qfalse;
+        }
+        return Qnil;
     }
-    if (class_search_ancestor(mod, RCLASS_ORIGIN(arg))) {
-	return Qtrue;
-    }
-    /* not mod < arg; check if mod > arg */
-    if (class_search_ancestor(arg, mod)) {
-	return Qfalse;
-    }
-    return Qnil;
 }
 
 /*
@@ -1596,7 +1672,9 @@ rb_class_inherited_p(VALUE mod, VALUE arg)
  *   mod < other   ->  true, false, or nil
  *
  * Returns true if <i>mod</i> is a subclass of <i>other</i>. Returns
- * <code>nil</code> if there's no relationship between the two.
+ * <code>false</code> if <i>mod</i> is the same as <i>other</i>
+ * or <i>mod</i> is an ancestor of <i>other</i>.
+ * Returns <code>nil</code> if there's no relationship between the two.
  * (Think of the relationship in terms of the class definition:
  * "class A < B" implies "A < B".)
  *
@@ -1637,7 +1715,9 @@ rb_mod_ge(VALUE mod, VALUE arg)
  *   mod > other   ->  true, false, or nil
  *
  * Returns true if <i>mod</i> is an ancestor of <i>other</i>. Returns
- * <code>nil</code> if there's no relationship between the two.
+ * <code>false</code> if <i>mod</i> is the same as <i>other</i>
+ * or <i>mod</i> is a descendant of <i>other</i>.
+ * Returns <code>nil</code> if there's no relationship between the two.
  * (Think of the relationship in terms of the class definition:
  * "class A < B" implies "B > A".)
  *
@@ -4118,25 +4198,16 @@ f_sprintf(int c, const VALUE *v, VALUE _)
  *
  *  These are the methods defined for \BasicObject:
  *
- *  - ::new:: Returns a new \BasicObject instance.
- *  - {!}[#method-i-21]:: Returns the boolean negation of +self+: +true+ or +false+.
- *  - {!=}[#method-i-21-3D]:: Returns whether +self+ and the given object
- *                            are _not_ equal.
- *  - {==}[#method-i-3D-3D]:: Returns whether +self+ and the given object
- *                            are equivalent.
- *  - {__id__}[#method-i-__id__]:: Returns the integer object identifier for +self+.
- *  - {__send__}[#method-i-__send__]:: Calls the method identified by the given symbol.
- *  - #equal?:: Returns whether +self+ and the given object are the same object.
- *  - #instance_eval:: Evaluates the given string or block in the context of +self+.
- *  - #instance_exec:: Executes the given block in the context of +self+,
- *                     passing the given arguments.
- *  - #method_missing:: Method called when an undefined method is called on +self+.
- *  - #singleton_method_added:: Method called when a singleton method
- *                              is added to +self+.
- *  - #singleton_method_removed:: Method called when a singleton method
- *                                is added removed from +self+.
- *  - #singleton_method_undefined:: Method called when a singleton method
- *                                  is undefined in +self+.
+ *  - ::new: Returns a new \BasicObject instance.
+ *  - #!: Returns the boolean negation of +self+: +true+ or +false+.
+ *  - #!=: Returns whether +self+ and the given object are _not_ equal.
+ *  - #==: Returns whether +self+ and the given object are equivalent.
+ *  - #__id__: Returns the integer object identifier for +self+.
+ *  - #__send__: Calls the method identified by the given symbol.
+ *  - #equal?: Returns whether +self+ and the given object are the same object.
+ *  - #instance_eval: Evaluates the given string or block in the context of +self+.
+ *  - #instance_exec: Executes the given block in the context of +self+,
+ *    passing the given arguments.
  *
  */
 
@@ -4162,84 +4233,83 @@ f_sprintf(int c, const VALUE *v, VALUE _)
  *
  *  First, what's elsewhere. \Class \Object:
  *
- *  - Inherits from {class BasicObject}[BasicObject.html#class-BasicObject-label-What-27s+Here].
- *  - Includes {module Kernel}[Kernel.html#module-Kernel-label-What-27s+Here].
+ *  - Inherits from {class BasicObject}[rdoc-ref:BasicObject@What-27s+Here].
+ *  - Includes {module Kernel}[rdoc-ref:Kernel@What-27s+Here].
  *
  *  Here, class \Object provides methods for:
  *
- *  - {Querying}[#class-Object-label-Querying]
- *  - {Instance Variables}[#class-Object-label-Instance+Variables]
- *  - {Other}[#class-Object-label-Other]
+ *  - {Querying}[rdoc-ref:Object@Querying]
+ *  - {Instance Variables}[rdoc-ref:Object@Instance+Variables]
+ *  - {Other}[rdoc-ref:Object@Other]
  *
  *  === Querying
  *
- *  - {!~}[#method-i-21~]:: Returns +true+ if +self+ does not match the given object,
- *                          otherwise +false+.
- *  - {<=>}[#method-i-3C-3D-3E]:: Returns 0 if +self+ and the given object +object+
- *                                are the same object, or if
- *                                <tt>self == object</tt>; otherwise returns +nil+.
- *  - #===:: Implements case equality, effectively the same as calling #==.
- *  - #eql?:: Implements hash equality, effectively the same as calling #==.
- *  - #kind_of? (aliased as #is_a?):: Returns whether given argument is an ancestor
- *                                    of the singleton class of +self+.
- *  - #instance_of?:: Returns whether +self+ is an instance of the given class.
- *  - #instance_variable_defined?:: Returns whether the given instance variable
- *                                  is defined in +self+.
- *  - #method:: Returns the Method object for the given method in +self+.
- *  - #methods:: Returns an array of symbol names of public and protected methods
- *               in +self+.
- *  - #nil?:: Returns +false+. (Only +nil+ responds +true+ to method <tt>nil?</tt>.)
- *  - #object_id:: Returns an integer corresponding to +self+ that is unique
- *                 for the current process
- *  - #private_methods:: Returns an array of the symbol names
- *                       of the private methods in +self+.
- *  - #protected_methods:: Returns an array of the symbol names
- *                         of the protected methods in +self+.
- *  - #public_method:: Returns the Method object for the given public method in +self+.
- *  - #public_methods:: Returns an array of the symbol names
- *                      of the public methods in +self+.
- *  - #respond_to?:: Returns whether +self+ responds to the given method.
- *  - #singleton_class:: Returns the singleton class of +self+.
- *  - #singleton_method:: Returns the Method object for the given singleton method
- *                        in +self+.
- *  - #singleton_methods:: Returns an array of the symbol names
- *                         of the singleton methods in +self+.
+ *  - #!~: Returns +true+ if +self+ does not match the given object,
+ *    otherwise +false+.
+ *  - #<=>: Returns 0 if +self+ and the given object +object+ are the same
+ *    object, or if <tt>self == object</tt>; otherwise returns +nil+.
+ *  - #===: Implements case equality, effectively the same as calling #==.
+ *  - #eql?: Implements hash equality, effectively the same as calling #==.
+ *  - #kind_of? (aliased as #is_a?): Returns whether given argument is an ancestor
+ *    of the singleton class of +self+.
+ *  - #instance_of?: Returns whether +self+ is an instance of the given class.
+ *  - #instance_variable_defined?: Returns whether the given instance variable
+ *    is defined in +self+.
+ *  - #method: Returns the Method object for the given method in +self+.
+ *  - #methods: Returns an array of symbol names of public and protected methods
+ *    in +self+.
+ *  - #nil?: Returns +false+. (Only +nil+ responds +true+ to method <tt>nil?</tt>.)
+ *  - #object_id: Returns an integer corresponding to +self+ that is unique
+ *    for the current process
+ *  - #private_methods: Returns an array of the symbol names
+ *    of the private methods in +self+.
+ *  - #protected_methods: Returns an array of the symbol names
+ *    of the protected methods in +self+.
+ *  - #public_method: Returns the Method object for the given public method in +self+.
+ *  - #public_methods: Returns an array of the symbol names
+ *    of the public methods in +self+.
+ *  - #respond_to?: Returns whether +self+ responds to the given method.
+ *  - #singleton_class: Returns the singleton class of +self+.
+ *  - #singleton_method: Returns the Method object for the given singleton method
+ *    in +self+.
+ *  - #singleton_methods: Returns an array of the symbol names
+ *    of the singleton methods in +self+.
  *
- *  - #define_singleton_method:: Defines a singleton method in +self+
- *                               for the given symbol method-name and block or proc.
- *  - #extend:: Includes the given modules in the singleton class of +self+.
- *  - #public_send:: Calls the given public method in +self+ with the given argument.
- *  - #send:: Calls the given method in +self+ with the given argument.
+ *  - #define_singleton_method: Defines a singleton method in +self+
+ *    for the given symbol method-name and block or proc.
+ *  - #extend: Includes the given modules in the singleton class of +self+.
+ *  - #public_send: Calls the given public method in +self+ with the given argument.
+ *  - #send: Calls the given method in +self+ with the given argument.
  *
  *  === Instance Variables
  *
- *  - #instance_variable_get:: Returns the value of the given instance variable
- *                             in +self+, or +nil+ if the instance variable is not set.
- *  - #instance_variable_set:: Sets the value of the given instance variable in +self+
- *                             to the given object.
- *  - #instance_variables:: Returns an array of the symbol names
- *                          of the instance variables in +self+.
- *  - #remove_instance_variable:: Removes the named instance variable from +self+.
+ *  - #instance_variable_get: Returns the value of the given instance variable
+ *    in +self+, or +nil+ if the instance variable is not set.
+ *  - #instance_variable_set: Sets the value of the given instance variable in +self+
+ *    to the given object.
+ *  - #instance_variables: Returns an array of the symbol names
+ *    of the instance variables in +self+.
+ *  - #remove_instance_variable: Removes the named instance variable from +self+.
  *
  *  === Other
  *
- *  - #clone::  Returns a shallow copy of +self+, including singleton class
- *              and frozen state.
- *  - #define_singleton_method:: Defines a singleton method in +self+
- *                               for the given symbol method-name and block or proc.
- *  - #display:: Prints +self+ to the given \IO stream or <tt>$stdout</tt>.
- *  - #dup:: Returns a shallow unfrozen copy of +self+.
- *  - #enum_for (aliased as #to_enum):: Returns an Enumerator for +self+
- *                                      using the using the given method,
- *                                      arguments, and block.
- *  - #extend:: Includes the given modules in the singleton class of +self+.
- *  - #freeze:: Prevents further modifications to +self+.
- *  - #hash:: Returns the integer hash value for +self+.
- *  - #inspect:: Returns a human-readable  string representation of +self+.
- *  - #itself:: Returns +self+.
- *  - #public_send:: Calls the given public method in +self+ with the given argument.
- *  - #send:: Calls the given method in +self+ with the given argument.
- *  - #to_s:: Returns a string representation of +self+.
+ *  - #clone:  Returns a shallow copy of +self+, including singleton class
+ *    and frozen state.
+ *  - #define_singleton_method: Defines a singleton method in +self+
+ *    for the given symbol method-name and block or proc.
+ *  - #display: Prints +self+ to the given \IO stream or <tt>$stdout</tt>.
+ *  - #dup: Returns a shallow unfrozen copy of +self+.
+ *  - #enum_for (aliased as #to_enum): Returns an Enumerator for +self+
+ *    using the using the given method, arguments, and block.
+ *  - #extend: Includes the given modules in the singleton class of +self+.
+ *  - #freeze: Prevents further modifications to +self+.
+ *  - #hash: Returns the integer hash value for +self+.
+ *  - #inspect: Returns a human-readable  string representation of +self+.
+ *  - #itself: Returns +self+.
+ *  - #method_missing: Method called when an undefined method is called on +self+.
+ *  - #public_send: Calls the given public method in +self+ with the given argument.
+ *  - #send: Calls the given method in +self+ with the given argument.
+ *  - #to_s: Returns a string representation of +self+.
  *
  */
 
@@ -4304,134 +4374,131 @@ InitVM_Object(void)
      *
      * \Module \Kernel provides methods that are useful for:
      *
-     * - {Converting}[#module-Kernel-label-Converting]
-     * - {Querying}[#module-Kernel-label-Querying]
-     * - {Exiting}[#module-Kernel-label-Exiting]
-     * - {Exceptions}[#module-Kernel-label-Exceptions]
-     * - {IO}[#module-Kernel-label-IO]
-     * - {Procs}[#module-Kernel-label-Procs]
-     * - {Tracing}[#module-Kernel-label-Tracing]
-     * - {Subprocesses}[#module-Kernel-label-Subprocesses]
-     * - {Loading}[#module-Kernel-label-Loading]
-     * - {Yielding}[#module-Kernel-label-Yielding]
-     * - {Random Values}[#module-Kernel-label-Random+Values]
-     * - {Other}[#module-Kernel-label-Other]
+     * - {Converting}[rdoc-ref:Kernel@Converting]
+     * - {Querying}[rdoc-ref:Kernel@Querying]
+     * - {Exiting}[rdoc-ref:Kernel@Exiting]
+     * - {Exceptions}[rdoc-ref:Kernel@Exceptions]
+     * - {IO}[rdoc-ref:Kernel@IO]
+     * - {Procs}[rdoc-ref:Kernel@Procs]
+     * - {Tracing}[rdoc-ref:Kernel@Tracing]
+     * - {Subprocesses}[rdoc-ref:Kernel@Subprocesses]
+     * - {Loading}[rdoc-ref:Kernel@Loading]
+     * - {Yielding}[rdoc-ref:Kernel@Yielding]
+     * - {Random Values}[rdoc-ref:Kernel@Random+Values]
+     * - {Other}[rdoc-ref:Kernel@Other]
      *
      * === Converting
      *
-     * - {#Array}[#method-i-Array]:: Returns an Array based on the given argument.
-     * - {#Complex}[#method-i-Complex]:: Returns a Complex based on the given arguments.
-     * - {#Float}[#method-i-Float]:: Returns a Float based on the given arguments.
-     * - {#Hash}[#method-i-Hash]:: Returns a Hash based on the given argument.
-     * - {#Integer}[#method-i-Integer]:: Returns an Integer based on the given arguments.
-     * - {#Rational}[#method-i-Rational]:: Returns a Rational
-     *                                     based on the given arguments.
-     * - {#String}[#method-i-String]:: Returns a String based on the given argument.
+     * - #Array: Returns an Array based on the given argument.
+     * - #Complex: Returns a Complex based on the given arguments.
+     * - #Float: Returns a Float based on the given arguments.
+     * - #Hash: Returns a Hash based on the given argument.
+     * - #Integer: Returns an Integer based on the given arguments.
+     * - #Rational: Returns a Rational based on the given arguments.
+     * - #String: Returns a String based on the given argument.
      *
      * === Querying
      *
-     * - {#__callee__}[#method-i-__callee__]:: Returns the called name
-     *                                         of the current method as a symbol.
-     * - {#__dir__}[#method-i-__dir__]:: Returns the path to the directory
-     *                                   from which the current method is called.
-     * - {#__method__}[#method-i-__method__]:: Returns the name
-     *                                         of the current method as a symbol.
-     * - #autoload?:: Returns the file to be loaded when the given module is referenced.
-     * - #binding:: Returns a Binding for the context at the point of call.
-     * - #block_given?:: Returns +true+ if a block was passed to the calling method.
-     * - #caller:: Returns the current execution stack as an array of strings.
-     * - #caller_locations:: Returns the current execution stack as an array
-     *                       of Thread::Backtrace::Location objects.
-     * - #class:: Returns the class of +self+.
-     * - #frozen?:: Returns whether +self+ is frozen.
-     * - #global_variables:: Returns an array of global variables as symbols.
-     * - #local_variables:: Returns an array of local variables as symbols.
-     * - #test:: Performs specified tests on the given single file or pair of files.
+     * - #__callee__: Returns the called name of the current method as a symbol.
+     * - #__dir__: Returns the path to the directory from which the current
+     *   method is called.
+     * - #__method__: Returns the name of the current method as a symbol.
+     * - #autoload?: Returns the file to be loaded when the given module is referenced.
+     * - #binding: Returns a Binding for the context at the point of call.
+     * - #block_given?: Returns +true+ if a block was passed to the calling method.
+     * - #caller: Returns the current execution stack as an array of strings.
+     * - #caller_locations: Returns the current execution stack as an array
+     *   of Thread::Backtrace::Location objects.
+     * - #class: Returns the class of +self+.
+     * - #frozen?: Returns whether +self+ is frozen.
+     * - #global_variables: Returns an array of global variables as symbols.
+     * - #local_variables: Returns an array of local variables as symbols.
+     * - #test: Performs specified tests on the given single file or pair of files.
      *
      * === Exiting
      *
-     * - #abort:: Exits the current process after printing the given arguments.
-     * - #at_exit:: Executes the given block when the process exits.
-     * - #exit:: Exits the current process after calling any registered
-     *           +at_exit+ handlers.
-     * - #exit!:: Exits the current process without calling any registered
-     *            +at_exit+ handlers.
+     * - #abort: Exits the current process after printing the given arguments.
+     * - #at_exit: Executes the given block when the process exits.
+     * - #exit: Exits the current process after calling any registered
+     *   +at_exit+ handlers.
+     * - #exit!: Exits the current process without calling any registered
+     *   +at_exit+ handlers.
      *
      * === Exceptions
      *
-     * - #catch:: Executes the given block, possibly catching a thrown object.
-     * - #raise (aliased as #fail):: Raises an exception based on the given arguments.
-     * - #throw:: Returns from the active catch block waiting for the given tag.
+     * - #catch: Executes the given block, possibly catching a thrown object.
+     * - #raise (aliased as #fail): Raises an exception based on the given arguments.
+     * - #throw: Returns from the active catch block waiting for the given tag.
      *
      *
      * === \IO
      *
-     * - #gets:: Returns and assigns to <tt>$_</tt> the next line from the current input.
-     * - #open:: Creates an IO object connected to the given stream, file, or subprocess.
-     * - #p::  Prints the given objects' inspect output to the standard output.
-     * - #pp:: Prints the given objects in pretty form.
-     * - #print:: Prints the given objects to standard output without a newline.
-     * - #printf:: Prints the string resulting from applying the given format string
-     *             to any additional arguments.
-     * - #putc:: Equivalent to <tt.$stdout.putc(object)</tt> for the given object.
-     * - #puts:: Equivalent to <tt>$stdout.puts(*objects)</tt> for the given objects.
-     * - #readline:: Similar to #gets, but raises an exception at the end of file.
-     * - #readlines:: Returns an array of the remaining lines from the current input.
-     * - #select:: Same as IO.select.
+     * - ::pp: Prints the given objects in pretty form.
+     * - #gets: Returns and assigns to <tt>$_</tt> the next line from the current input.
+     * - #open: Creates an IO object connected to the given stream, file, or subprocess.
+     * - #p:  Prints the given objects' inspect output to the standard output.
+     * - #print: Prints the given objects to standard output without a newline.
+     * - #printf: Prints the string resulting from applying the given format string
+     *   to any additional arguments.
+     * - #putc: Equivalent to <tt.$stdout.putc(object)</tt> for the given object.
+     * - #puts: Equivalent to <tt>$stdout.puts(*objects)</tt> for the given objects.
+     * - #readline: Similar to #gets, but raises an exception at the end of file.
+     * - #readlines: Returns an array of the remaining lines from the current input.
+     * - #select: Same as IO.select.
      *
      * === Procs
      *
-     * - #lambda:: Returns a lambda proc for the given block.
-     * - #proc:: Returns a new Proc; equivalent to Proc.new.
+     * - #lambda: Returns a lambda proc for the given block.
+     * - #proc: Returns a new Proc; equivalent to Proc.new.
      *
      * === Tracing
      *
-     * - #set_trace_func:: Sets the given proc as the handler for tracing,
-     *                     or disables tracing if given +nil+.
-     * - #trace_var:: Starts tracing assignments to the given global variable.
-     * - #untrace_var:: Disables tracing of assignments to the given global variable.
+     * - #set_trace_func: Sets the given proc as the handler for tracing,
+     *   or disables tracing if given +nil+.
+     * - #trace_var: Starts tracing assignments to the given global variable.
+     * - #untrace_var: Disables tracing of assignments to the given global variable.
      *
      * === Subprocesses
      *
-     * - #`cmd`:: Returns the standard output of running +cmd+ in a subshell.
-     * - #exec:: Replaces current process with a new process.
-     * - #fork:: Forks the current process into two processes.
-     * - #spawn:: Executes the given command and returns its pid without waiting
-     *            for completion.
-     * - #system:: Executes the given command in a subshell.
+     * - {\`command`}[rdoc-ref:Kernel#`]: Returns the standard output of running
+     *   +command+ in a subshell.
+     * - #exec: Replaces current process with a new process.
+     * - #fork: Forks the current process into two processes.
+     * - #spawn: Executes the given command and returns its pid without waiting
+     *   for completion.
+     * - #system: Executes the given command in a subshell.
      *
      * === Loading
      *
-     * - #autoload:: Registers the given file to be loaded when the given constant
-     *               is first referenced.
-     * - #load:: Loads the given Ruby file.
-     * - #require:: Loads the given Ruby file unless it has already been loaded.
-     * - #require_relative:: Loads the Ruby file path relative to the calling file,
-     *                       unless it has already been loaded.
+     * - #autoload: Registers the given file to be loaded when the given constant
+     *   is first referenced.
+     * - #load: Loads the given Ruby file.
+     * - #require: Loads the given Ruby file unless it has already been loaded.
+     * - #require_relative: Loads the Ruby file path relative to the calling file,
+     *   unless it has already been loaded.
      *
      * === Yielding
      *
-     * - #tap:: Yields +self+ to the given block; returns +self+.
-     * - #then (aliased as #yield_self):: Yields +self+ to the block
-     *                                    and returns the result of the block.
+     * - #tap: Yields +self+ to the given block; returns +self+.
+     * - #then (aliased as #yield_self): Yields +self+ to the block
+     *   and returns the result of the block.
      *
      * === \Random Values
      *
-     * - #rand:: Returns a pseudo-random floating point number
-     *           strictly between 0.0 and 1.0.
-     * - #srand:: Seeds the pseudo-random number generator with the given number.
+     * - #rand: Returns a pseudo-random floating point number
+     *   strictly between 0.0 and 1.0.
+     * - #srand: Seeds the pseudo-random number generator with the given number.
      *
      * === Other
      *
-     * - #eval:: Evaluates the given string as Ruby code.
-     * - #loop:: Repeatedly executes the given block.
-     * - #sleep:: Suspends the current thread for the given number of seconds.
-     * - #sprintf (aliased as #format):: Returns the string resulting from applying
-     *                                   the given format string
-     *                                   to any additional arguments.
-     * - #syscall:: Runs an operating system call.
-     * - #trap:: Specifies the handling of system signals.
-     * - #warn:: Issue a warning based on the given messages and options.
+     * - #eval: Evaluates the given string as Ruby code.
+     * - #loop: Repeatedly executes the given block.
+     * - #sleep: Suspends the current thread for the given number of seconds.
+     * - #sprintf (aliased as #format): Returns the string resulting from applying
+     *   the given format string to any additional arguments.
+     * - #syscall: Runs an operating system call.
+     * - #trap: Specifies the handling of system signals.
+     * - #warn: Issue a warning based on the given messages and options.
      *
      */
     rb_mKernel = rb_define_module("Kernel");

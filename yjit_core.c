@@ -524,7 +524,7 @@ ctx_diff(const ctx_t *src, const ctx_t *dst)
 static rb_yjit_block_array_t
 yjit_get_version_array(const rb_iseq_t *iseq, unsigned idx)
 {
-    struct rb_iseq_constant_body *body = iseq->body;
+    struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
 
     if (rb_darray_size(body->yjit_blocks) == 0) {
         return NULL;
@@ -546,7 +546,7 @@ add_block_version(block_t *block)
 {
     const blockid_t blockid = block->blockid;
     const rb_iseq_t *iseq = blockid.iseq;
-    struct rb_iseq_constant_body *body = iseq->body;
+    struct rb_iseq_constant_body *body = ISEQ_BODY(iseq);
 
     // Function entry blocks must have stack size 0
     RUBY_ASSERT(!(block->blockid.idx == 0 && block->ctx.stack_size > 0));
@@ -558,9 +558,8 @@ add_block_version(block_t *block)
         if ((unsigned)casted != body->iseq_size) {
             rb_bug("iseq too large");
         }
-        if (!rb_darray_make(&body->yjit_blocks, casted)) {
-            rb_bug("allocation failed");
-        }
+
+        rb_darray_make(&body->yjit_blocks, casted);
 
 #if YJIT_STATS
         // First block compiled for this iseq
@@ -568,13 +567,11 @@ add_block_version(block_t *block)
 #endif
     }
 
-    RUBY_ASSERT((int32_t)blockid.idx < rb_darray_size(body->yjit_blocks));
+    RUBY_ASSERT(blockid.idx < rb_darray_size(body->yjit_blocks));
     rb_yjit_block_array_t *block_array_ref = rb_darray_ref(body->yjit_blocks, blockid.idx);
 
     // Add the new block
-    if (!rb_darray_append(block_array_ref, block)) {
-        rb_bug("allocation failed");
-    }
+    rb_darray_append(block_array_ref, block);
 
     {
         // By writing the new block to the iseq, the iseq now
@@ -837,7 +834,7 @@ gen_entry_point(const rb_iseq_t *iseq, uint32_t insn_idx, rb_execution_context_t
 {
     // If we aren't at PC 0, don't generate code
     // See yjit_pc_guard
-    if (iseq->body->iseq_encoded != ec->cfp->pc) {
+    if (ISEQ_BODY(iseq)->iseq_encoded != ec->cfp->pc) {
         return NULL;
     }
 
@@ -1222,7 +1219,7 @@ verify_blockid(const blockid_t blockid)
 {
     const rb_iseq_t *const iseq = blockid.iseq;
     RUBY_ASSERT_ALWAYS(IMEMO_TYPE_P(iseq, imemo_iseq));
-    RUBY_ASSERT_ALWAYS(blockid.idx < iseq->body->iseq_size);
+    RUBY_ASSERT_ALWAYS(blockid.idx < ISEQ_BODY(iseq)->iseq_size);
 }
 
 // Invalidate one specific block version
@@ -1339,7 +1336,7 @@ invalidate_block_version(block_t *block)
     // change this in the future when we support optional parameters because
     // they enter the function with a non-zero PC
     if (block->blockid.idx == 0) {
-        iseq->body->jit_func = 0;
+        ISEQ_BODY(iseq)->jit_func = 0;
     }
 #endif
 

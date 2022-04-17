@@ -355,6 +355,35 @@ VALUE cFoo = rb_define_class("Foo", rb_cObject);
 /* Document-class: Foo
  * this is the Foo class
  */
+VALUE cFoo = rb_struct_define(
+        "Foo",
+        "some", "various", "fields", NULL);
+    EOF
+
+    klass = util_get_class content, 'cFoo'
+    assert_equal "this is the Foo class", klass.comment.text
+  end
+
+  def test_do_classes_struct_under
+    content = <<-EOF
+/* Document-class: Kernel::Foo
+ * this is the Foo class under Kernel
+ */
+VALUE cFoo = rb_struct_define_under(
+        rb_mKernel, "Foo",
+        "some", "various", "fields", NULL);
+    EOF
+
+    klass = util_get_class content, 'cFoo'
+    assert_equal 'Kernel::Foo', klass.full_name
+    assert_equal "this is the Foo class under Kernel", klass.comment.text
+  end
+
+  def test_do_classes_struct_without_accessor
+    content = <<-EOF
+/* Document-class: Foo
+ * this is the Foo class
+ */
 VALUE cFoo = rb_struct_define_without_accessor(
         "Foo", rb_cObject, foo_alloc,
         "some", "various", "fields", NULL);
@@ -362,6 +391,21 @@ VALUE cFoo = rb_struct_define_without_accessor(
 
     klass = util_get_class content, 'cFoo'
     assert_equal "this is the Foo class", klass.comment.text
+  end
+
+  def test_do_classes_struct_without_accessor_under
+    content = <<-EOF
+/* Document-class: Kernel::Foo
+ * this is the Foo class under Kernel
+ */
+VALUE cFoo = rb_struct_define_without_accessor_under(
+        rb_mKernel, "Foo", rb_cObject, foo_alloc,
+        "some", "various", "fields", NULL);
+    EOF
+
+    klass = util_get_class content, 'cFoo'
+    assert_equal 'Kernel::Foo', klass.full_name
+    assert_equal "this is the Foo class under Kernel", klass.comment.text
   end
 
   def test_do_classes_class_under
@@ -594,6 +638,17 @@ void Init_File(void) {
     assert_equal 'LOCK_SH',          constant.name
     assert_equal 'INT2FIX(LOCK_SH)', constant.value
     assert_equal 'Shared lock',      constant.comment.text
+
+    @parser = util_parser <<-EOF
+void Init_File(void) {
+  rb_cFile = rb_define_class("File", rb_cIO);
+  rb_mFConst = rb_define_module_under(rb_cFile, "Constants");
+}
+    EOF
+    @parser.do_classes_and_modules
+    @parser.do_constants
+
+    assert_equal 'File::Constants',  klass.full_name
   end
 
   def test_do_includes

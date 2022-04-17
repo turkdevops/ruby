@@ -7,9 +7,7 @@ require 'rbconfig'
 require 'fileutils'
 require 'shellwords'
 
-class String
-  # :stopdoc:
-
+class String # :nodoc:
   # Wraps a string in escaped quotes if it contains whitespace.
   def quote
     /\s/ =~ self ? "\"#{self}\"" : "#{self}"
@@ -32,19 +30,13 @@ class String
   def sans_arguments
     self[/\A[^()]+/]
   end
-
-  # :startdoc:
 end
 
-class Array
-  # :stopdoc:
-
+class Array # :nodoc:
   # Wraps all strings in escaped quotes if they contain whitespace.
   def quote
     map {|s| s.quote}
   end
-
-  # :startdoc:
 end
 
 ##
@@ -688,16 +680,6 @@ MSG
     try_compile(MAIN_DOES_NOTHING, flags, {:werror => true}.update(opts))
   end
 
-  def append_cflags(flags, *opts)
-    Array(flags).each do |flag|
-      if checking_for("whether #{flag} is accepted as CFLAGS") {
-           try_cflags(flag, *opts)
-         }
-        $CFLAGS << " " << flag
-      end
-    end
-  end
-
   def with_ldflags(flags)
     ldflags = $LDFLAGS
     $LDFLAGS = flags.dup
@@ -1032,6 +1014,21 @@ SRC
 
   # :startdoc:
 
+  # Check whether each given C compiler flag is acceptable and append it
+  # to <tt>$CFLAGS</tt> if so.
+  #
+  # [+flags+] a C compiler flag as a +String+ or an +Array+ of them
+  #
+  def append_cflags(flags, *opts)
+    Array(flags).each do |flag|
+      if checking_for("whether #{flag} is accepted as CFLAGS") {
+           try_cflags(flag, *opts)
+         }
+        $CFLAGS << " " << flag
+      end
+    end
+  end
+
   # Returns whether or not +macro+ is defined either in the common header
   # files or within any +headers+ you provide.
   #
@@ -1359,8 +1356,10 @@ SRC
 
   # :stopdoc:
   STRING_OR_FAILED_FORMAT = "%s"
-  def STRING_OR_FAILED_FORMAT.%(x) # :nodoc:
-    x ? super : "failed"
+  class << STRING_OR_FAILED_FORMAT # :nodoc:
+    def %(x)
+      x ? super : "failed"
+    end
   end
 
   def typedef_expr(type, headers)
@@ -1836,26 +1835,26 @@ SRC
     $config_dirs[target] = [idir, ldir]
   end
 
-  # Returns compile/link information about an installed library in a
-  # tuple of <code>[cflags, ldflags, libs]</code>, by using the
-  # command found first in the following commands:
+  # Returns compile/link information about an installed library in a tuple of <code>[cflags,
+  # ldflags, libs]</code>, by using the command found first in the following commands:
   #
   # 1. If <code>--with-{pkg}-config={command}</code> is given via
-  #    command line option: <code>{command} {option}</code>
+  #    command line option: <code>{command} {options}</code>
   #
-  # 2. <code>{pkg}-config {option}</code>
+  # 2. <code>{pkg}-config {options}</code>
   #
-  # 3. <code>pkg-config {option} {pkg}</code>
+  # 3. <code>pkg-config {options} {pkg}</code>
   #
-  # Where {option} is, for instance, <code>--cflags</code>.
+  # Where +options+ is the option name without dashes, for instance <code>"cflags"</code> for the
+  # <code>--cflags</code> flag.
   #
-  # The values obtained are appended to +$INCFLAGS+, +$CFLAGS+, +$LDFLAGS+ and
-  # +$libs+.
+  # The values obtained are appended to <code>$INCFLAGS</code>, <code>$CFLAGS</code>,
+  # <code>$LDFLAGS</code> and <code>$libs</code>.
   #
-  # If an <code>option</code> argument is given, the config command is
-  # invoked with the option and a stripped output string is returned
-  # without modifying any of the global values mentioned above.
-  def pkg_config(pkg, option=nil)
+  # If one or more <code>options</code> argument is given, the config command is
+  # invoked with the options and a stripped output string is returned without
+  # modifying any of the global values mentioned above.
+  def pkg_config(pkg, *options)
     _, ldir = dir_config(pkg)
     if ldir
       pkg_config_path = "#{ldir}/pkgconfig"
@@ -1872,26 +1871,23 @@ SRC
         xsystem([*envs, $PKGCONFIG, "--exists", pkg])
       # default to pkg-config command
       pkgconfig = $PKGCONFIG
-      get = proc {|opt|
-        opt = xpopen([*envs, $PKGCONFIG, "--#{opt}", pkg], err:[:child, :out], &:read)
-        Logging.open {puts opt.each_line.map{|s|"=> #{s.inspect}"}}
-        opt.strip if $?.success?
-      }
+      args = [pkg]
     elsif find_executable0(pkgconfig = "#{pkg}-config")
       # default to package specific config command, as a last resort.
     else
       pkgconfig = nil
     end
     if pkgconfig
-      get ||= proc {|opt|
-        opt = xpopen([*envs, pkgconfig, "--#{opt}"], err:[:child, :out], &:read)
-        Logging.open {puts opt.each_line.map{|s|"=> #{s.inspect}"}}
-        opt.strip if $?.success?
+      get = proc {|opts|
+        opts = Array(opts).map { |o| "--#{o}" }
+        opts = xpopen([*envs, pkgconfig, *opts, *args], err:[:child, :out], &:read)
+        Logging.open {puts opts.each_line.map{|s|"=> #{s.inspect}"}}
+        opts.strip if $?.success?
       }
     end
     orig_ldflags = $LDFLAGS
-    if get and option
-      get[option]
+    if get and !options.empty?
+      get[options]
     elsif get and try_ldflags(ldflags = get['libs'])
       if incflags = get['cflags-only-I']
         $INCFLAGS << " " << incflags
@@ -2575,7 +2571,7 @@ site-install-rb: install-rb
 
     if $warnflags = CONFIG['warnflags'] and CONFIG['GCC'] == 'yes'
       # turn warnings into errors only for bundled extensions.
-      config['warnflags'] = $warnflags.gsub(/(\A|\s)-Werror[-=]/, '\1-W')
+      config['warnflags'] = $warnflags.gsub(/(?:\A|\s)-W\Kerror[-=](?!implicit-function-declaration)/, '')
       if /icc\z/ =~ config['CC']
         config['warnflags'].gsub!(/(\A|\s)-W(?:division-by-zero|deprecated-declarations)/, '\1')
       end

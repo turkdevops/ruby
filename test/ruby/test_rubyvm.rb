@@ -4,11 +4,11 @@ require 'test/unit'
 class TestRubyVM < Test::Unit::TestCase
   def test_stat
     assert_kind_of Hash, RubyVM.stat
-    assert_kind_of Integer, RubyVM.stat[:global_constant_state]
+    assert_kind_of Integer, RubyVM.stat[:class_serial]
 
     RubyVM.stat(stat = {})
     assert_not_empty stat
-    assert_equal stat[:global_constant_state], RubyVM.stat(:global_constant_state)
+    assert_equal stat[:class_serial], RubyVM.stat(:class_serial)
   end
 
   def test_stat_unknown
@@ -34,6 +34,8 @@ class TestRubyVM < Test::Unit::TestCase
   end
 
   def test_keep_script_lines
+    pend if ENV['RUBY_ISEQ_DUMP_DEBUG'] # TODO
+
     prev_conf = RubyVM.keep_script_lines
 
     # keep

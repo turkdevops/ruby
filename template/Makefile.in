@@ -147,8 +147,7 @@ RUNRUBY = @RUNRUBY@ $(RUN_OPTS)
 # RUNRUBY_DEBUGGER:: debugging option for runruby.rb
 RUNRUBY_DEBUGGER = --debugger='gdb -x run.gdb --quiet --args'
 XRUBY = @XRUBY@
-BTESTRUBY = @BTESTRUBY@\
-	$(MINIRUBYOPT)
+BTESTRUBY = @BTESTRUBY@ -r./$(arch)-fake
 INSTALL = @INSTALL@
 INSTALL_DATA = @INSTALL_DATA@
 INSTALL_SCRIPT = @INSTALL_SCRIPT@
@@ -266,6 +265,8 @@ DESTDIR       = @DESTDIR@
 configure_args = @configure_args@
 #### End of variables
 
+ABI_VERSION_HDR = $(hdrdir)/ruby/internal/abi.h
+
 .SUFFIXES: .inc .h .c .y .i .$(ASMEXT) .$(DTRACE_EXT)
 
 all:
@@ -354,7 +355,7 @@ install-cross: $(arch)-fake.rb $(RBCONFIG) rbconfig.rb $(arch_hdrdir)/ruby/confi
 
 Makefile:	$(srcdir)/template/Makefile.in $(srcdir)/enc/Makefile.in
 
-$(MKFILES): config.status $(srcdir)/version.h
+$(MKFILES): config.status $(srcdir)/version.h $(ABI_VERSION_HDR)
 		@[ -f $@ ] && mv $@ $@.old
 		MAKE=$(MAKE) $(SHELL) ./config.status $@
 		@cmp $@ $@.old > /dev/null 2>&1 && echo $@ unchanged && exit 0; \
@@ -376,7 +377,7 @@ reconfig-exec-0 = test -t 1 && { : $${CONFIGURE_TTY=yes}; export CONFIGURE_TTY; 
 reconfig-exec-1 = set -x; "$$@"
 
 reconfig config.status:	$(srcdir)/$(CONFIGURE) $(srcdir)/enc/Makefile.in \
-			$(srcdir)/include/ruby/version.h
+			$(hdrdir)/ruby/version.h $(ABI_VERSION_HDR)
 	@PWD= MINIRUBY="$(MINIRUBY)"; export MINIRUBY; \
 	set $(SHELL) $($@-args); $(reconfig-exec-$(V))
 
@@ -392,7 +393,6 @@ all-incs: probes.h
 # * with gperf v.s. without gperf
 # * committers may have various versions of gperf
 # * ./configure v.s. ../ruby/configure
-# * GNU make v.s. HP-UX make	# HP-UX make invokes the action if lex.c and keywords has same mtime.
 # * svn checkout generate a file with mtime as current time
 # * ext4 and XFS has a mtime with fractional part
 lex.c: defs/keywords

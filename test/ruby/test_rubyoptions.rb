@@ -357,9 +357,9 @@ class TestRubyOptions < Test::Unit::TestCase
 
     assert_in_out_err(%W(-\r -e) + [""], "", [], [])
 
-    assert_in_out_err(%W(-\rx), "", [], /invalid option -\\r  \(-h will show valid options\) \(RuntimeError\)/)
+    assert_in_out_err(%W(-\rx), "", [], /invalid option -[\r\n]  \(-h will show valid options\) \(RuntimeError\)/)
 
-    assert_in_out_err(%W(-\x01), "", [], /invalid option -\\x01  \(-h will show valid options\) \(RuntimeError\)/)
+    assert_in_out_err(%W(-\x01), "", [], /invalid option -\x01  \(-h will show valid options\) \(RuntimeError\)/)
 
     assert_in_out_err(%w(-Z), "", [], /invalid option -Z  \(-h will show valid options\) \(RuntimeError\)/)
   end
@@ -762,6 +762,7 @@ class TestRubyOptions < Test::Unit::TestCase
       %r(
         (?:
           --\sC\slevel\sbacktrace\sinformation\s-------------------------------------------\n
+          (?:Un(?:expected|supported|known)\s.*\n)*
           (?:(?:.*\s)?\[0x\h+\].*\n|.*:\d+\n)*\n
         )?
       )x,

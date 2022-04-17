@@ -948,67 +948,65 @@ num_negative_p(VALUE num)
  *
  *  You can create a \Float object explicitly with:
  *
- *  - A {floating-point literal}[doc/syntax/literals_rdoc.html#label-Float+Literals].
+ *  - A {floating-point literal}[rdoc-ref:syntax/literals.rdoc@Float+Literals].
  *
  *  You can convert certain objects to Floats with:
  *
- *  - \Method {Float}[Kernel.html#method-i-Float].
+ *  - \Method #Float.
  *
  *  == What's Here
  *
  *  First, what's elsewhere. \Class \Float:
  *
- *  - Inherits from {class Numeric}[Numeric.html#class-Numeric-label-What-27s+Here].
+ *  - Inherits from {class Numeric}[rdoc-ref:Numeric@What-27s+Here].
  *
  *  Here, class \Float provides methods for:
  *
- *  - {Querying}[#class-Float-label-Querying]
- *  - {Comparing}[#class-Float-label-Comparing]
- *  - {Converting}[#class-Float-label-Converting]
+ *  - {Querying}[rdoc-ref:Float@Querying]
+ *  - {Comparing}[rdoc-ref:Float@Comparing]
+ *  - {Converting}[rdoc-ref:Float@Converting]
  *
  *  === Querying
  *
- *  - #finite?:: Returns whether +self+ is finite.
- *  - #hash:: Returns the integer hash code for +self+.
- *  - #infinite?:: Returns whether +self+ is infinite.
- *  - #nan?:: Returns whether +self+ is a NaN (not-a-number).
+ *  - #finite?: Returns whether +self+ is finite.
+ *  - #hash: Returns the integer hash code for +self+.
+ *  - #infinite?: Returns whether +self+ is infinite.
+ *  - #nan?: Returns whether +self+ is a NaN (not-a-number).
  *
  *  === Comparing
  *
- *  - {<}[#method-i-3C]:: Returns whether +self+ is less than the given value.
- *  - {<=}[#method-i-3C-3D]:: Returns whether +self+ is less than
- *                            or equal to the given value.
- *  - {<=>}[#method-i-3C-3D-3E]:: Returns a number indicating whether +self+ is less than,
- *                                equal to, or greater than the given value.
- *  - {==}[#method-i-3D-3D] (aliased as #=== and #eql>):: Returns whether +self+ is
- *                                                        equal to the given value.
- *  - {>}[#method-i-3E]:: Returns whether +self+ is greater than the given value.
- *  - {>=}[#method-i-3E-3D]:: Returns whether +self+ is greater than
- *                            or equal to the given value.
+ *  - #<: Returns whether +self+ is less than the given value.
+ *  - #<=: Returns whether +self+ is less than or equal to the given value.
+ *  - #<=>: Returns a number indicating whether +self+ is less than, equal
+ *    to, or greater than the given value.
+ *  - #== (aliased as #=== and #eql?): Returns whether +self+ is equal to
+ *    the given value.
+ *  - #>: Returns whether +self+ is greater than the given value.
+ *  - #>=: Returns whether +self+ is greater than or equal to the given value.
  *
  *  === Converting
  *
- *  - #% (aliased as #modulo):: Returns +self+ modulo the given value.
- *  - #*:: Returns the product of +self+ and the given value.
- *  - {**}[#method-i-2A-2A]:: Returns the value of +self+ raised to the power of the given value.
- *  - #+:: Returns the sum of +self+ and the given value.
- *  - #-:: Returns the difference of +self+ and the given value.
- *  - {/}[#method-i-2F]:: Returns the quotient of +self+ and the given value.
- *  - #ceil:: Returns the smallest number greater than or equal to +self+.
- *  - #coerce:: Returns a 2-element array containing the given value converted to a \Float
-                and +self+
- *  - #divmod:: Returns a 2-element array containing the quotient and remainder
- *              results of dividing +self+ by the given value.
- *  - #fdiv:: Returns the Float result of dividing +self+ by the given value.
- *  - #floor:: Returns the greatest number smaller than or equal to +self+.
- *  - #next_float:: Returns the next-larger representable \Float.
- *  - #prev_float:: Returns the next-smaller representable \Float.
- *  - #quo:: Returns the quotient from dividing +self+ by the given value.
- *  - #round:: Returns +self+ rounded to the nearest value, to a given precision.
- *  - #to_i (aliased as #to_int):: Returns +self+ truncated to an Integer.
- *  - #to_s (aliased as #inspect):: Returns a string containing the place-value
- *                                  representation of +self+ in the given radix.
- *  - #truncate:: Returns +self+ truncated to a given precision.
+ *  - #% (aliased as #modulo): Returns +self+ modulo the given value.
+ *  - #*: Returns the product of +self+ and the given value.
+ *  - #**: Returns the value of +self+ raised to the power of the given value.
+ *  - #+: Returns the sum of +self+ and the given value.
+ *  - #-: Returns the difference of +self+ and the given value.
+ *  - #/: Returns the quotient of +self+ and the given value.
+ *  - #ceil: Returns the smallest number greater than or equal to +self+.
+ *  - #coerce: Returns a 2-element array containing the given value converted to a \Float
+      and +self+
+ *  - #divmod: Returns a 2-element array containing the quotient and remainder
+ *    results of dividing +self+ by the given value.
+ *  - #fdiv: Returns the Float result of dividing +self+ by the given value.
+ *  - #floor: Returns the greatest number smaller than or equal to +self+.
+ *  - #next_float: Returns the next-larger representable \Float.
+ *  - #prev_float: Returns the next-smaller representable \Float.
+ *  - #quo: Returns the quotient from dividing +self+ by the given value.
+ *  - #round: Returns +self+ rounded to the nearest value, to a given precision.
+ *  - #to_i (aliased as #to_int): Returns +self+ truncated to an Integer.
+ *  - #to_s (aliased as #inspect): Returns a string containing the place-value
+ *    representation of +self+ in the given radix.
+ *  - #truncate: Returns +self+ truncated to a given precision.
  *
  */
 
@@ -2005,7 +2003,7 @@ rb_flo_is_infinite_p(VALUE num)
  *  call-seq:
  *    finite? -> true or false
  *
- *  Returns +true+ if +self+ is not +Infinity+, +-Infinity+, or +Nan+,
+ *  Returns +true+ if +self+ is not +Infinity+, +-Infinity+, or +NaN+,
  *  +false+ otherwise:
  *
  *    f = 2.0      # => 2.0
@@ -3482,11 +3480,11 @@ rb_num2ull(VALUE val)
  *
  * You can create an \Integer object explicitly with:
  *
- * - An {integer literal}[doc/syntax/literals_rdoc.html#label-Integer+Literals].
+ * - An {integer literal}[rdoc-ref:syntax/literals.rdoc@Integer+Literals].
  *
  * You can convert certain objects to Integers with:
  *
- * - \Method {Integer}[Kernel.html#method-i-Integer].
+ * - \Method #Integer.
  *
  * An attempt to add a singleton method to an instance of this class
  * causes an exception to be raised.
@@ -3495,78 +3493,76 @@ rb_num2ull(VALUE val)
  *
  * First, what's elsewhere. \Class \Integer:
  *
- * - Inherits from {class Numeric}[Numeric.html#class-Numeric-label-What-27s+Here].
+ * - Inherits from {class Numeric}[rdoc-ref:Numeric@What-27s+Here].
  *
  * Here, class \Integer provides methods for:
  *
- * - {Querying}[#class-Integer-label-Querying]
- * - {Comparing}[#class-Integer-label-Comparing]
- * - {Converting}[#class-Integer-label-Converting]
- * - {Other}[#class-Integer-label-Other]
+ * - {Querying}[rdoc-ref:Integer@Querying]
+ * - {Comparing}[rdoc-ref:Integer@Comparing]
+ * - {Converting}[rdoc-ref:Integer@Converting]
+ * - {Other}[rdoc-ref:Integer@Other]
  *
  * === Querying
  *
- * - #allbits?:: Returns whether all bits in +self+ are set.
- * - #anybits?:: Returns whether any bits in +self+ are set.
- * - #nobits?:: Returns whether no bits in +self+ are set.
+ * - #allbits?: Returns whether all bits in +self+ are set.
+ * - #anybits?: Returns whether any bits in +self+ are set.
+ * - #nobits?: Returns whether no bits in +self+ are set.
  *
  * === Comparing
  *
- * - {<}[#method-i-3C]:: Returns whether +self+ is less than the given value.
- * - {<=}[#method-i-3C-3D]:: Returns whether +self+ is less than
- *                           or equal to the given value.
- * - {<=>}[#method-i-3C-3D-3E]:: Returns a number indicating whether +self+ is less than,
- *                               equal to, or greater than the given value.
- * - {==}[#method-i-3D-3D] (aliased as #===):: Returns whether +self+ is
- *                                             equal to the given value.
- * - {>}[#method-i-3E]:: Returns whether +self+ is greater than the given value.
- * - {>=}[#method-i-3E-3D]:: Returns whether +self+ is greater than
- *                           or equal to the given value.
+ * - #<: Returns whether +self+ is less than the given value.
+ * - #<=: Returns whether +self+ is less than or equal to the given value.
+ * - #<=>: Returns a number indicating whether +self+ is less than, equal
+ *   to, or greater than the given value.
+ * - #== (aliased as #===): Returns whether +self+ is equal to the given
+ *                           value.
+ * - #>: Returns whether +self+ is greater than the given value.
+ * - #>=: Returns whether +self+ is greater than or equal to the given value.
  *
  * === Converting
  *
- * - ::sqrt:: Returns the integer square root of the given value.
- * - ::try_convert:: Returns the given value converted to an \Integer.
- * - #% (aliased as #modulo):: Returns +self+ modulo the given value.
- * - {&}[#method-i-26]:: Returns the bitwise AND of +self+ and the given value.
- * - #*:: Returns the product of +self+ and the given value.
- * - {**}[#method-i-2A-2A]:: Returns the value of +self+ raised to the power of the given value.
- * - #+:: Returns the sum of +self+ and the given value.
- * - #-:: Returns the difference of +self+ and the given value.
- * - {/}[#method-i-2F]:: Returns the quotient of +self+ and the given value.
- * - #<<:: Returns the value of +self+ after a leftward bit-shift.
- * - #>>:: Returns the value of +self+ after a rightward bit-shift.
- * - #[]:: Returns a slice of bits from +self+.
- * - {^}[#method-i-5E]:: Returns the bitwise EXCLUSIVE OR of +self+ and the given value.
- * - #ceil:: Returns the smallest number greater than or equal to +self+.
- * - #chr:: Returns a 1-character string containing the character
- *          represented by the value of +self+.
- * - #digits:: Returns an array of integers representing the base-radix digits
- *             of +self+.
- * - #div:: Returns the integer result of dividing +self+ by the given value.
- * - #divmod:: Returns a 2-element array containing the quotient and remainder
- *             results of dividing +self+ by the given value.
- * - #fdiv:: Returns the Float result of dividing +self+ by the given value.
- * - #floor:: Returns the greatest number smaller than or equal to +self+.
- * - #pow:: Returns the modular exponentiation of +self+.
- * - #pred:: Returns the integer predecessor of +self+.
- * - #remainder:: Returns the remainder after dividing +self+ by the given value.
- * - #round:: Returns +self+ rounded to the nearest value with the given precision.
- * - #succ (aliased as #next):: Returns the integer successor of +self+.
- * - #to_f:: Returns +self+ converted to a Float.
- * - #to_s (aliased as #inspect):: Returns a string containing the place-value
- *                                 representation of +self+ in the given radix.
- * - #truncate:: Returns +self+ truncated to the given precision.
- * - {/}[#method-i-7C]:: Returns the bitwise OR of +self+ and the given value.
+ * - ::sqrt: Returns the integer square root of the given value.
+ * - ::try_convert: Returns the given value converted to an \Integer.
+ * - #% (aliased as #modulo): Returns +self+ modulo the given value.
+ * - #&: Returns the bitwise AND of +self+ and the given value.
+ * - #*: Returns the product of +self+ and the given value.
+ * - #**: Returns the value of +self+ raised to the power of the given value.
+ * - #+: Returns the sum of +self+ and the given value.
+ * - #-: Returns the difference of +self+ and the given value.
+ * - #/: Returns the quotient of +self+ and the given value.
+ * - #<<: Returns the value of +self+ after a leftward bit-shift.
+ * - #>>: Returns the value of +self+ after a rightward bit-shift.
+ * - #[]: Returns a slice of bits from +self+.
+ * - #^: Returns the bitwise EXCLUSIVE OR of +self+ and the given value.
+ * - #ceil: Returns the smallest number greater than or equal to +self+.
+ * - #chr: Returns a 1-character string containing the character
+ *   represented by the value of +self+.
+ * - #digits: Returns an array of integers representing the base-radix digits
+ *   of +self+.
+ * - #div: Returns the integer result of dividing +self+ by the given value.
+ * - #divmod: Returns a 2-element array containing the quotient and remainder
+ *   results of dividing +self+ by the given value.
+ * - #fdiv: Returns the Float result of dividing +self+ by the given value.
+ * - #floor: Returns the greatest number smaller than or equal to +self+.
+ * - #pow: Returns the modular exponentiation of +self+.
+ * - #pred: Returns the integer predecessor of +self+.
+ * - #remainder: Returns the remainder after dividing +self+ by the given value.
+ * - #round: Returns +self+ rounded to the nearest value with the given precision.
+ * - #succ (aliased as #next): Returns the integer successor of +self+.
+ * - #to_f: Returns +self+ converted to a Float.
+ * - #to_s (aliased as #inspect): Returns a string containing the place-value
+ *   representation of +self+ in the given radix.
+ * - #truncate: Returns +self+ truncated to the given precision.
+ * - #|: Returns the bitwise OR of +self+ and the given value.
  *
  * === Other
  *
- * - #downto:: Calls the given block with each integer value from +self+
- *             down to the given value.
- * - #times:: Calls the given block +self+ times with each integer
- *            in <tt>(0..self-1)</tt>.
- * - #upto:: Calls the given block with each integer value from +self+
- *           up to the given value.
+ * - #downto: Calls the given block with each integer value from +self+
+ *   down to the given value.
+ * - #times: Calls the given block +self+ times with each integer
+ *   in <tt>(0..self-1)</tt>.
+ * - #upto: Calls the given block with each integer value from +self+
+ *   up to the given value.
  *
  */
 
@@ -3777,7 +3773,7 @@ rb_enc_uint_chr(unsigned int code, rb_encoding *enc)
  *  represented by the value of +self+, according to the given +encoding+.
  *
  *    65.chr                   # => "A"
- *    0..chr                   # => "\x00"
+ *    0.chr                    # => "\x00"
  *    255.chr                  # => "\xFF"
  *    string = 255.chr(Encoding::UTF_8)
  *    string.encoding          # => Encoding::UTF_8
@@ -5073,6 +5069,7 @@ rb_fix_lshift(VALUE x, VALUE y)
     long val, width;
 
     val = NUM2LONG(x);
+    if (!val) return (rb_to_int(y), INT2FIX(0));
     if (!FIXNUM_P(y))
 	return rb_big_lshift(rb_int2big(val), y);
     width = FIX2LONG(y);
@@ -5127,6 +5124,7 @@ rb_fix_rshift(VALUE x, VALUE y)
     long i, val;
 
     val = FIX2LONG(x);
+    if (!val) return (rb_to_int(y), INT2FIX(0));
     if (!FIXNUM_P(y))
 	return rb_big_rshift(rb_int2big(val), y);
     i = FIX2LONG(y);
@@ -6097,80 +6095,82 @@ int_s_try_convert(VALUE self, VALUE num)
  *
  * First, what's elsewhere. \Class \Numeric:
  *
- * - Inherits from {class Object}[Object.html#class-Object-label-What-27s+Here].
- * - Includes {module Comparable}[Comparable.html#module-Comparable-label-What-27s+Here].
+ * - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
+ * - Includes {module Comparable}[rdoc-ref:Comparable@What-27s+Here].
  *
  * Here, class \Numeric provides methods for:
  *
- * - {Querying}[#class-Numeric-label-Querying]
- * - {Comparing}[#class-Numeric-label-Comparing]
- * - {Converting}[#class-Numeric-label-Converting]
- * - {Other}[#class-Numeric-label-Other]
+ * - {Querying}[rdoc-ref:Numeric@Querying]
+ * - {Comparing}[rdoc-ref:Numeric@Comparing]
+ * - {Converting}[rdoc-ref:Numeric@Converting]
+ * - {Other}[rdoc-ref:Numeric@Other]
  *
  * === Querying
  *
- * - #finite?:: Returns true unless +self+ is infinite or not a number.
- * - #infinite?:: Returns -1, +nil+ or +1, depending on whether +self+
- *                is <tt>-Infinity<tt>, finite, or <tt>+Infinity</tt>.
- * - #integer?:: Returns whether +self+ is an integer.
- * - #negative?:: Returns whether +self+ is negative.
- * - #nonzero?:: Returns whether +self+ is not zero.
- * - #positive?:: Returns whether +self+ is positive.
- * - #real?:: Returns whether +self+ is a real value.
- * - #zero?:: Returns whether +self+ is zero.
+ * - #finite?: Returns true unless +self+ is infinite or not a number.
+ * - #infinite?: Returns -1, +nil+ or +1, depending on whether +self+
+ *   is <tt>-Infinity<tt>, finite, or <tt>+Infinity</tt>.
+ * - #integer?: Returns whether +self+ is an integer.
+ * - #negative?: Returns whether +self+ is negative.
+ * - #nonzero?: Returns whether +self+ is not zero.
+ * - #positive?: Returns whether +self+ is positive.
+ * - #real?: Returns whether +self+ is a real value.
+ * - #zero?: Returns whether +self+ is zero.
  *
  * === Comparing
  *
- * - {<=>}[#method-i-3C-3D-3E]:: Returns:
+ * - #<=>: Returns:
+ *
  *   - -1 if  +self+ is less than the given value.
  *   - 0 if +self+ is equal to the given value.
  *   - 1 if +self+ is greater than the given value.
  *   - +nil+ if +self+ and the given value are not comparable.
- * - #eql?:: Returns whether +self+ and the given value have the same value and type.
+ *
+ * - #eql?: Returns whether +self+ and the given value have the same value and type.
  *
  * === Converting
  *
- * - #% (aliased as #modulo):: Returns the remainder of +self+ divided by the given value.
- * - #-@:: Returns the value of +self+, negated.
- * - #abs (aliased as #magnitude):: Returns the absolute value of +self+.
- * - #abs2:: Returns the square of +self+.
- * - #angle (aliased as #arg and #phase):: Returns 0 if +self+ is positive,
- *                                         Math::PI otherwise.
- * - #ceil:: Returns the smallest number greater than or equal to +self+,
- *           to a given precision.
- * - #coerce:: Returns array <tt>[coerced_self, coerced_other]</tt>
- *             for the given other value.
- * - #conj (aliased as #conjugate):: Returns the complex conjugate of +self+.
- * - #denominator:: Returns the denominator (always positive)
- *                  of the Rational representation of +self+.
- * - #div:: Returns the value of +self+ divided by the given value
- *          and converted to an integer.
- * - #divmod:: Returns array <tt>[quotient, modulus]</tt> resulting
- *             from dividing +self+ the given divisor.
- * - #fdiv:: Returns the Float result of dividing +self+ by the given divisor.
- * - #floor:: Returns the largest number less than or equal to +self+,
- *            to a given precision.
- * - #i:: Returns the Complex object <tt>Complex(0, self)</tt>.
- *        the given value.
- * - #imaginary (aliased as #imag):: Returns the imaginary part of the +self+.
- * - #numerator:: Returns the numerator of the Rational representation of +self+;
- *                has the same sign as +self+.
- * - #polar:: Returns the array <tt>[self.abs, self.arg]</tt>.
- * - #quo:: Returns the value of +self+ divided by the given value.
- * - #real:: Returns the real part of +self+.
- * - #rect (aliased as #rectangular):: Returns the array <tt>[self, 0]</tt>.
- * - #remainder:: Returns <tt>self-arg*(self/arg).truncate</tt> for the given +arg+.
- * - #round:: Returns the value of +self+ rounded to the nearest value
- *            for the given a precision.
- * - #to_c:: Returns the Complex representation of +self+.
- * - #to_int:: Returns the Integer representation of +self+, truncating if necessary.
- * - #truncate:: Returns +self+ truncated (toward zero) to a given precision.
+ * - #% (aliased as #modulo): Returns the remainder of +self+ divided by the given value.
+ * - #-@: Returns the value of +self+, negated.
+ * - #abs (aliased as #magnitude): Returns the absolute value of +self+.
+ * - #abs2: Returns the square of +self+.
+ * - #angle (aliased as #arg and #phase): Returns 0 if +self+ is positive,
+ *   Math::PI otherwise.
+ * - #ceil: Returns the smallest number greater than or equal to +self+,
+ *   to a given precision.
+ * - #coerce: Returns array <tt>[coerced_self, coerced_other]</tt>
+ *   for the given other value.
+ * - #conj (aliased as #conjugate): Returns the complex conjugate of +self+.
+ * - #denominator: Returns the denominator (always positive)
+ *   of the Rational representation of +self+.
+ * - #div: Returns the value of +self+ divided by the given value
+ *   and converted to an integer.
+ * - #divmod: Returns array <tt>[quotient, modulus]</tt> resulting
+ *   from dividing +self+ the given divisor.
+ * - #fdiv: Returns the Float result of dividing +self+ by the given divisor.
+ * - #floor: Returns the largest number less than or equal to +self+,
+ *   to a given precision.
+ * - #i: Returns the Complex object <tt>Complex(0, self)</tt>.
+ *   the given value.
+ * - #imaginary (aliased as #imag): Returns the imaginary part of the +self+.
+ * - #numerator: Returns the numerator of the Rational representation of +self+;
+ *   has the same sign as +self+.
+ * - #polar: Returns the array <tt>[self.abs, self.arg]</tt>.
+ * - #quo: Returns the value of +self+ divided by the given value.
+ * - #real: Returns the real part of +self+.
+ * - #rect (aliased as #rectangular): Returns the array <tt>[self, 0]</tt>.
+ * - #remainder: Returns <tt>self-arg*(self/arg).truncate</tt> for the given +arg+.
+ * - #round: Returns the value of +self+ rounded to the nearest value
+ *   for the given a precision.
+ * - #to_c: Returns the Complex representation of +self+.
+ * - #to_int: Returns the Integer representation of +self+, truncating if necessary.
+ * - #truncate: Returns +self+ truncated (toward zero) to a given precision.
  *
  * === Other
  *
- * - #clone:: Returns +self+; does not allow freezing.
- * - #dup (aliased as #+@):: Returns +self+.
- * - #step:: Invokes the given block with the sequence of specified numbers.
+ * - #clone: Returns +self+; does not allow freezing.
+ * - #dup (aliased as #+@): Returns +self+.
+ * - #step: Invokes the given block with the sequence of specified numbers.
  *
  */
 void

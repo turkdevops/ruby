@@ -126,11 +126,28 @@ vm_cme_invalidate(rb_callable_method_entry_t *cme)
     rb_yjit_cme_invalidate((VALUE)cme);
 }
 
-void
-rb_clear_constant_cache(void)
+static int
+rb_clear_constant_cache_for_id_i(st_data_t ic, st_data_t idx, st_data_t arg)
 {
+    ((IC) ic)->entry = NULL;
+    return ST_CONTINUE;
+}
+
+// Here for backward compat.
+void rb_clear_constant_cache(void) {}
+
+void
+rb_clear_constant_cache_for_id(ID id)
+{
+    rb_vm_t *vm = GET_VM();
+    st_table *ics;
+
+    if (rb_id_table_lookup(vm->constant_cache, id, (VALUE *) &ics)) {
+        st_foreach(ics, rb_clear_constant_cache_for_id_i, (st_data_t) NULL);
+        ruby_vm_constant_cache_invalidations += ics->num_entries;
+    }
+
     rb_yjit_constant_state_changed();
-    INC_GLOBAL_CONSTANT_STATE();
 }
 
 static void
@@ -323,12 +340,25 @@ rb_method_table_insert(VALUE klass, struct rb_id_table *table, ID method_id, con
     RB_OBJ_WRITTEN(table_owner, Qundef, (VALUE)me);
 }
 
-VALUE
-rb_f_notimplement(int argc, const VALUE *argv, VALUE obj, VALUE marker)
+// rb_f_notimplement has an extra trailing argument to distinguish it from other methods
+// at compile-time to override arity to be -1. But the trailing argument introduces a
+// signature mismatch between caller and callee, so rb_define_method family inserts a
+// method entry with rb_f_notimplement_internal, which has canonical arity=-1 signature,
+// instead of rb_f_notimplement.
+NORETURN(static VALUE rb_f_notimplement_internal(int argc, const VALUE *argv, VALUE obj));
+
+static VALUE
+rb_f_notimplement_internal(int argc, const VALUE *argv, VALUE obj)
 {
     rb_notimplement();
 
     UNREACHABLE_RETURN(Qnil);
+}
+
+VALUE
+rb_f_notimplement(int argc, const VALUE *argv, VALUE obj, VALUE marker)
+{
+    rb_f_notimplement_internal(argc, argv, obj);
 }
 
 static void
@@ -483,7 +513,7 @@ rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *de
 		/* setup iseq first (before invoking GC) */
 		RB_OBJ_WRITE(me, &def->body.iseq.iseqptr, iseq);
 
-                if (iseq->body->mandatory_only_iseq) def->iseq_overload = 1;
+                if (ISEQ_BODY(iseq)->mandatory_only_iseq) def->iseq_overload = 1;
 
 		if (0) vm_cref_dump("rb_method_definition_create", cref);
 
@@ -528,7 +558,7 @@ rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *de
             RB_OBJ_WRITE(me, &def->body.bmethod.defined_ractor, rb_ractor_self(GET_RACTOR()));
 	    return;
 	  case VM_METHOD_TYPE_NOTIMPLEMENTED:
-	    setup_method_cfunc_struct(UNALIGNED_MEMBER_PTR(def, body.cfunc), rb_f_notimplement, -1);
+	    setup_method_cfunc_struct(UNALIGNED_MEMBER_PTR(def, body.cfunc), rb_f_notimplement_internal, -1);
 	    return;
 	  case VM_METHOD_TYPE_OPTIMIZED:
             def->body.optimized = *(rb_method_optimized_t *)opts;
@@ -856,6 +886,7 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
 	if (RTEST(ruby_verbose) &&
 	    type != VM_METHOD_TYPE_UNDEF &&
 	    (old_def->alias_count == 0) &&
+	    (!old_def->no_redef_warning) &&
 	    !make_refined &&
 	    old_def->type != VM_METHOD_TYPE_UNDEF &&
 	    old_def->type != VM_METHOD_TYPE_ZSUPER &&
@@ -875,7 +906,7 @@ rb_method_entry_make(VALUE klass, ID mid, VALUE defined_class, rb_method_visibil
 	    }
 	    if (iseq) {
 		rb_compile_warning(RSTRING_PTR(rb_iseq_path(iseq)),
-				   FIX2INT(iseq->body->location.first_lineno),
+                                   FIX2INT(ISEQ_BODY(iseq)->location.first_lineno),
 				   "previous definition of %"PRIsVALUE" was here",
 				   rb_id2str(old_def->original_id));
 	    }
@@ -990,8 +1021,9 @@ rb_vm_lookup_overloaded_cme(const rb_callable_method_entry_t *cme)
 static void
 delete_overloaded_cme(const rb_callable_method_entry_t *cme)
 {
+    st_data_t cme_data = (st_data_t)cme;
     ASSERT_vm_locking();
-    st_delete(overloaded_cme_table(), (st_data_t *)&cme, NULL);
+    st_delete(overloaded_cme_table(), &cme_data, NULL);
 }
 
 static const rb_callable_method_entry_t *
@@ -1006,7 +1038,7 @@ get_overloaded_cme(const rb_callable_method_entry_t *cme)
         // create
         rb_method_definition_t *def = rb_method_definition_create(VM_METHOD_TYPE_ISEQ, cme->def->original_id);
         def->body.iseq.cref = cme->def->body.iseq.cref;
-        def->body.iseq.iseqptr = cme->def->body.iseq.iseqptr->body->mandatory_only_iseq;
+        def->body.iseq.iseqptr = ISEQ_BODY(cme->def->body.iseq.iseqptr)->mandatory_only_iseq;
 
         rb_method_entry_t *me = rb_method_entry_alloc(cme->called_id,
                                                       cme->owner,
@@ -1026,7 +1058,7 @@ check_overloaded_cme(const rb_callable_method_entry_t *cme, const struct rb_call
 {
     if (UNLIKELY(cme->def->iseq_overload) &&
         (vm_ci_flag(ci) & (VM_CALL_ARGS_SIMPLE)) &&
-        (int)vm_ci_argc(ci) == method_entry_iseqptr(cme)->body->param.lead_num) {
+        (int)vm_ci_argc(ci) == ISEQ_BODY(method_entry_iseqptr(cme))->param.lead_num) {
         VM_ASSERT(cme->def->type == VM_METHOD_TYPE_ISEQ); // iseq_overload is marked only on ISEQ methods
 
         cme = get_overloaded_cme(cme);
@@ -1086,7 +1118,13 @@ method_entry_set(VALUE klass, ID mid, const rb_method_entry_t *me,
 		 rb_method_visibility_t visi, VALUE defined_class)
 {
     rb_method_entry_t *newme = rb_method_entry_make(klass, mid, defined_class, visi,
-						    me->def->type, method_definition_addref(me->def), 0, NULL);
+						    me->def->type, me->def, 0, NULL);
+    if (newme == me) {
+        me->def->no_redef_warning = TRUE;
+    }
+    else {
+        method_definition_addref(me->def);
+    }
     method_added(klass, mid);
     return newme;
 }
@@ -1655,7 +1693,7 @@ scope_visibility_check(void)
 {
     /* Check for public/protected/private/module_function called inside a method */
     rb_control_frame_t *cfp = GET_EC()->cfp+1;
-    if (cfp && cfp->iseq && cfp->iseq->body->type == ISEQ_TYPE_METHOD) {
+    if (cfp && cfp->iseq && ISEQ_BODY(cfp->iseq)->type == ISEQ_TYPE_METHOD) {
         rb_warn("calling %s without arguments inside a method may not have the intended effect",
             rb_id2name(rb_frame_this_func()));
     }
@@ -2126,6 +2164,7 @@ rb_alias(VALUE klass, ID alias_name, ID original_name)
 	visi = METHOD_ENTRY_VISI(orig_me);
 	goto again;
       case VM_METHOD_TYPE_ALIAS:
+        visi = METHOD_ENTRY_VISI(orig_me);
         orig_me = orig_me->def->body.alias.original_me;
         VM_ASSERT(orig_me->def->type != VM_METHOD_TYPE_ALIAS);
         break;
@@ -2395,10 +2434,10 @@ rb_mod_ruby2_keywords(int argc, VALUE *argv, VALUE module)
         if (module == defined_class || origin_class == defined_class) {
             switch (me->def->type) {
               case VM_METHOD_TYPE_ISEQ:
-                if (me->def->body.iseq.iseqptr->body->param.flags.has_rest &&
-                        !me->def->body.iseq.iseqptr->body->param.flags.has_kw &&
-                        !me->def->body.iseq.iseqptr->body->param.flags.has_kwrest) {
-                    me->def->body.iseq.iseqptr->body->param.flags.ruby2_keywords = 1;
+                if (ISEQ_BODY(me->def->body.iseq.iseqptr)->param.flags.has_rest &&
+                        !ISEQ_BODY(me->def->body.iseq.iseqptr)->param.flags.has_kw &&
+                        !ISEQ_BODY(me->def->body.iseq.iseqptr)->param.flags.has_kwrest) {
+                    ISEQ_BODY(me->def->body.iseq.iseqptr)->param.flags.ruby2_keywords = 1;
                     rb_clear_method_cache(module, name);
                 }
                 else {
@@ -2414,10 +2453,10 @@ rb_mod_ruby2_keywords(int argc, VALUE *argv, VALUE module)
                 if (vm_block_handler_type(procval) == block_handler_type_iseq) {
                     const struct rb_captured_block *captured = VM_BH_TO_ISEQ_BLOCK(procval);
                     const rb_iseq_t *iseq = rb_iseq_check(captured->code.iseq);
-                    if (iseq->body->param.flags.has_rest &&
-                            !iseq->body->param.flags.has_kw &&
-                            !iseq->body->param.flags.has_kwrest) {
-                        iseq->body->param.flags.ruby2_keywords = 1;
+                    if (ISEQ_BODY(iseq)->param.flags.has_rest &&
+                            !ISEQ_BODY(iseq)->param.flags.has_kw &&
+                            !ISEQ_BODY(iseq)->param.flags.has_kwrest) {
+                        ISEQ_BODY(iseq)->param.flags.ruby2_keywords = 1;
                         rb_clear_method_cache(module, name);
                     }
                     else {
