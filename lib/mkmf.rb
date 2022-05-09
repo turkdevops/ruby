@@ -67,7 +67,7 @@ module MakeMakefile
   C_EXT = %w[c m]
 
   ##
-  # Extensions for files complied with a C++ compiler
+  # Extensions for files compiled with a C++ compiler
 
   CXX_EXT = %w[cc mm cxx cpp]
   unless File.exist?(File.join(*File.split(__FILE__).tap {|d, b| b.swapcase}))
@@ -2109,7 +2109,7 @@ preload = #{defined?($preload) && $preload ? $preload.join(' ') : ''}
   end
   # :startdoc:
 
-  # creates a stub Makefile.
+  # Creates a stub Makefile.
   #
   def dummy_makefile(srcdir)
     configuration(srcdir) << <<RULES << CLEANINGS
@@ -2280,7 +2280,7 @@ RULES
     RbConfig.expand(srcdir = srcprefix.dup)
 
     ext = ".#{$OBJEXT}"
-    orig_srcs = Dir[File.join(srcdir, "*.{#{SRC_EXT.join(%q{,})}}")].sort
+    orig_srcs = Dir[File.join(srcdir, "*.{#{SRC_EXT.join(%q{,})}}")]
     if not $objs
       srcs = $srcs || orig_srcs
       $objs = []
@@ -2290,7 +2290,7 @@ RULES
         h
       }
       unless objs.delete_if {|b, f| f.size == 1}.empty?
-        dups = objs.sort.map {|b, f|
+        dups = objs.map {|b, f|
           "#{b[/.*\./]}{#{f.collect {|n| n[/([^.]+)\z/]}.join(',')}}"
         }
         abort "source files duplication - #{dups.join(", ")}"

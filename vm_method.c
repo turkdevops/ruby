@@ -123,7 +123,7 @@ vm_cme_invalidate(rb_callable_method_entry_t *cme)
     METHOD_ENTRY_INVALIDATED_SET(cme);
     RB_DEBUG_COUNTER_INC(cc_cme_invalidate);
 
-    rb_yjit_cme_invalidate((VALUE)cme);
+    rb_yjit_cme_invalidate(cme);
 }
 
 static int
@@ -139,15 +139,16 @@ void rb_clear_constant_cache(void) {}
 void
 rb_clear_constant_cache_for_id(ID id)
 {
+    VALUE lookup_result;
     rb_vm_t *vm = GET_VM();
-    st_table *ics;
 
-    if (rb_id_table_lookup(vm->constant_cache, id, (VALUE *) &ics)) {
+    if (rb_id_table_lookup(vm->constant_cache, id, &lookup_result)) {
+        st_table *ics = (st_table *)lookup_result;
         st_foreach(ics, rb_clear_constant_cache_for_id_i, (st_data_t) NULL);
         ruby_vm_constant_cache_invalidations += ics->num_entries;
     }
 
-    rb_yjit_constant_state_changed();
+    rb_yjit_constant_state_changed(id);
 }
 
 static void

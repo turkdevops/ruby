@@ -68,6 +68,10 @@
 # include <setjmp.h>
 #endif
 
+#if defined(__linux__) || defined(__FreeBSD__)
+# define RB_THREAD_T_HAS_NATIVE_ID
+#endif
+
 #include "ruby/internal/stdbool.h"
 #include "ccan/list/list.h"
 #include "id.h"
@@ -81,7 +85,6 @@
 #include "ruby/st.h"
 #include "ruby_atomic.h"
 #include "vm_opts.h"
-#include "darray.h"
 
 #include "ruby/thread_native.h"
 #include THREAD_IMPL_H
@@ -318,10 +321,6 @@ pathobj_realpath(VALUE pathobj)
 /* Forward declarations */
 struct rb_mjit_unit;
 
-// List of YJIT block versions
-typedef rb_darray(struct yjit_block_version *) rb_yjit_block_array_t;
-typedef rb_darray(rb_yjit_block_array_t) rb_yjit_block_array_array_t;
-
 struct rb_iseq_constant_body {
     enum iseq_type {
 	ISEQ_TYPE_TOP,
@@ -466,7 +465,11 @@ struct rb_iseq_constant_body {
     struct rb_mjit_unit *jit_unit;
 #endif
 
-    rb_yjit_block_array_array_t yjit_blocks; // empty, or has a size equal to iseq_size
+#if USE_YJIT
+    // YJIT stores some data on each iseq.
+    // Note: Cannot use YJIT_BUILD here since yjit.h includes this header.
+    void *yjit_payload;
+#endif
 };
 
 /* T_IMEMO/iseq */
@@ -969,17 +972,17 @@ struct rb_ext_config {
 
 typedef struct rb_ractor_struct rb_ractor_t;
 
-#if defined(__linux__) || defined(__FreeBSD__)
-# define RB_THREAD_T_HAS_NATIVE_ID
-#endif
+struct rb_native_thread;
 
 typedef struct rb_thread_struct {
     struct ccan_list_node lt_node; // managed by a ractor
     VALUE self;
     rb_ractor_t *ractor;
     rb_vm_t *vm;
-
+    struct rb_native_thread *nt;
     rb_execution_context_t *ec;
+
+    struct rb_thread_sched_item sched;
 
     VALUE last_status; /* $? */
 
@@ -991,15 +994,10 @@ typedef struct rb_thread_struct {
     VALUE top_wrapper;
 
     /* thread control */
-    rb_nativethread_id_t thread_id;
-#ifdef NON_SCALAR_THREAD_ID
-    rb_thread_id_string_t thread_id_string;
-#endif
-#ifdef RB_THREAD_T_HAS_NATIVE_ID
-    int tid;
-#endif
+
     BITFIELD(enum rb_thread_status, status, 2);
     /* bit flags */
+    unsigned int locking_native_thread : 1;
     unsigned int to_kill : 1;
     unsigned int abort_on_exception: 1;
     unsigned int report_on_exception: 1;
@@ -1007,7 +1005,6 @@ typedef struct rb_thread_struct {
     int8_t priority; /* -3 .. 3 (RUBY_THREAD_PRIORITY_{MIN,MAX}) */
     uint32_t running_time_us; /* 12500..800000 */
 
-    native_thread_data_t native_thread_data;
     void *blocking_region_buffer;
 
     VALUE thgroup;
@@ -1208,7 +1205,7 @@ typedef rb_control_frame_t *
 #define GC_GUARDED_PTR_REF(p) VM_TAGGED_PTR_REF((p), 0x03)
 #define GC_GUARDED_PTR_P(p)   (((VALUE)(p)) & 0x01)
 
-enum {
+enum vm_frame_env_flags {
     /* Frame/Environment flag bits:
      *   MMMM MMMM MMMM MMMM ____ _FFF FFFF EEEX (LSB)
      *
@@ -1734,8 +1731,6 @@ void rb_vm_inc_const_missing_count(void);
 VALUE rb_vm_call_kw(rb_execution_context_t *ec, VALUE recv, VALUE id, int argc,
                  const VALUE *argv, const rb_callable_method_entry_t *me, int kw_splat);
 MJIT_STATIC void rb_vm_pop_frame(rb_execution_context_t *ec);
-
-void rb_gvl_destroy(rb_global_vm_lock_t *gvl);
 
 void rb_thread_start_timer_thread(void);
 void rb_thread_stop_timer_thread(void);
