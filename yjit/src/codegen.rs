@@ -30,6 +30,13 @@ pub const REG0_8: X86Opnd = AL;
 pub const REG1: X86Opnd = RCX;
 // pub const REG1_32: X86Opnd = ECX;
 
+// A block that can be invalidated needs space to write a jump.
+// We'll reserve a minimum size for any block that could
+// be invalidated. In this case the JMP takes 5 bytes, but
+// gen_send_general will always MOV the receiving object
+// into place, so 2 bytes are always written automatically.
+pub const JUMP_SIZE_IN_BYTES:usize = 3;
+
 /// Status returned by code generation functions
 #[derive(PartialEq, Debug)]
 enum CodegenStatus {
@@ -2991,6 +2998,16 @@ fn gen_opt_empty_p(
     gen_opt_send_without_block(jit, ctx, cb, ocb)
 }
 
+fn gen_opt_succ(
+    jit: &mut JITState,
+    ctx: &mut Context,
+    cb: &mut CodeBlock,
+    ocb: &mut OutlinedCb,
+) -> CodegenStatus {
+    // Delegate to send, call the method on the recv
+    gen_opt_send_without_block(jit, ctx, cb, ocb)
+}
+
 fn gen_opt_str_freeze(
     jit: &mut JITState,
     ctx: &mut Context,
@@ -3400,6 +3417,32 @@ fn jit_guard_known_klass(
             cmp(cb, REG1, uimm_opnd(RUBY_FLONUM_FLAG as u64));
             jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
             ctx.upgrade_opnd_type(insn_opnd, Type::Flonum);
+        }
+    } else if unsafe { known_klass == rb_cString } && sample_instance.string_p() {
+        assert!(!val_type.is_imm());
+        if val_type != Type::String {
+            assert!(val_type.is_unknown());
+
+            // Need the check for immediate, because trying to look up the klass field of an immediate will segfault
+            if !val_type.is_heap() {
+                add_comment(cb, "guard not immediate (for string)");
+                assert!(Qfalse.as_i32() < Qnil.as_i32());
+                test(cb, REG0, imm_opnd(RUBY_IMMEDIATE_MASK as i64));
+                jit_chain_guard(JCC_JNZ, jit, ctx, cb, ocb, max_chain_depth, side_exit);
+                cmp(cb, REG0, imm_opnd(Qnil.into()));
+                jit_chain_guard(JCC_JBE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
+            }
+
+            add_comment(cb, "guard object is string");
+            let klass_opnd = mem_opnd(64, REG0, RUBY_OFFSET_RBASIC_KLASS);
+            mov(cb, REG1, uimm_opnd(unsafe { rb_cString }.into()));
+            cmp(cb, klass_opnd, REG1);
+            jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
+
+            // Upgrading here causes an error with invalidation writing past end of block
+            ctx.upgrade_opnd_type(insn_opnd, Type::String);
+        } else {
+            add_comment(cb, "skip guard - known to be a string");
         }
     } else if unsafe {
         FL_TEST(known_klass, VALUE(RUBY_FL_SINGLETON)) != VALUE(0)
@@ -3827,7 +3870,13 @@ fn gen_send_cfunc(
     if kw_arg.is_null() {
         let codegen_p = lookup_cfunc_codegen(unsafe { (*cme).def });
         if let Some(known_cfunc_codegen) = codegen_p {
+            let start_pos = cb.get_write_ptr().raw_ptr() as usize;
             if known_cfunc_codegen(jit, ctx, cb, ocb, ci, cme, block, argc, recv_known_klass) {
+                let written_bytes = cb.get_write_ptr().raw_ptr() as usize - start_pos;
+                if written_bytes < JUMP_SIZE_IN_BYTES {
+                    add_comment(cb, "Writing NOPs to leave room for later invalidation code");
+                    nop(cb, (JUMP_SIZE_IN_BYTES - written_bytes) as u32);
+                }
                 // cfunc codegen generated code. Terminate the block so
                 // there isn't multiple calls in the same block.
                 jump_to_next_insn(jit, ctx, cb, ocb);
@@ -5820,6 +5869,7 @@ fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
         OP_OPT_LTLT => Some(gen_opt_ltlt),
         OP_OPT_NIL_P => Some(gen_opt_nil_p),
         OP_OPT_EMPTY_P => Some(gen_opt_empty_p),
+        OP_OPT_SUCC => Some(gen_opt_succ),
         OP_OPT_NOT => Some(gen_opt_not),
         OP_OPT_SIZE => Some(gen_opt_size),
         OP_OPT_LENGTH => Some(gen_opt_length),
