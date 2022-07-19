@@ -1,3 +1,6 @@
+// We use the YARV bytecode constants which have a CRuby-style name
+#![allow(non_upper_case_globals)]
+
 use crate::asm::x86_64::*;
 use crate::asm::*;
 use crate::core::*;
@@ -17,6 +20,8 @@ use std::mem::{self, size_of};
 use std::os::raw::c_uint;
 use std::ptr;
 use std::slice;
+
+pub use crate::virtualmem::CodePtr;
 
 // Callee-saved registers
 pub const REG_CFP: X86Opnd = R13;
@@ -116,6 +121,8 @@ impl JITState {
     pub fn add_gc_object_offset(self: &mut JITState, ptr_offset: u32) {
         let mut gc_obj_vec: RefMut<_> = self.block.borrow_mut();
         gc_obj_vec.add_gc_object_offset(ptr_offset);
+
+        incr_counter!(num_gc_obj_refs);
     }
 
     pub fn get_pc(self: &JITState) -> *mut VALUE {
@@ -421,6 +428,13 @@ fn gen_exit(exit_pc: *mut VALUE, ctx: &Context, cb: &mut CodeBlock) -> CodePtr {
     if get_option!(gen_stats) {
         mov(cb, RDI, const_ptr_opnd(exit_pc as *const u8));
         call_ptr(cb, RSI, rb_yjit_count_side_exit_op as *const u8);
+
+        // If --yjit-trace-exits option is enabled, record the exit stack
+        // while recording the side exits.
+        if get_option!(gen_trace_exits) {
+            mov(cb, C_ARG_REGS[0], const_ptr_opnd(exit_pc as *const u8));
+            call_ptr(cb, REG0, rb_yjit_record_exit_stack as *const u8);
+        }
     }
 
     pop(cb, REG_SP);
@@ -728,7 +742,7 @@ pub fn gen_single_block(
 
         // opt_getinlinecache wants to be in a block all on its own. Cut the block short
         // if we run into it. See gen_opt_getinlinecache() for details.
-        if opcode == OP_OPT_GETINLINECACHE && insn_idx > starting_insn_idx {
+        if opcode == YARVINSN_opt_getinlinecache.as_usize() && insn_idx > starting_insn_idx {
             jump_to_next_insn(&mut jit, &ctx, cb, ocb);
             break;
         }
@@ -988,7 +1002,7 @@ fn gen_putobject_int2fix(
     _ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
     let opcode = jit.opcode;
-    let cst_val: usize = if opcode == OP_PUTOBJECT_INT2FIX_0_ {
+    let cst_val: usize = if opcode == YARVINSN_putobject_INT2FIX_0_.as_usize() {
         0
     } else {
         1
@@ -1035,7 +1049,7 @@ fn gen_putspecialobject(
 ) -> CodegenStatus {
     let object_type = jit_get_arg(jit, 0);
 
-    if object_type == VALUE(VM_SPECIAL_OBJECT_VMCORE) {
+    if object_type == VALUE(VM_SPECIAL_OBJECT_VMCORE.as_usize()) {
         let stack_top: X86Opnd = ctx.stack_push(Type::UnknownHeap);
         jit_mov_gc_ptr(jit, cb, REG0, unsafe { rb_mRubyVMFrozenCore });
         mov(cb, stack_top, REG0);
@@ -1704,7 +1718,7 @@ fn gen_putstring(
     jit_mov_gc_ptr(jit, cb, C_ARG_REGS[1], put_val);
     call_ptr(cb, REG0, rb_ec_str_resurrect as *const u8);
 
-    let stack_top = ctx.stack_push(Type::String);
+    let stack_top = ctx.stack_push(Type::CString);
     mov(cb, stack_top, RAX);
 
     KeepCompiling
@@ -1952,9 +1966,17 @@ fn gen_get_ivar(
         ctx.stack_pop(1);
     }
 
+    if USE_RVARGC != 0 {
+        // Check that the ivar table is big enough
+        // Check that the slot is inside the ivar table (num_slots > index)
+        let num_slots = mem_opnd(32, REG0, ROBJECT_OFFSET_NUMIV);
+        cmp(cb, num_slots, uimm_opnd(ivar_index as u64));
+        jle_ptr(cb, counted_exit!(ocb, side_exit, getivar_idx_out_of_range));
+    }
+
     // Compile time self is embedded and the ivar index lands within the object
-    let test_result = unsafe { FL_TEST_RAW(comptime_receiver, VALUE(ROBJECT_EMBED)) != VALUE(0) };
-    if test_result && ivar_index < ROBJECT_EMBED_LEN_MAX {
+    let test_result = unsafe { FL_TEST_RAW(comptime_receiver, VALUE(ROBJECT_EMBED.as_usize())) != VALUE(0) };
+    if test_result {
         // See ROBJECT_IVPTR() from include/ruby/internal/core/robject.h
 
         // Guard that self is embedded
@@ -1974,7 +1996,7 @@ fn gen_get_ivar(
         );
 
         // Load the variable
-        let offs = RUBY_OFFSET_ROBJECT_AS_ARY + (ivar_index * SIZEOF_VALUE) as i32;
+        let offs = ROBJECT_OFFSET_AS_ARY + (ivar_index * SIZEOF_VALUE) as i32;
         let ivar_opnd = mem_opnd(64, REG0, offs);
         mov(cb, REG1, ivar_opnd);
 
@@ -2005,17 +2027,16 @@ fn gen_get_ivar(
             side_exit,
         );
 
-        // Check that the extended table is big enough
-        if ivar_index > ROBJECT_EMBED_LEN_MAX {
+        if USE_RVARGC == 0 {
+            // Check that the extended table is big enough
             // Check that the slot is inside the extended table (num_slots > index)
-            let num_slots = mem_opnd(32, REG0, RUBY_OFFSET_ROBJECT_AS_HEAP_NUMIV);
-
+            let num_slots = mem_opnd(32, REG0, ROBJECT_OFFSET_NUMIV);
             cmp(cb, num_slots, uimm_opnd(ivar_index as u64));
             jle_ptr(cb, counted_exit!(ocb, side_exit, getivar_idx_out_of_range));
         }
 
         // Get a pointer to the extended table
-        let tbl_opnd = mem_opnd(64, REG0, RUBY_OFFSET_ROBJECT_AS_HEAP_IVPTR);
+        let tbl_opnd = mem_opnd(64, REG0, ROBJECT_OFFSET_AS_HEAP_IVPTR);
         mov(cb, REG0, tbl_opnd);
 
         // Read the ivar from the extended table
@@ -2177,7 +2198,8 @@ fn gen_checktype(
 
         // Check if we know from type information
         match (type_val, val_type) {
-            (RUBY_T_STRING, Type::String)
+            (RUBY_T_STRING, Type::TString)
+            | (RUBY_T_STRING, Type::CString)
             | (RUBY_T_ARRAY, Type::Array)
             | (RUBY_T_HASH, Type::Hash) => {
                 // guaranteed type match
@@ -2246,7 +2268,7 @@ fn gen_concatstrings(
     call_ptr(cb, REG0, rb_str_concat_literals as *const u8);
 
     ctx.stack_pop(n.as_usize());
-    let stack_ret = ctx.stack_push(Type::String);
+    let stack_ret = ctx.stack_push(Type::CString);
     mov(cb, stack_ret, RAX);
 
     KeepCompiling
@@ -2438,20 +2460,17 @@ fn gen_equality_specialized(
 
         // Guard that a is a String
         mov(cb, REG0, C_ARG_REGS[0]);
-        unsafe {
-            // Use of rb_cString here requires an unsafe block
-            jit_guard_known_klass(
-                jit,
-                ctx,
-                cb,
-                ocb,
-                rb_cString,
-                StackOpnd(1),
-                comptime_a,
-                SEND_MAX_DEPTH,
-                side_exit,
-            );
-        }
+        jit_guard_known_klass(
+            jit,
+            ctx,
+            cb,
+            ocb,
+            unsafe { rb_cString },
+            StackOpnd(1),
+            comptime_a,
+            SEND_MAX_DEPTH,
+            side_exit,
+        );
 
         let ret = cb.new_label("ret".to_string());
 
@@ -2461,23 +2480,22 @@ fn gen_equality_specialized(
         je_label(cb, ret);
 
         // Otherwise guard that b is a T_STRING (from type info) or String (from runtime guard)
-        if ctx.get_opnd_type(StackOpnd(0)) != Type::String {
+        let btype = ctx.get_opnd_type(StackOpnd(0));
+        if btype != Type::TString && btype != Type::CString {
             mov(cb, REG0, C_ARG_REGS[1]);
             // Note: any T_STRING is valid here, but we check for a ::String for simplicity
             // To pass a mutable static variable (rb_cString) requires an unsafe block
-            unsafe {
-                jit_guard_known_klass(
-                    jit,
-                    ctx,
-                    cb,
-                    ocb,
-                    rb_cString,
-                    StackOpnd(0),
-                    comptime_b,
-                    SEND_MAX_DEPTH,
-                    side_exit,
-                );
-            }
+            jit_guard_known_klass(
+                jit,
+                ctx,
+                cb,
+                ocb,
+                unsafe { rb_cString },
+                StackOpnd(0),
+                comptime_b,
+                SEND_MAX_DEPTH,
+                side_exit,
+            );
         }
 
         // Call rb_str_eql_internal(a, b)
@@ -2942,30 +2960,50 @@ fn gen_opt_mod(
     cb: &mut CodeBlock,
     ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
-    // Save the PC and SP because the callee may allocate bignums
-    // Note that this modifies REG_SP, which is why we do it first
-    jit_prepare_routine_call(jit, ctx, cb, REG0);
+    // Defer compilation so we can specialize on a runtime `self`
+    if !jit_at_current_insn(jit) {
+        defer_compilation(jit, ctx, cb, ocb);
+        return EndBlock;
+    }
 
-    let side_exit = get_side_exit(jit, ocb, ctx);
+    let comptime_a = jit_peek_at_stack(jit, ctx, 1);
+    let comptime_b = jit_peek_at_stack(jit, ctx, 0);
 
-    // Get the operands from the stack
-    let arg1 = ctx.stack_pop(1);
-    let arg0 = ctx.stack_pop(1);
+    if comptime_a.fixnum_p() && comptime_b.fixnum_p() {
+        // Create a side-exit to fall back to the interpreter
+        // Note: we generate the side-exit before popping operands from the stack
+        let side_exit = get_side_exit(jit, ocb, ctx);
 
-    // Call rb_vm_opt_mod(VALUE recv, VALUE obj)
-    mov(cb, C_ARG_REGS[0], arg0);
-    mov(cb, C_ARG_REGS[1], arg1);
-    call_ptr(cb, REG0, rb_vm_opt_mod as *const u8);
+        if !assume_bop_not_redefined(jit, ocb, INTEGER_REDEFINED_OP_FLAG, BOP_MOD) {
+            return CantCompile;
+        }
 
-    // If val == Qundef, bail to do a method call
-    cmp(cb, RAX, imm_opnd(Qundef.as_i64()));
-    je_ptr(cb, side_exit);
+        // Check that both operands are fixnums
+        guard_two_fixnums(ctx, cb, side_exit);
 
-    // Push the return value onto the stack
-    let stack_ret = ctx.stack_push(Type::Unknown);
-    mov(cb, stack_ret, RAX);
+        // Get the operands and destination from the stack
+        let arg1 = ctx.stack_pop(1);
+        let arg0 = ctx.stack_pop(1);
 
-    KeepCompiling
+        mov(cb, C_ARG_REGS[0], arg0);
+        mov(cb, C_ARG_REGS[1], arg1);
+
+        // Check for arg0 % 0
+        cmp(cb, C_ARG_REGS[1], imm_opnd(VALUE::fixnum_from_usize(0).as_i64()));
+        je_ptr(cb, side_exit);
+
+        // Call rb_fix_mod_fix(VALUE recv, VALUE obj)
+        call_ptr(cb, REG0, rb_fix_mod_fix as *const u8);
+
+        // Push the return value onto the stack
+        let stack_ret = ctx.stack_push(Type::Unknown);
+        mov(cb, stack_ret, RAX);
+
+        KeepCompiling
+    } else {
+        // Delegate to send, call the method on the recv
+        gen_opt_send_without_block(jit, ctx, cb, ocb)
+    }
 }
 
 fn gen_opt_ltlt(
@@ -3022,7 +3060,7 @@ fn gen_opt_str_freeze(
     jit_mov_gc_ptr(jit, cb, REG0, str);
 
     // Push the return value onto the stack
-    let stack_ret = ctx.stack_push(Type::String);
+    let stack_ret = ctx.stack_push(Type::CString);
     mov(cb, stack_ret, REG0);
 
     KeepCompiling
@@ -3042,7 +3080,7 @@ fn gen_opt_str_uminus(
     jit_mov_gc_ptr(jit, cb, REG0, str);
 
     // Push the return value onto the stack
-    let stack_ret = ctx.stack_push(Type::String);
+    let stack_ret = ctx.stack_push(Type::CString);
     mov(cb, stack_ret, REG0);
 
     KeepCompiling
@@ -3343,7 +3381,7 @@ fn jit_guard_known_klass(
     sample_instance: VALUE,
     max_chain_depth: i32,
     side_exit: CodePtr,
-) -> bool {
+) {
     let val_type = ctx.get_opnd_type(insn_opnd);
 
     if unsafe { known_klass == rb_cNilClass } {
@@ -3418,34 +3456,8 @@ fn jit_guard_known_klass(
             jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
             ctx.upgrade_opnd_type(insn_opnd, Type::Flonum);
         }
-    } else if unsafe { known_klass == rb_cString } && sample_instance.string_p() {
-        assert!(!val_type.is_imm());
-        if val_type != Type::String {
-            assert!(val_type.is_unknown());
-
-            // Need the check for immediate, because trying to look up the klass field of an immediate will segfault
-            if !val_type.is_heap() {
-                add_comment(cb, "guard not immediate (for string)");
-                assert!(Qfalse.as_i32() < Qnil.as_i32());
-                test(cb, REG0, imm_opnd(RUBY_IMMEDIATE_MASK as i64));
-                jit_chain_guard(JCC_JNZ, jit, ctx, cb, ocb, max_chain_depth, side_exit);
-                cmp(cb, REG0, imm_opnd(Qnil.into()));
-                jit_chain_guard(JCC_JBE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
-            }
-
-            add_comment(cb, "guard object is string");
-            let klass_opnd = mem_opnd(64, REG0, RUBY_OFFSET_RBASIC_KLASS);
-            mov(cb, REG1, uimm_opnd(unsafe { rb_cString }.into()));
-            cmp(cb, klass_opnd, REG1);
-            jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
-
-            // Upgrading here causes an error with invalidation writing past end of block
-            ctx.upgrade_opnd_type(insn_opnd, Type::String);
-        } else {
-            add_comment(cb, "skip guard - known to be a string");
-        }
     } else if unsafe {
-        FL_TEST(known_klass, VALUE(RUBY_FL_SINGLETON)) != VALUE(0)
+        FL_TEST(known_klass, VALUE(RUBY_FL_SINGLETON as usize)) != VALUE(0)
             && sample_instance == rb_attr_get(known_klass, id__attached__ as ID)
     } {
         // Singleton classes are attached to one specific object, so we can
@@ -3463,6 +3475,11 @@ fn jit_guard_known_klass(
         jit_mov_gc_ptr(jit, cb, REG1, sample_instance);
         cmp(cb, REG0, REG1);
         jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
+    } else if val_type == Type::CString && unsafe { known_klass == rb_cString } {
+        // guard elided because the context says we've already checked
+        unsafe {
+            assert_eq!(sample_instance.class_of(), rb_cString, "context says class is exactly ::String")
+        };
     } else {
         assert!(!val_type.is_imm());
 
@@ -3487,9 +3504,11 @@ fn jit_guard_known_klass(
         jit_mov_gc_ptr(jit, cb, REG1, known_klass);
         cmp(cb, klass_opnd, REG1);
         jit_chain_guard(JCC_JNE, jit, ctx, cb, ocb, max_chain_depth, side_exit);
-    }
 
-    true
+        if known_klass == unsafe { rb_cString } {
+            ctx.upgrade_opnd_type(insn_opnd, Type::CString);
+        }
+    }
 }
 
 // Generate ancestry guard for protected callee.
@@ -3622,6 +3641,44 @@ fn jit_rb_obj_equal(
     true
 }
 
+/// If string is frozen, duplicate it to get a non-frozen string. Otherwise, return it.
+fn jit_rb_str_uplus(
+    _jit: &mut JITState,
+    ctx: &mut Context,
+    cb: &mut CodeBlock,
+    _ocb: &mut OutlinedCb,
+    _ci: *const rb_callinfo,
+    _cme: *const rb_callable_method_entry_t,
+    _block: Option<IseqPtr>,
+    _argc: i32,
+    _known_recv_class: *const VALUE,
+) -> bool
+{
+    let recv = ctx.stack_pop(1);
+
+    add_comment(cb, "Unary plus on string");
+    mov(cb, REG0, recv);
+    mov(cb, REG1, mem_opnd(64, REG0, RUBY_OFFSET_RBASIC_FLAGS));
+    test(cb, REG1, imm_opnd(RUBY_FL_FREEZE as i64));
+
+    let ret_label = cb.new_label("stack_ret".to_string());
+    // If the string isn't frozen, we just return it. It's already in REG0.
+    jz_label(cb, ret_label);
+
+    // Str is frozen - duplicate
+    mov(cb, C_ARG_REGS[0], REG0);
+    call_ptr(cb, REG0, rb_str_dup as *const u8);
+    // Return value is in REG0, drop through and return it.
+
+    cb.write_label(ret_label);
+    // We guard for an exact-class match on the receiver of rb_cString
+    let stack_ret = ctx.stack_push(Type::CString);
+    mov(cb, stack_ret, REG0);
+
+    cb.link_labels();
+    true
+}
+
 fn jit_rb_str_bytesize(
     _jit: &mut JITState,
     ctx: &mut Context,
@@ -3689,7 +3746,8 @@ fn jit_rb_str_concat(
     // String#<< can take an integer codepoint as an argument, but we don't optimise that.
     // Also, a non-string argument would have to call .to_str on itself before being treated
     // as a string, and that would require saving pc/sp, which we don't do here.
-    if comptime_arg_type != Type::String {
+    // TODO: figure out how we should optimise a string-subtype argument here
+    if comptime_arg_type != Type::CString && comptime_arg.class_of() != unsafe { rb_cString } {
         return false;
     }
 
@@ -3699,7 +3757,7 @@ fn jit_rb_str_concat(
     // Guard that the argument is of class String at runtime.
     let arg_opnd = ctx.stack_opnd(0);
     mov(cb, REG0, arg_opnd);
-    if !jit_guard_known_klass(
+    jit_guard_known_klass(
         jit,
         ctx,
         cb,
@@ -3709,9 +3767,7 @@ fn jit_rb_str_concat(
         comptime_arg,
         SEND_MAX_DEPTH,
         side_exit,
-    ) {
-        return false;
-    }
+    );
 
     let concat_arg = ctx.stack_pop(1);
     let recv = ctx.stack_pop(1);
@@ -3743,11 +3799,11 @@ fn jit_rb_str_concat(
 
     // If encodings are different, use a slower encoding-aware concatenate
     cb.write_label(enc_mismatch);
-    call_ptr(cb, REG0, rb_str_append as *const u8);
+    call_ptr(cb, REG0, rb_str_buf_append as *const u8);
     // Drop through to return
 
     cb.write_label(ret_label);
-    let stack_ret = ctx.stack_push(Type::String);
+    let stack_ret = ctx.stack_push(Type::CString);
     mov(cb, stack_ret, RAX);
 
     cb.link_labels();
@@ -4779,7 +4835,7 @@ fn gen_send_general(
     let recv = ctx.stack_opnd(argc);
     let recv_opnd = StackOpnd(argc.try_into().unwrap());
     mov(cb, REG0, recv);
-    if !jit_guard_known_klass(
+    jit_guard_known_klass(
         jit,
         ctx,
         cb,
@@ -4789,9 +4845,7 @@ fn gen_send_general(
         comptime_recv,
         SEND_MAX_DEPTH,
         side_exit,
-    ) {
-        return CantCompile;
-    }
+    );
 
     // Do method lookup
     let mut cme = unsafe { rb_callable_method_entry(comptime_recv_klass, mid) };
@@ -4813,7 +4867,12 @@ fn gen_send_general(
             }
         }
         METHOD_VISI_PROTECTED => {
-            jit_protected_callee_ancestry_guard(jit, cb, ocb, cme, side_exit);
+            // If the method call is an FCALL, it is always valid
+            if flags & VM_CALL_FCALL == 0 {
+                // otherwise we need an ancestry check to ensure the receiver is vaild to be called
+                // as protected
+                jit_protected_callee_ancestry_guard(jit, cb, ocb, cme, side_exit);
+            }
         }
         _ => {
             panic!("cmes should always have a visibility!");
@@ -5035,7 +5094,7 @@ fn gen_invokesuper(
     // vm_search_normal_superclass
     let rbasic_ptr: *const RBasic = current_defined_class.as_ptr();
     if current_defined_class.builtin_type() == RUBY_T_ICLASS
-        && unsafe { FL_TEST_RAW((*rbasic_ptr).klass, VALUE(RMODULE_IS_REFINEMENT)) != VALUE(0) }
+        && unsafe { RB_TYPE_P((*rbasic_ptr).klass, RUBY_T_MODULE) && FL_TEST_RAW((*rbasic_ptr).klass, VALUE(RMODULE_IS_REFINEMENT.as_usize())) != VALUE(0) }
     {
         return CantCompile;
     }
@@ -5243,8 +5302,7 @@ fn gen_anytostring(
     cb: &mut CodeBlock,
     _ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
-    // Save the PC and SP because we might make a Ruby call for
-    // Kernel#set_trace_var
+    // Save the PC and SP since we might call #to_s
     jit_prepare_routine_call(jit, ctx, cb, REG0);
 
     let str = ctx.stack_pop(1);
@@ -5256,7 +5314,7 @@ fn gen_anytostring(
     call_ptr(cb, REG0, rb_obj_as_string_result as *const u8);
 
     // Push the return value
-    let stack_ret = ctx.stack_push(Type::String);
+    let stack_ret = ctx.stack_push(Type::TString);
     mov(cb, stack_ret, RAX);
 
     KeepCompiling
@@ -5811,95 +5869,96 @@ fn gen_opt_invokebuiltin_delegate(
 /// Maps a YARV opcode to a code generation function (if supported)
 fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
     let VALUE(opcode) = opcode;
+    let opcode = opcode as ruby_vminsn_type;
     assert!(opcode < VM_INSTRUCTION_SIZE);
 
     match opcode {
-        OP_NOP => Some(gen_nop),
-        OP_POP => Some(gen_pop),
-        OP_DUP => Some(gen_dup),
-        OP_DUPN => Some(gen_dupn),
-        OP_SWAP => Some(gen_swap),
-        OP_PUTNIL => Some(gen_putnil),
-        OP_PUTOBJECT => Some(gen_putobject),
-        OP_PUTOBJECT_INT2FIX_0_ => Some(gen_putobject_int2fix),
-        OP_PUTOBJECT_INT2FIX_1_ => Some(gen_putobject_int2fix),
-        OP_PUTSELF => Some(gen_putself),
-        OP_PUTSPECIALOBJECT => Some(gen_putspecialobject),
-        OP_SETN => Some(gen_setn),
-        OP_TOPN => Some(gen_topn),
-        OP_ADJUSTSTACK => Some(gen_adjuststack),
-        OP_GETLOCAL => Some(gen_getlocal),
-        OP_GETLOCAL_WC_0 => Some(gen_getlocal_wc0),
-        OP_GETLOCAL_WC_1 => Some(gen_getlocal_wc1),
-        OP_SETLOCAL => Some(gen_setlocal),
-        OP_SETLOCAL_WC_0 => Some(gen_setlocal_wc0),
-        OP_SETLOCAL_WC_1 => Some(gen_setlocal_wc1),
-        OP_OPT_PLUS => Some(gen_opt_plus),
-        OP_OPT_MINUS => Some(gen_opt_minus),
-        OP_OPT_AND => Some(gen_opt_and),
-        OP_OPT_OR => Some(gen_opt_or),
-        OP_NEWHASH => Some(gen_newhash),
-        OP_DUPHASH => Some(gen_duphash),
-        OP_NEWARRAY => Some(gen_newarray),
-        OP_DUPARRAY => Some(gen_duparray),
-        OP_CHECKTYPE => Some(gen_checktype),
-        OP_OPT_LT => Some(gen_opt_lt),
-        OP_OPT_LE => Some(gen_opt_le),
-        OP_OPT_GT => Some(gen_opt_gt),
-        OP_OPT_GE => Some(gen_opt_ge),
-        OP_OPT_MOD => Some(gen_opt_mod),
-        OP_OPT_STR_FREEZE => Some(gen_opt_str_freeze),
-        OP_OPT_STR_UMINUS => Some(gen_opt_str_uminus),
-        OP_SPLATARRAY => Some(gen_splatarray),
-        OP_NEWRANGE => Some(gen_newrange),
-        OP_PUTSTRING => Some(gen_putstring),
-        OP_EXPANDARRAY => Some(gen_expandarray),
-        OP_DEFINED => Some(gen_defined),
-        OP_CHECKKEYWORD => Some(gen_checkkeyword),
-        OP_CONCATSTRINGS => Some(gen_concatstrings),
-        OP_GETINSTANCEVARIABLE => Some(gen_getinstancevariable),
-        OP_SETINSTANCEVARIABLE => Some(gen_setinstancevariable),
+        YARVINSN_nop => Some(gen_nop),
+        YARVINSN_pop => Some(gen_pop),
+        YARVINSN_dup => Some(gen_dup),
+        YARVINSN_dupn => Some(gen_dupn),
+        YARVINSN_swap => Some(gen_swap),
+        YARVINSN_putnil => Some(gen_putnil),
+        YARVINSN_putobject => Some(gen_putobject),
+        YARVINSN_putobject_INT2FIX_0_ => Some(gen_putobject_int2fix),
+        YARVINSN_putobject_INT2FIX_1_ => Some(gen_putobject_int2fix),
+        YARVINSN_putself => Some(gen_putself),
+        YARVINSN_putspecialobject => Some(gen_putspecialobject),
+        YARVINSN_setn => Some(gen_setn),
+        YARVINSN_topn => Some(gen_topn),
+        YARVINSN_adjuststack => Some(gen_adjuststack),
+        YARVINSN_getlocal => Some(gen_getlocal),
+        YARVINSN_getlocal_WC_0 => Some(gen_getlocal_wc0),
+        YARVINSN_getlocal_WC_1 => Some(gen_getlocal_wc1),
+        YARVINSN_setlocal => Some(gen_setlocal),
+        YARVINSN_setlocal_WC_0 => Some(gen_setlocal_wc0),
+        YARVINSN_setlocal_WC_1 => Some(gen_setlocal_wc1),
+        YARVINSN_opt_plus => Some(gen_opt_plus),
+        YARVINSN_opt_minus => Some(gen_opt_minus),
+        YARVINSN_opt_and => Some(gen_opt_and),
+        YARVINSN_opt_or => Some(gen_opt_or),
+        YARVINSN_newhash => Some(gen_newhash),
+        YARVINSN_duphash => Some(gen_duphash),
+        YARVINSN_newarray => Some(gen_newarray),
+        YARVINSN_duparray => Some(gen_duparray),
+        YARVINSN_checktype => Some(gen_checktype),
+        YARVINSN_opt_lt => Some(gen_opt_lt),
+        YARVINSN_opt_le => Some(gen_opt_le),
+        YARVINSN_opt_gt => Some(gen_opt_gt),
+        YARVINSN_opt_ge => Some(gen_opt_ge),
+        YARVINSN_opt_mod => Some(gen_opt_mod),
+        YARVINSN_opt_str_freeze => Some(gen_opt_str_freeze),
+        YARVINSN_opt_str_uminus => Some(gen_opt_str_uminus),
+        YARVINSN_splatarray => Some(gen_splatarray),
+        YARVINSN_newrange => Some(gen_newrange),
+        YARVINSN_putstring => Some(gen_putstring),
+        YARVINSN_expandarray => Some(gen_expandarray),
+        YARVINSN_defined => Some(gen_defined),
+        YARVINSN_checkkeyword => Some(gen_checkkeyword),
+        YARVINSN_concatstrings => Some(gen_concatstrings),
+        YARVINSN_getinstancevariable => Some(gen_getinstancevariable),
+        YARVINSN_setinstancevariable => Some(gen_setinstancevariable),
 
-        OP_OPT_EQ => Some(gen_opt_eq),
-        OP_OPT_NEQ => Some(gen_opt_neq),
-        OP_OPT_AREF => Some(gen_opt_aref),
-        OP_OPT_ASET => Some(gen_opt_aset),
-        OP_OPT_MULT => Some(gen_opt_mult),
-        OP_OPT_DIV => Some(gen_opt_div),
-        OP_OPT_LTLT => Some(gen_opt_ltlt),
-        OP_OPT_NIL_P => Some(gen_opt_nil_p),
-        OP_OPT_EMPTY_P => Some(gen_opt_empty_p),
-        OP_OPT_SUCC => Some(gen_opt_succ),
-        OP_OPT_NOT => Some(gen_opt_not),
-        OP_OPT_SIZE => Some(gen_opt_size),
-        OP_OPT_LENGTH => Some(gen_opt_length),
-        OP_OPT_REGEXPMATCH2 => Some(gen_opt_regexpmatch2),
-        OP_OPT_GETINLINECACHE => Some(gen_opt_getinlinecache),
-        OP_INVOKEBUILTIN => Some(gen_invokebuiltin),
-        OP_OPT_INVOKEBUILTIN_DELEGATE => Some(gen_opt_invokebuiltin_delegate),
-        OP_OPT_INVOKEBUILTIN_DELEGATE_LEAVE => Some(gen_opt_invokebuiltin_delegate),
-        OP_OPT_CASE_DISPATCH => Some(gen_opt_case_dispatch),
-        OP_BRANCHIF => Some(gen_branchif),
-        OP_BRANCHUNLESS => Some(gen_branchunless),
-        OP_BRANCHNIL => Some(gen_branchnil),
-        OP_JUMP => Some(gen_jump),
+        YARVINSN_opt_eq => Some(gen_opt_eq),
+        YARVINSN_opt_neq => Some(gen_opt_neq),
+        YARVINSN_opt_aref => Some(gen_opt_aref),
+        YARVINSN_opt_aset => Some(gen_opt_aset),
+        YARVINSN_opt_mult => Some(gen_opt_mult),
+        YARVINSN_opt_div => Some(gen_opt_div),
+        YARVINSN_opt_ltlt => Some(gen_opt_ltlt),
+        YARVINSN_opt_nil_p => Some(gen_opt_nil_p),
+        YARVINSN_opt_empty_p => Some(gen_opt_empty_p),
+        YARVINSN_opt_succ => Some(gen_opt_succ),
+        YARVINSN_opt_not => Some(gen_opt_not),
+        YARVINSN_opt_size => Some(gen_opt_size),
+        YARVINSN_opt_length => Some(gen_opt_length),
+        YARVINSN_opt_regexpmatch2 => Some(gen_opt_regexpmatch2),
+        YARVINSN_opt_getinlinecache => Some(gen_opt_getinlinecache),
+        YARVINSN_invokebuiltin => Some(gen_invokebuiltin),
+        YARVINSN_opt_invokebuiltin_delegate => Some(gen_opt_invokebuiltin_delegate),
+        YARVINSN_opt_invokebuiltin_delegate_leave => Some(gen_opt_invokebuiltin_delegate),
+        YARVINSN_opt_case_dispatch => Some(gen_opt_case_dispatch),
+        YARVINSN_branchif => Some(gen_branchif),
+        YARVINSN_branchunless => Some(gen_branchunless),
+        YARVINSN_branchnil => Some(gen_branchnil),
+        YARVINSN_jump => Some(gen_jump),
 
-        OP_GETBLOCKPARAMPROXY => Some(gen_getblockparamproxy),
-        OP_GETBLOCKPARAM => Some(gen_getblockparam),
-        OP_OPT_SEND_WITHOUT_BLOCK => Some(gen_opt_send_without_block),
-        OP_SEND => Some(gen_send),
-        OP_INVOKESUPER => Some(gen_invokesuper),
-        OP_LEAVE => Some(gen_leave),
+        YARVINSN_getblockparamproxy => Some(gen_getblockparamproxy),
+        YARVINSN_getblockparam => Some(gen_getblockparam),
+        YARVINSN_opt_send_without_block => Some(gen_opt_send_without_block),
+        YARVINSN_send => Some(gen_send),
+        YARVINSN_invokesuper => Some(gen_invokesuper),
+        YARVINSN_leave => Some(gen_leave),
 
-        OP_GETGLOBAL => Some(gen_getglobal),
-        OP_SETGLOBAL => Some(gen_setglobal),
-        OP_ANYTOSTRING => Some(gen_anytostring),
-        OP_OBJTOSTRING => Some(gen_objtostring),
-        OP_INTERN => Some(gen_intern),
-        OP_TOREGEXP => Some(gen_toregexp),
-        OP_GETSPECIAL => Some(gen_getspecial),
-        OP_GETCLASSVARIABLE => Some(gen_getclassvariable),
-        OP_SETCLASSVARIABLE => Some(gen_setclassvariable),
+        YARVINSN_getglobal => Some(gen_getglobal),
+        YARVINSN_setglobal => Some(gen_setglobal),
+        YARVINSN_anytostring => Some(gen_anytostring),
+        YARVINSN_objtostring => Some(gen_objtostring),
+        YARVINSN_intern => Some(gen_intern),
+        YARVINSN_toregexp => Some(gen_toregexp),
+        YARVINSN_getspecial => Some(gen_getspecial),
+        YARVINSN_getclassvariable => Some(gen_getclassvariable),
+        YARVINSN_setclassvariable => Some(gen_setclassvariable),
 
         // Unimplemented opcode, YJIT won't generate code for this yet
         _ => None,
@@ -5971,14 +6030,53 @@ impl CodegenGlobals {
 
         #[cfg(not(test))]
         let (mut cb, mut ocb) = {
-            let page_size = unsafe { rb_yjit_get_page_size() }.as_usize();
-            let mem_block: *mut u8 = unsafe { alloc_exec_mem(mem_size.try_into().unwrap()) };
-            let cb = CodeBlock::new(mem_block, mem_size / 2, page_size);
-            let ocb = OutlinedCb::wrap(CodeBlock::new(
-                unsafe { mem_block.add(mem_size / 2) },
-                mem_size / 2,
+            // TODO(alan): we can error more gracefully when the user gives
+            //   --yjit-exec-mem=absurdly-large-number
+            //
+            // 2 GiB. It's likely a bug if we generate this much code.
+            const MAX_BUFFER_SIZE: usize = 2 * 1024 * 1024 * 1024;
+            assert!(mem_size <= MAX_BUFFER_SIZE);
+            let mem_size_u32 = mem_size as u32;
+            let half_size = mem_size / 2;
+
+            let page_size = unsafe { rb_yjit_get_page_size() };
+            let assert_page_aligned = |ptr| assert_eq!(
+                0,
+                ptr as usize % page_size.as_usize(),
+                "Start of virtual address block should be page-aligned",
+            );
+
+            let virt_block: *mut u8 = unsafe { rb_yjit_reserve_addr_space(mem_size_u32) };
+            let second_half = virt_block.wrapping_add(half_size);
+
+            // Memory protection syscalls need page-aligned addresses, so check it here. Assuming
+            // `virt_block` is page-aligned, `second_half` should be page-aligned as long as the
+            // page size in bytes is a power of two 2¹⁹ or smaller. This is because the user
+            // requested size is half of mem_option × 2²⁰ as it's in MiB.
+            //
+            // Basically, we don't support x86-64 2MiB and 1GiB pages. ARMv8 can do up to 64KiB
+            // (2¹⁶ bytes) pages, which should be fine. 4KiB pages seem to be the most popular though.
+            assert_page_aligned(virt_block);
+            assert_page_aligned(second_half);
+
+            use crate::virtualmem::*;
+
+            let first_half = VirtualMem::new(
+                SystemAllocator {},
                 page_size,
-            ));
+                virt_block,
+                half_size
+            );
+            let second_half = VirtualMem::new(
+                SystemAllocator {},
+                page_size,
+                second_half,
+                half_size
+            );
+
+            let cb = CodeBlock::new(first_half);
+            let ocb = OutlinedCb::wrap(CodeBlock::new(second_half));
+
             (cb, ocb)
         };
 
@@ -6067,6 +6165,7 @@ impl CodegenGlobals {
             self.yjit_reg_method(rb_cString, "to_str", jit_rb_str_to_s);
             self.yjit_reg_method(rb_cString, "bytesize", jit_rb_str_bytesize);
             self.yjit_reg_method(rb_cString, "<<", jit_rb_str_concat);
+            self.yjit_reg_method(rb_cString, "+@", jit_rb_str_uplus);
 
             // Thread.current
             self.yjit_reg_method(
@@ -6311,7 +6410,7 @@ mod tests {
     #[test]
     fn test_int2fix() {
         let (mut jit, mut context, mut cb, mut ocb) = setup_codegen();
-        jit.opcode = OP_PUTOBJECT_INT2FIX_0_;
+        jit.opcode = YARVINSN_putobject_INT2FIX_0_.as_usize();
         let status = gen_putobject_int2fix(&mut jit, &mut context, &mut cb, &mut ocb);
 
         let (_, tmp_type_top) = context.get_opnd_mapping(StackOpnd(0));
@@ -6335,7 +6434,7 @@ mod tests {
         let (mut jit, mut context, mut cb, mut ocb) = setup_codegen();
         context.stack_push(Type::Fixnum);
         context.stack_push(Type::Flonum);
-        context.stack_push(Type::String);
+        context.stack_push(Type::CString);
 
         let mut value_array: [u64; 2] = [0, 2];
         let pc: *mut VALUE = &mut value_array as *mut u64 as *mut VALUE;
@@ -6345,9 +6444,9 @@ mod tests {
 
         assert_eq!(status, KeepCompiling);
 
-        assert_eq!(Type::String, context.get_opnd_type(StackOpnd(2)));
+        assert_eq!(Type::CString, context.get_opnd_type(StackOpnd(2)));
         assert_eq!(Type::Flonum, context.get_opnd_type(StackOpnd(1)));
-        assert_eq!(Type::String, context.get_opnd_type(StackOpnd(0)));
+        assert_eq!(Type::CString, context.get_opnd_type(StackOpnd(0)));
 
         assert!(cb.get_write_pos() > 0);
     }
@@ -6356,7 +6455,7 @@ mod tests {
     fn test_gen_topn() {
         let (mut jit, mut context, mut cb, mut ocb) = setup_codegen();
         context.stack_push(Type::Flonum);
-        context.stack_push(Type::String);
+        context.stack_push(Type::CString);
 
         let mut value_array: [u64; 2] = [0, 1];
         let pc: *mut VALUE = &mut value_array as *mut u64 as *mut VALUE;
@@ -6367,7 +6466,7 @@ mod tests {
         assert_eq!(status, KeepCompiling);
 
         assert_eq!(Type::Flonum, context.get_opnd_type(StackOpnd(2)));
-        assert_eq!(Type::String, context.get_opnd_type(StackOpnd(1)));
+        assert_eq!(Type::CString, context.get_opnd_type(StackOpnd(1)));
         assert_eq!(Type::Flonum, context.get_opnd_type(StackOpnd(0)));
 
         assert!(cb.get_write_pos() > 0); // Write some movs
@@ -6377,7 +6476,7 @@ mod tests {
     fn test_gen_adjuststack() {
         let (mut jit, mut context, mut cb, mut ocb) = setup_codegen();
         context.stack_push(Type::Flonum);
-        context.stack_push(Type::String);
+        context.stack_push(Type::CString);
         context.stack_push(Type::Fixnum);
 
         let mut value_array: [u64; 3] = [0, 2, 0];

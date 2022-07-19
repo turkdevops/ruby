@@ -23,7 +23,7 @@
 # Copyright:: (C) 2000  Information-technology Promotion Agency, Japan
 
 module Timeout
-  VERSION = "0.2.0"
+  VERSION = "0.3.0"
 
   # Raised by Timeout.timeout when the block times out.
   class Error < RuntimeError
@@ -62,7 +62,7 @@ module Timeout
 
     def initialize(thread, timeout, exception_class, message)
       @thread = thread
-      @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      @deadline = GET_TIME.call(Process::CLOCK_MONOTONIC) + timeout
       @exception_class = exception_class
       @message = message
 
@@ -98,7 +98,7 @@ module Timeout
   private_constant :Request
 
   def self.create_timeout_thread
-    Thread.new do
+    watcher = Thread.new do
       requests = []
       while true
         until QUEUE.empty? and !requests.empty? # wait to have at least one request
@@ -109,7 +109,7 @@ module Timeout
 
         now = 0.0
         QUEUE_MUTEX.synchronize do
-          while (now = Process.clock_gettime(Process::CLOCK_MONOTONIC)) < closest_deadline and QUEUE.empty?
+          while (now = GET_TIME.call(Process::CLOCK_MONOTONIC)) < closest_deadline and QUEUE.empty?
             CONDVAR.wait(QUEUE_MUTEX, closest_deadline - now)
           end
         end
@@ -120,6 +120,9 @@ module Timeout
         requests.reject!(&:done?)
       end
     end
+    watcher.name = "Timeout stdlib thread"
+    watcher.thread_variable_set(:"\0__detached_thread__", true)
+    watcher
   end
   private_class_method :create_timeout_thread
 
@@ -132,6 +135,12 @@ module Timeout
       end
     end
   end
+
+  # We keep a private reference so that time mocking libraries won't break
+  # Timeout.
+  GET_TIME = Process.method(:clock_gettime)
+  private_constant :GET_TIME
+
   # :startdoc:
 
   # Perform an operation in a block, raising an error if it takes longer than

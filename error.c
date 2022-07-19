@@ -82,7 +82,7 @@ static struct {
     st_table *id2enum, *enum2id;
 } warning_categories;
 
-extern const char ruby_description[];
+extern const char *rb_dynamic_description;
 
 static const char *
 rb_strerrno(int err)
@@ -730,7 +730,7 @@ bug_report_begin_valist(FILE *out, const char *fmt, va_list args)
     fputs("[BUG] ", out);
     vsnprintf(buf, sizeof(buf), fmt, args);
     fputs(buf, out);
-    snprintf(buf, sizeof(buf), "\n%s\n\n", ruby_description);
+    snprintf(buf, sizeof(buf), "\n%s\n\n", rb_dynamic_description);
     fputs(buf, out);
     preface_dump(out);
 }
@@ -866,7 +866,7 @@ rb_async_bug_errno(const char *mesg, int errno_arg)
 	write_or_abort(2, errno_str, strlen(errno_str));
     }
     WRITE_CONST(2, "\n\n");
-    write_or_abort(2, ruby_description, strlen(ruby_description));
+    write_or_abort(2, rb_dynamic_description, strlen(rb_dynamic_description));
     abort();
 }
 
@@ -882,7 +882,7 @@ rb_assert_failure(const char *file, int line, const char *name, const char *expr
     FILE *out = stderr;
     fprintf(out, "Assertion Failed: %s:%d:", file, line);
     if (name) fprintf(out, "%s:", name);
-    fprintf(out, "%s\n%s\n\n", expr, ruby_description);
+    fprintf(out, "%s\n%s\n\n", expr, rb_dynamic_description);
     preface_dump(out);
     rb_vm_bugreport(NULL);
     bug_report_end(out);
@@ -1273,19 +1273,14 @@ check_highlight_keyword(VALUE opt, int auto_tty_detect)
 
         switch (highlight) {
           default:
-            rb_bool_expected(highlight, "highlight");
+            rb_bool_expected(highlight, "highlight", TRUE);
             UNREACHABLE;
           case Qtrue: case Qfalse: case Qnil: break;
         }
     }
 
     if (NIL_P(highlight)) {
-        if (auto_tty_detect) {
-            highlight = rb_stderr_tty_p() ? Qtrue : Qfalse;
-        }
-        else {
-            highlight = Qfalse;
-        }
+        highlight = RBOOL(auto_tty_detect && rb_stderr_tty_p());
     }
 
     return highlight;
@@ -1390,6 +1385,28 @@ exc_message(VALUE exc)
  *
  * This method is overridden by did_you_mean and error_highlight to add
  * their information.
+ *
+ * A user-defined exception class can also define their own
+ * +detailed_message+ method to add supplemental information.
+ * When +highlight+ is true, it can return a string containing escape
+ * sequences, but use widely-supported ones. It is recommended to limit
+ * the following codes:
+ *
+ * - Reset (+\e[0m+)
+ * - Bold (+\e[1m+)
+ * - Underline (+\e[4m+)
+ * - Foreground color except white and black
+ *   - Red (+\e[31m+)
+ *   - Green (+\e[32m+)
+ *   - Yellow (+\e[33m+)
+ *   - Blue (+\e[34m+)
+ *   - Magenta (+\e[35m+)
+ *   - Cyan (+\e[36m+)
+ *
+ * Use escape sequences carefully even if +highlight+ is true.
+ * Do not use escape sequences to express essential information;
+ * the message should be readable even if all escape sequences are
+ * ignored.
  */
 
 static VALUE
@@ -2995,7 +3012,7 @@ Init_Exception(void)
 
     rb_eLoadError   = rb_define_class("LoadError", rb_eScriptError);
     /* the path failed to load */
-    rb_attr(rb_eLoadError, rb_intern_const("path"), 1, 0, Qfalse);
+    rb_attr(rb_eLoadError, rb_intern_const("path"), TRUE, FALSE, FALSE);
 
     rb_eNotImpError = rb_define_class("NotImplementedError", rb_eScriptError);
 

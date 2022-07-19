@@ -1407,6 +1407,8 @@ class TestFileExhaustive < Test::Unit::TestCase
   end
 
   def test_flock_exclusive
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     timeout = EnvUtil.apply_timeout_scale(0.1).to_s
     File.open(regular_file, "r+") do |f|
       f.flock(File::LOCK_EX)
@@ -1436,6 +1438,8 @@ class TestFileExhaustive < Test::Unit::TestCase
   end
 
   def test_flock_shared
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     timeout = EnvUtil.apply_timeout_scale(0.1).to_s
     File.open(regular_file, "r+") do |f|
       f.flock(File::LOCK_SH)

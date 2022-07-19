@@ -187,11 +187,7 @@ RSpec.describe "bundle install with install-time dependencies" do
 
         bundle :install, :env => { "DEBUG_RESOLVER_TREE" => "1", "DEBUG" => "1" }
 
-        activated_groups = if local_platforms.any?
-          "net_b (1.0) (ruby), net_b (1.0) (#{local_platforms.join(", ")})"
-        else
-          "net_b (1.0) (ruby)"
-        end
+        activated_groups = "net_b (1.0) (ruby), net_b (1.0) (#{specific_local_platform})"
 
         expect(out).to include(" net_b").
           and include("BUNDLER: Starting resolution").
@@ -280,6 +276,27 @@ RSpec.describe "bundle install with install-time dependencies" do
         bundle "install --verbose", :artifice => "compact_index", :env => { "BUNDLER_SPEC_GEM_REPO" => gem_repo2.to_s }, :raise_on_error => false
         expect(err).to include("parallel_tests-3.8.0 requires ruby version >= #{next_ruby_minor}")
         expect(err).not_to include("That means the author of parallel_tests (3.8.0) has removed it.")
+      end
+
+      it "gives a meaningful error on ruby version mismatches between dependencies" do
+        build_repo4 do
+          build_gem "requires-old-ruby" do |s|
+            s.required_ruby_version = "< #{RUBY_VERSION}"
+          end
+        end
+
+        build_lib("foo", :path => bundled_app) do |s|
+          s.required_ruby_version = ">= #{RUBY_VERSION}"
+
+          s.add_dependency "requires-old-ruby"
+        end
+
+        install_gemfile <<-G, :raise_on_error => false
+          source "#{file_uri_for(gem_repo4)}"
+          gemspec
+        G
+
+        expect(err).to include("Bundler found conflicting requirements for the Ruby\0 version:")
       end
 
       it "installs the older version under rate limiting conditions" do

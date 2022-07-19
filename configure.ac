@@ -32,6 +32,7 @@ m4_include([tool/m4/ruby_func_attribute.m4])dnl
 m4_include([tool/m4/ruby_mingw32.m4])dnl
 m4_include([tool/m4/ruby_prepend_option.m4])dnl
 m4_include([tool/m4/ruby_prog_gnu_ld.m4])dnl
+m4_include([tool/m4/ruby_prog_makedirs.m4])dnl
 m4_include([tool/m4/ruby_replace_funcs.m4])dnl
 m4_include([tool/m4/ruby_replace_type.m4])dnl
 m4_include([tool/m4/ruby_require_funcs.m4])dnl
@@ -340,16 +341,21 @@ AS_CASE(["$host_os:$build_os"],
 AS_CASE(["$target_os"],
 [darwin*], [
     AC_MSG_CHECKING(if minimum required OS X version is supported)
-    AC_COMPILE_IFELSE([AC_LANG_SOURCE([[@%:@include <AvailabilityMacros.h>
+    AC_PREPROC_IFELSE([AC_LANG_SOURCE([[@%:@include <AvailabilityMacros.h>
 	@%:@if MAC_OS_X_VERSION_MIN_REQUIRED < __MAC_10_5
 	@%:@error pre OS X 10.5
 	[!<===== pre OS X 10.5 =====>]
 	@%:@endif
-	int __thread conftest;
 	]])],
 	[AC_MSG_RESULT(yes)],
 	[AC_MSG_RESULT(no)
 	AC_MSG_ERROR([Unsupported OS X version is required])])
+    AC_CACHE_CHECK([if thread-local storage is supported], [rb_cv_tls_supported],
+	[AC_LINK_IFELSE([AC_LANG_PROGRAM([[int __thread conftest;]])],
+	    [rb_cv_tls_supported=yes],
+	    [rb_cv_tls_supported=no])])
+    AS_IF([test x"$rb_cv_tls_supported" != xyes],
+	[AC_DEFINE(RB_THREAD_LOCAL_SPECIFIER_IS_UNSUPPORTED)])
 ])
 
 RUBY_MINGW32
@@ -365,12 +371,12 @@ AS_IF([test "$GCC" = yes], [
     icc_version=`echo =__ICC | $CC -E -xc - | sed '/^=/!d;s///;/^__ICC/d'`
     test -n "$icc_version" || icc_version=0
     # RUBY_APPEND_OPTIONS(XCFLAGS, ["-include ruby/config.h" "-include ruby/missing.h"])
+
+    AS_IF([test "$gcc_major" -lt 4], [
+        AC_MSG_ERROR([too old GCC: $gcc_major.$gcc_minor])
+    ])
 ], [
     linker_flag=
-])
-
-AS_IF([test "$GCC" = yes -a "$gcc_major" -lt 3 ], [
-    AC_MSG_ERROR([too old GCC])
 ])
 
 RUBY_PROG_GNU_LD
@@ -486,17 +492,12 @@ AS_CASE(["$target_os"],
 AC_PROG_LN_S
 AC_PROG_MAKE_SET
 AC_PROG_INSTALL
-AC_PROG_MKDIR_P
-AS_IF([test "x$MKDIR_P" = "x -d"], [
-  AS_IF([test x"$as_mkdir_p" != xfalse], [
-    MKDIR_P='mkdir -p'
-    echo "use 'mkdir -p' as MKDIR_P"
-  ], [
-    AC_MSG_ERROR([mkdir -p is required])
-  ])
+
+AS_CASE(["$target_os"],[openbsd*],[
+    ac_cv_path_mkdir="mkdir"
 ])
-MAKEDIRS="$MKDIR_P"
-AC_SUBST(MAKEDIRS)
+
+RUBY_PROG_MAKEDIRS
 
 AC_CHECK_PROG([DTRACE], [${ac_tool_prefix}dtrace], [${ac_tool_prefix}dtrace])
 AS_IF([test "$cross_compiling:$ac_cv_prog_DTRACE" = no: -a -n "$ac_tool_prefix"], [
@@ -634,10 +635,7 @@ AC_ARG_ENABLE(werror,
 rb_cv_warnflags="$warnflags"
 AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
 [yes::*|yes:*:set:], [# GCC && (!warnflags || extra_warnflags)
-    AS_IF([test $gcc_major -ge 4], [
-	extra_warnflags="$extra_warnflags -Werror=extra-tokens"
-    ])
-    AS_IF([test $gcc_major -ge 5 -a $gcc_major -le 6], [
+    AS_IF([test $gcc_major -le 6], [
 	extra_warnflags="$extra_warnflags -Wno-maybe-uninitialized"
     ])
     # ICC doesn't support -Werror=
@@ -645,6 +643,7 @@ AS_CASE(["$GCC:${warnflags+set}:${extra_warnflags:+set}:"],
 	particular_werror_flags=no
     ])
     for wflag in \
+		 -Werror=extra-tokens \
 		 -Werror=deprecated-declarations \
 		 -Werror=division-by-zero -Werror=div-by-zero \
 		 -Werror=duplicated-cond \
@@ -775,6 +774,17 @@ AS_IF([test "$GCC" = yes], [
 	RUBY_APPEND_OPTION(LDFLAGS, $stack_protector)
     ])
 
+    # aarch64 branch protection
+    AS_CASE(["$target_cpu"], [aarch64], [
+	AS_FOR(option, opt, [-mbranch-protection=pac-ret -msign-return-address=all], [
+            RUBY_TRY_CFLAGS(option, [branch_protection=yes], [branch_protection=no])
+            AS_IF([test "x$branch_protection" = xyes], [
+                RUBY_APPEND_OPTION(XCFLAGS, option)
+                break
+            ])
+        ])
+    ])
+
     AS_CASE("${compress_debug_sections:-zlib}",
     [none|no], [], [
     RUBY_TRY_LDFLAGS(${linker_flag}--compress-debug-sections=${compress_debug_sections:-zlib},
@@ -864,9 +874,7 @@ AS_IF([test "$GCC" = ""], [
     AS_CASE(["$target_os"],[aix*],[warnflags="$warnflags -qinfo=por" rb_cv_warnflags="$rb_cv_warnflags -qinfo=por"])
 ])
 AS_IF([test "$GCC" = yes], [
-    AS_IF([test "$gcc_major" -ge 4], [
-	RUBY_TRY_CFLAGS(-fvisibility=hidden, [visibility_option=yes], [visibility_option=no])
-    ])
+    RUBY_TRY_CFLAGS(-fvisibility=hidden, [visibility_option=yes], [visibility_option=no])
     AC_SUBST(WERRORFLAG, "-Werror")
     AS_IF([test "$visibility_option" = yes], [
 	RUBY_APPEND_OPTION(XCFLAGS, -fvisibility=hidden)
@@ -992,7 +1000,7 @@ AS_CASE(["$target_os"],
 		ac_cv_lib_crypt_crypt=no
 		ac_cv_func_fdatasync=no # Mac OS X wrongly reports it has fdatasync()
 		ac_cv_func_vfork=no
-		AS_IF([test $gcc_major -lt 4 -o \( $gcc_major -eq 4 -a $gcc_minor -lt 3 \)], [
+		AS_IF([test $gcc_major -eq 4 -a $gcc_minor -lt 3], [
 		    ac_cv_func___builtin_setjmp=no
 		])
 		with_setjmp_type=sigsetjmp # to hijack SIGCHLD handler
@@ -1159,7 +1167,6 @@ main()
 		AS_IF([test "$target_cpu" = x64], [
 		    ac_cv_func___builtin_setjmp=yes
 		    ac_cv_func_round=no
-		    coroutine_type=yes
 		])
 		ac_cv_func_tgamma=no
 		AC_CHECK_TYPE([NET_LUID], [], [],
@@ -3114,6 +3121,15 @@ AS_CASE(["$target_cpu-$target_os"],
     AS_IF([test "x$ac_cv_header_execinfo_h" = xyes], [
 	AC_CHECK_LIB([execinfo], [backtrace])
 	AC_CHECK_HEADERS([libunwind.h])
+
+    AC_CHECK_HEADERS([mach/task.h mach/mach_init.h mach/mach_port.h])
+    AS_IF([ test \
+        "x${ac_cv_header_mach_task_h}" = xyes -a \
+        "x${ac_cv_header_mach_mach_init_h}" = xyes -a \
+        "x${ac_cv_header_mach_mach_port_h}" = xyes \
+    ], [
+        AC_DEFINE([HAVE_MACH_TASK_EXCEPTION_PORTS], [1])
+    ])
     ])],
 [*-freebsd*|x86_64-netbsd*], [
     AC_CHECK_HEADERS([execinfo.h])
@@ -3698,12 +3714,12 @@ AS_CASE(["$RDOCTARGET:$CAPITARGET"],[nodoc:nodoc],[INSTALLDOC=nodoc],[INSTALLDOC
 AC_SUBST(INSTALLDOC)
 
 AC_ARG_ENABLE(jit-support,
-        AS_HELP_STRING([--disable-jit-support], [disable JIT features]),
-        [MJIT_SUPPORT=$enableval],
-        # Enable mjit by default except for WASI
-        [AS_IF([test x"$target_os" != "xwasi"],
-		[MJIT_SUPPORT=yes],
-		[MJIT_SUPPORT=no ])])
+    AS_HELP_STRING([--disable-jit-support], [disable JIT features]),
+    [MJIT_SUPPORT=$enableval],
+    [AS_CASE(["$target_os"],
+        [wasi | mingw*], [MJIT_SUPPORT=no],
+        [MJIT_SUPPORT=yes]
+    )])
 
 AS_IF([test x"$MJIT_SUPPORT" = "xyes"],
 	[AC_DEFINE(USE_MJIT, 1)],
@@ -3788,13 +3804,26 @@ AS_CASE(["$target_os"],
 	],
     [darwin*], [
 	RUBY_APPEND_OPTION(CFLAGS, -pipe)
+        AC_MSG_CHECKING([whether Security framework is needed])
 	AC_COMPILE_IFELSE([
-	    AC_LANG_BOOL_COMPILE_TRY([@%:@include <AvailabilityMacros.h>],
-		[MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_7 &&
-		 MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_10])],
+	    AC_LANG_BOOL_COMPILE_TRY([
+@%:@include <AvailabilityMacros.h>
+enum {
+    least = MAC_OS_X_VERSION_10_7, /* just fail if undefined */
+    required = MAC_OS_X_VERSION_MIN_REQUIRED,
+    upper /* bigger than MIN_REQUIRED, or */
+@%:@ifdef MAC_OS_X_VERSION_10_10
+        = MAC_OS_X_VERSION_10_10
+@%:@endif
+};],
+	    [required >= least && required < upper])],
 	    [dnl
+		AC_MSG_RESULT(yes)
 		RUBY_APPEND_OPTION(XLDFLAGS, [-framework Security])
 		RUBY_APPEND_OPTION(LIBRUBYARG_STATIC, [-framework Security])
+	    ],dnl
+	    [dnl
+		AC_MSG_RESULT(no)
 	    ]dnl
 	)
 	RUBY_APPEND_OPTION(XLDFLAGS, [-framework CoreFoundation])
@@ -4002,6 +4031,7 @@ AC_SUBST(EXPORT_PREFIX)
 AC_SUBST(SYMBOL_PREFIX)
 AC_SUBST(MINIOBJS)
 AC_SUBST(THREAD_MODEL)
+AC_SUBST(COROUTINE_TYPE, ${coroutine_type})
 AC_SUBST(PLATFORM_DIR)
 
 firstmf=`echo $FIRSTMAKEFILE | sed 's/:.*//'`
@@ -4408,7 +4438,7 @@ config_summary "debugflags"          "$debugflags"
 config_summary "warnflags"           "$warnflags"
 config_summary "strip command"       "$STRIP"
 config_summary "install doc"         "$DOCTARGETS"
-config_summary "JIT support"         "$MJIT_SUPPORT"
+config_summary "MJIT support"        "$MJIT_SUPPORT"
 config_summary "YJIT support"        "$YJIT_SUPPORT"
 config_summary "man page type"       "$MANTYPE"
 config_summary "search path"         "$search_path"

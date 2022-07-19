@@ -18,9 +18,116 @@ module RubyVM::YJIT
     Primitive.rb_yjit_stats_enabled_p
   end
 
+  # Check if rb_yjit_trace_exit_locations_enabled_p is enabled.
+  def self.trace_exit_locations_enabled?
+    Primitive.rb_yjit_trace_exit_locations_enabled_p
+  end
+
   # Discard statistics collected for --yjit-stats.
   def self.reset_stats!
     Primitive.rb_yjit_reset_stats_bang
+  end
+
+  # If --yjit-trace-exits is enabled parse the hashes from
+  # Primitive.rb_yjit_get_exit_locations into a format readable
+  # by Stackprof. This will allow us to find the exact location of a
+  # side exit in YJIT based on the instruction that is exiting.
+  def self.exit_locations
+    return unless trace_exit_locations_enabled?
+
+    results = Primitive.rb_yjit_get_exit_locations
+    raw_samples = results[:raw].dup
+    line_samples = results[:lines].dup
+    frames = results[:frames].dup
+    samples_count = 0
+
+    # Loop through the instructions and set the frame hash with the data.
+    # We use nonexistent.def for the file name, otherwise insns.def will be displayed
+    # and that information isn't useful in this context.
+    RubyVM::INSTRUCTION_NAMES.each_with_index do |name, frame_id|
+      frame_hash = { samples: 0, total_samples: 0, edges: {}, name: name, file: "nonexistent.def", line: nil, lines: {} }
+      results[:frames][frame_id] = frame_hash
+      frames[frame_id] = frame_hash
+    end
+
+    # Loop through the raw_samples and build the hashes for StackProf.
+    # The loop is based off an example in the StackProf documentation and therefore
+    # this functionality can only work with that library.
+    #
+    # Raw Samples:
+    # [ length, frame1, frame2, frameN, ..., instruction, count
+    #
+    # Line Samples
+    # [ length, line_1, line_2, line_n, ..., dummy value, count
+    i = 0
+    while i < raw_samples.length
+      stack_length = raw_samples[i] + 1
+      i += 1 # consume the stack length
+
+      prev_frame_id = nil
+      stack_length.times do |idx|
+        idx += i
+        frame_id = raw_samples[idx]
+
+        if prev_frame_id
+          prev_frame = frames[prev_frame_id]
+          prev_frame[:edges][frame_id] ||= 0
+          prev_frame[:edges][frame_id] += 1
+        end
+
+        frame_info = frames[frame_id]
+        frame_info[:total_samples] += 1
+
+        frame_info[:lines][line_samples[idx]] ||= [0, 0]
+        frame_info[:lines][line_samples[idx]][0] += 1
+
+        prev_frame_id = frame_id
+      end
+
+      i += stack_length # consume the stack
+
+      top_frame_id = prev_frame_id
+      top_frame_line = 1
+
+      sample_count = raw_samples[i]
+
+      frames[top_frame_id][:samples] += sample_count
+      frames[top_frame_id][:lines] ||= {}
+      frames[top_frame_id][:lines][top_frame_line] ||= [0, 0]
+      frames[top_frame_id][:lines][top_frame_line][1] += sample_count
+
+      samples_count += sample_count
+      i += 1
+    end
+
+    results[:samples] = samples_count
+    # Set missed_samples and gc_samples to 0 as their values
+    # don't matter to us in this context.
+    results[:missed_samples] = 0
+    results[:gc_samples] = 0
+    results
+  end
+
+  # Marshal dumps exit locations to the given filename.
+  #
+  # Usage:
+  #
+  # In a script call:
+  #
+  #   RubyVM::YJIT.dump_exit_locations("my_file.dump")
+  #
+  # Then run the file with the following options:
+  #
+  #   ruby --yjit --yjit-stats --yjit-trace-exits test.rb
+  #
+  # Once the code is done running, use Stackprof to read the dump file.
+  # See Stackprof documentation for options.
+  def self.dump_exit_locations(filename)
+    unless trace_exit_locations_enabled?
+      raise ArgumentError, "--yjit-trace-exits must be enabled to use dump_exit_locations."
+    end
+
+    File.binwrite(filename, Marshal.dump(RubyVM::YJIT.exit_locations))
   end
 
   # Return a hash for statistics generated for the --yjit-stats command line option.
@@ -111,6 +218,7 @@ module RubyVM::YJIT
       $stderr.puts "constant_state_bumps:  " + ("%10d" % stats[:constant_state_bumps])
       $stderr.puts "inline_code_size:      " + ("%10d" % stats[:inline_code_size])
       $stderr.puts "outlined_code_size:    " + ("%10d" % stats[:outlined_code_size])
+      $stderr.puts "num_gc_obj_refs:       " + ("%10d" % stats[:num_gc_obj_refs])
 
       $stderr.puts "total_exit_count:      " + ("%10d" % total_exits)
       $stderr.puts "total_insns_count:     " + ("%10d" % total_insns_count)
@@ -133,19 +241,23 @@ module RubyVM::YJIT
       exits = exits.sort_by { |name, count| -count }[0...how_many]
       total_exits = total_exit_count(stats)
 
-      top_n_total = exits.map { |name, count| count }.sum
-      top_n_exit_pct = 100.0 * top_n_total / total_exits
+      if total_exits > 0
+        top_n_total = exits.map { |name, count| count }.sum
+        top_n_exit_pct = 100.0 * top_n_total / total_exits
 
-      $stderr.puts "Top-#{how_many} most frequent exit ops (#{"%.1f" % top_n_exit_pct}% of exits):"
+        $stderr.puts "Top-#{how_many} most frequent exit ops (#{"%.1f" % top_n_exit_pct}% of exits):"
 
-      longest_insn_name_len = exits.map { |name, count| name.length }.max
-      exits.each do |name, count|
-        padding = longest_insn_name_len + left_pad
-        padded_name = "%#{padding}s" % name
-        padded_count = "%10d" % count
-        percent = 100.0 * count / total_exits
-        formatted_percent = "%.1f" % percent
-        $stderr.puts("#{padded_name}: #{padded_count} (#{formatted_percent}%)" )
+        longest_insn_name_len = exits.map { |name, count| name.length }.max
+        exits.each do |name, count|
+          padding = longest_insn_name_len + left_pad
+          padded_name = "%#{padding}s" % name
+          padded_count = "%10d" % count
+          percent = 100.0 * count / total_exits
+          formatted_percent = "%.1f" % percent
+          $stderr.puts("#{padded_name}: #{padded_count} (#{formatted_percent}%)" )
+        end
+      else
+        $stderr.puts "total_exits:           " + ("%10d" % total_exits)
       end
     end
 

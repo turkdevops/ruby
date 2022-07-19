@@ -101,9 +101,6 @@ extern int ruby_assert_critical_section_entered;
 #include "vm_opts.h"
 
 #include "ruby/thread_native.h"
-#include THREAD_IMPL_H
-
-#define RUBY_VM_THREAD_MODEL 2
 
 /*
  * implementation selector of get_insn_info algorithm
@@ -161,6 +158,9 @@ void *rb_register_sigaltstack(void *);
 #  define RB_ALTSTACK_FREE(var)
 #  define RB_ALTSTACK(var) (0)
 #endif
+
+#include THREAD_IMPL_H
+#define RUBY_VM_THREAD_MODEL 2
 
 /*****************/
 /* configuration */
@@ -335,6 +335,10 @@ pathobj_realpath(VALUE pathobj)
 /* Forward declarations */
 struct rb_mjit_unit;
 
+typedef uintptr_t iseq_bits_t;
+
+#define ISEQ_IS_SIZE(body) (body->ic_size + body->ivc_size + body->ise_size + body->icvarc_size)
+
 struct rb_iseq_constant_body {
     enum iseq_type {
 	ISEQ_TYPE_TOP,
@@ -444,7 +448,7 @@ struct rb_iseq_constant_body {
     const struct rb_iseq_struct *parent_iseq;
     struct rb_iseq_struct *local_iseq; /* local_iseq->flip_cnt can be modified */
 
-    union iseq_inline_storage_entry *is_entries;
+    union iseq_inline_storage_entry *is_entries; /* [ TS_IVC | TS_ICVARC | TS_ISE | TS_IC ] */
     struct rb_call_data *call_data; //struct rb_call_data calls[ci_size];
 
     struct {
@@ -456,9 +460,16 @@ struct rb_iseq_constant_body {
     } variable;
 
     unsigned int local_table_size;
-    unsigned int is_size;
+    unsigned int ic_size;     // Number of IC caches
+    unsigned int ise_size;    // Number of ISE caches
+    unsigned int ivc_size;    // Number of IVC caches
+    unsigned int icvarc_size; // Number of ICVARC caches
     unsigned int ci_size;
     unsigned int stack_max; /* for stack overflow check */
+    union {
+        iseq_bits_t * list; /* Find references for GC */
+        iseq_bits_t single;
+    } mark_bits;
 
     char catch_except_p; /* If a frame of this ISeq may catch exception, set TRUE */
     // If true, this ISeq is leaf *and* backtraces are not used, for example,
@@ -896,8 +907,6 @@ typedef struct rb_ensure_list {
     struct rb_ensure_entry entry;
 } rb_ensure_list_t;
 
-typedef char rb_thread_id_string_t[sizeof(rb_nativethread_id_t) * 2 + 3];
-
 typedef struct rb_fiber_struct rb_fiber_t;
 
 struct rb_waiting_list {
@@ -1074,11 +1083,13 @@ typedef struct rb_thread_struct {
     VALUE name;
 
     struct rb_ext_config ext_config;
-
-#ifdef USE_SIGALTSTACK
-    void *altstack;
-#endif
 } rb_thread_t;
+
+static inline unsigned int
+rb_th_serial(const rb_thread_t *th)
+{
+    return (unsigned int)th->serial;
+}
 
 typedef enum {
     VM_DEFINECLASS_TYPE_CLASS           = 0x00,
@@ -1222,10 +1233,10 @@ typedef rb_control_frame_t *
 
 enum vm_frame_env_flags {
     /* Frame/Environment flag bits:
-     *   MMMM MMMM MMMM MMMM ____ _FFF FFFF EEEX (LSB)
+     *   MMMM MMMM MMMM MMMM ____ FFFF FFFE EEEX (LSB)
      *
      * X   : tag for GC marking (It seems as Fixnum)
-     * EEE : 3 bits Env flags
+     * EEE : 4 bits Env flags
      * FF..: 7 bits Frame flags
      * MM..: 15 bits frame magic (to check frame corruption)
      */

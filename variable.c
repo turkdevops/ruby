@@ -1467,6 +1467,8 @@ void
 rb_obj_transient_heap_evacuate(VALUE obj, int promote)
 {
     if (ROBJ_TRANSIENT_P(obj)) {
+        assert(!RB_FL_TEST_RAW(obj, ROBJECT_EMBED));
+
         uint32_t len = ROBJECT_NUMIV(obj);
         const VALUE *old_ptr = ROBJECT_IVPTR(obj);
         VALUE *new_ptr;
@@ -1493,7 +1495,7 @@ init_iv_list(VALUE obj, uint32_t len, uint32_t newsize, st_table *index_tbl)
     if (RBASIC(obj)->flags & ROBJECT_EMBED) {
         newptr = obj_ivar_heap_alloc(obj, newsize);
         MEMCPY(newptr, ptr, VALUE, len);
-        RBASIC(obj)->flags &= ~ROBJECT_EMBED;
+        RB_FL_UNSET_RAW(obj, ROBJECT_EMBED);
         ROBJECT(obj)->as.heap.ivptr = newptr;
     }
     else {
@@ -1503,7 +1505,11 @@ init_iv_list(VALUE obj, uint32_t len, uint32_t newsize, st_table *index_tbl)
     for (; len < newsize; len++) {
         newptr[len] = Qundef;
     }
+#if USE_RVARGC
+    ROBJECT(obj)->numiv = newsize;
+#else
     ROBJECT(obj)->as.heap.numiv = newsize;
+#endif
     ROBJECT(obj)->as.heap.iv_index_tbl = index_tbl;
 }
 
@@ -2132,7 +2138,7 @@ struct autoload_const {
     VALUE module;
 
     // The name of the constant we are loading.
-    VALUE name;
+    ID name;
 
     // The value of the constant (after it's loaded).
     VALUE value;
@@ -2307,22 +2313,6 @@ autoload_feature_lookup_or_create(VALUE feature, struct autoload_data **autoload
     RUBY_ASSERT_CRITICAL_SECTION_LEAVE();
     return autoload_data_value;
 }
-
-#if 0
-static VALUE
-autoload_feature_clear_if_empty(VALUE argument)
-{
-    RUBY_ASSERT_MUTEX_OWNED(autoload_mutex);
-
-    struct autoload_data *autoload_data = (struct autoload_data *)argument;
-
-    if (ccan_list_empty(&autoload_data->constants)) {
-        rb_hash_delete(autoload_features, autoload_data->feature);
-    }
-
-    return Qnil;
-}
-#endif
 
 static struct st_table *
 autoload_table_lookup_or_create(VALUE module)
@@ -2565,8 +2555,6 @@ struct autoload_load_arguments {
     ID name;
     int flag;
 
-    VALUE result;
-
     VALUE mutex;
 
     // The specific constant which triggered the autoload code to fire:
@@ -2596,14 +2584,13 @@ autoload_load_needed(VALUE _arguments)
     struct autoload_load_arguments *arguments = (struct autoload_load_arguments*)_arguments;
 
     const char *loading = 0, *src;
-    struct autoload_data *ele;
 
     if (!autoload_defined_p(arguments->module, arguments->name)) {
         return Qfalse;
     }
 
-    VALUE load = check_autoload_required(arguments->module, arguments->name, &loading);
-    if (!load) {
+    VALUE autoload_const_value = check_autoload_required(arguments->module, arguments->name, &loading);
+    if (!autoload_const_value) {
         return Qfalse;
     }
 
@@ -2613,22 +2600,49 @@ autoload_load_needed(VALUE _arguments)
     }
 
     struct autoload_const *autoload_const;
-    if (!(ele = get_autoload_data(load, &autoload_const))) {
+    struct autoload_data *autoload_data;
+    if (!(autoload_data = get_autoload_data(autoload_const_value, &autoload_const))) {
         return Qfalse;
     }
 
-    if (ele->mutex == Qnil) {
-        ele->mutex = rb_mutex_new();
-        ele->fork_gen = GET_VM()->fork_gen;
+    if (autoload_data->mutex == Qnil) {
+        autoload_data->mutex = rb_mutex_new();
+        autoload_data->fork_gen = GET_VM()->fork_gen;
     }
-    else if (rb_mutex_owned_p(ele->mutex)) {
+    else if (rb_mutex_owned_p(autoload_data->mutex)) {
         return Qfalse;
     }
 
+    arguments->mutex = autoload_data->mutex;
     arguments->autoload_const = autoload_const;
-    arguments->mutex = ele->mutex;
 
-    return load;
+    return autoload_const_value;
+}
+
+static VALUE
+autoload_apply_constants(VALUE _arguments)
+{
+    RUBY_ASSERT_CRITICAL_SECTION_ENTER();
+
+    struct autoload_load_arguments *arguments = (struct autoload_load_arguments*)_arguments;
+
+    struct autoload_const *autoload_const = 0; // for ccan_container_off_var()
+    struct autoload_const *next;
+
+    // We use safe iteration here because `autoload_const_set` will eventually invoke
+    // `autoload_delete` which will remove the constant from the linked list. In theory, once
+    // the `autoload_data->constants` linked list is empty, we can remove it.
+
+    // Iterate over all constants and assign them:
+    ccan_list_for_each_safe(&arguments->autoload_data->constants, autoload_const, next, cnode) {
+        if (autoload_const->value != Qundef) {
+            autoload_const_set(autoload_const);
+        }
+    }
+
+    RUBY_ASSERT_CRITICAL_SECTION_LEAVE();
+
+    return Qtrue;
 }
 
 static VALUE
@@ -2641,43 +2655,13 @@ autoload_feature_require(VALUE _arguments)
     // We save this for later use in autoload_apply_constants:
     arguments->autoload_data = rb_check_typeddata(autoload_const->autoload_data_value, &autoload_data_type);
 
-    arguments->result = rb_funcall(rb_vm_top_self(), rb_intern("require"), 1, arguments->autoload_data->feature);
+    VALUE result = rb_funcall(rb_vm_top_self(), rb_intern("require"), 1, arguments->autoload_data->feature);
 
-    return arguments->result;
-}
-
-static VALUE
-autoload_apply_constants(VALUE _arguments)
-{
-    RUBY_ASSERT_CRITICAL_SECTION_ENTER();
-
-    struct autoload_load_arguments *arguments = (struct autoload_load_arguments*)_arguments;
-
-    if (arguments->result == Qtrue) {
-        struct autoload_const *autoload_const;
-        struct autoload_const *next;
-
-        // We use safe iteration here because `autoload_const_set` will eventually invoke
-        // `autoload_delete` which will remove the constant from the linked list. In theory, once
-        // the `autoload_data->constants` linked list is empty, we can remove it.
-
-        // Iterate over all constants and assign them:
-        ccan_list_for_each_safe(&arguments->autoload_data->constants, autoload_const, next, cnode) {
-            if (autoload_const->value != Qundef) {
-                autoload_const_set(autoload_const);
-            }
-        }
+    if (RTEST(result)) {
+        return rb_mutex_synchronize(autoload_mutex, autoload_apply_constants, _arguments);
     }
 
-    RUBY_ASSERT_CRITICAL_SECTION_LEAVE();
-
-    return Qtrue;
-}
-
-static VALUE
-autoload_feature_require_ensure(VALUE _arguments)
-{
-    return rb_mutex_synchronize(autoload_mutex, autoload_apply_constants, _arguments);
+    return result;
 }
 
 static VALUE
@@ -2685,30 +2669,38 @@ autoload_try_load(VALUE _arguments)
 {
     struct autoload_load_arguments *arguments = (struct autoload_load_arguments*)_arguments;
 
-    // We have tried to require the autoload feature, so we shouldn't bother trying again in any
-    // other threads. More specifically, `arguments->result` starts of as nil, but then contains the
-    // result of `require` which is either true or false. Provided it's not nil, it means some other
-    // thread has got as far as evaluating the require statement completely.
-    if (arguments->result != Qnil) return arguments->result;
-
-    // Try to require the autoload feature:
-    rb_ensure(autoload_feature_require, _arguments, autoload_feature_require_ensure, _arguments);
+    VALUE result = autoload_feature_require(_arguments);
 
     // After we loaded the feature, if the constant is not defined, we remove it completely:
     rb_const_entry_t *ce = rb_const_lookup(arguments->module, arguments->name);
 
     if (!ce || ce->value == Qundef) {
-        // Absolutely ensure that any other threads will bail out, returning false:
-        arguments->result = Qfalse;
+        result = Qfalse;
 
         rb_const_remove(arguments->module, arguments->name);
+
+        if (arguments->module == rb_cObject) {
+            rb_warning(
+                "Expected %"PRIsVALUE" to define %"PRIsVALUE" but it didn't",
+                arguments->autoload_data->feature,
+                ID2SYM(arguments->name)
+            );
+        }
+        else {
+            rb_warning(
+                "Expected %"PRIsVALUE" to define %"PRIsVALUE"::%"PRIsVALUE" but it didn't",
+                arguments->autoload_data->feature,
+                arguments->module,
+                ID2SYM(arguments->name)
+            );
+        }
     }
     else {
         // Otherwise, it was loaded, copy the flags from the autoload constant:
         ce->flag |= arguments->flag;
     }
 
-    return arguments->result;
+    return result;
 }
 
 VALUE
@@ -2727,20 +2719,26 @@ rb_autoload_load(VALUE module, ID name)
     }
 
     // This state is stored on thes stack and is used during the autoload process.
-    struct autoload_load_arguments arguments = {.module = module, .name = name, .mutex = Qnil, .result = Qnil};
+    struct autoload_load_arguments arguments = {.module = module, .name = name, .mutex = Qnil};
 
     // Figure out whether we can autoload the named constant:
-    VALUE load = rb_mutex_synchronize(autoload_mutex, autoload_load_needed, (VALUE)&arguments);
+    VALUE autoload_const_value = rb_mutex_synchronize(autoload_mutex, autoload_load_needed, (VALUE)&arguments);
 
     // This confirms whether autoloading is required or not:
-    if (load == Qfalse) return load;
+    if (autoload_const_value == Qfalse) return autoload_const_value;
 
     arguments.flag = ce->flag & (CONST_DEPRECATED | CONST_VISIBILITY_MASK);
 
     // Only one thread will enter here at a time:
-    return rb_mutex_synchronize(arguments.mutex, autoload_try_load, (VALUE)&arguments);
+    VALUE result = rb_mutex_synchronize(arguments.mutex, autoload_try_load, (VALUE)&arguments);
 
-    // rb_mutex_synchronize(autoload_mutex, autoload_feature_clear_if_empty, (VALUE)&arguments.autoload_data);
+    // If you don't guard this value, it's possible for the autoload constant to
+    // be freed by another thread which loads multiple constants, one of which
+    // resolves to the constant this thread is trying to load, so proteect this
+    // so that it is not freed until we are done with it in `autoload_try_load`:
+    RB_GC_GUARD(autoload_const_value);
+
+    return result;
 }
 
 VALUE
@@ -3288,6 +3286,7 @@ const_set(VALUE klass, ID id, VALUE val)
                 .value = val, .flag = CONST_PUBLIC,
                 /* fill the rest with 0 */
             };
+            ac.file = rb_source_location(&ac.line);
             const_tbl_update(&ac, false);
         }
     }
@@ -3330,18 +3329,19 @@ rb_const_set(VALUE klass, ID id, VALUE val)
 }
 
 static struct autoload_data *
-autoload_data_for_named_constant(VALUE mod, ID id, struct autoload_const **acp)
+autoload_data_for_named_constant(VALUE module, ID name, struct autoload_const **autoload_const_pointer)
 {
-    struct autoload_data *ele;
-    VALUE load = autoload_data(mod, id);
-    if (!load) return 0;
-    ele = get_autoload_data(load, acp);
-    if (!ele) return 0;
+    VALUE autoload_data_value = autoload_data(module, name);
+    if (!autoload_data_value) return 0;
+
+    struct autoload_data *autoload_data = get_autoload_data(autoload_data_value, autoload_const_pointer);
+    if (!autoload_data) return 0;
 
     /* for autoloading thread, keep the defined value to autoloading storage */
-    if (autoload_by_current(ele)) {
-        return ele;
+    if (autoload_by_current(autoload_data)) {
+        return autoload_data;
     }
+
     return 0;
 }
 
@@ -3360,6 +3360,8 @@ const_tbl_update(struct autoload_const *ac, int autoload_force)
         ce = (rb_const_entry_t *)value;
         if (ce->value == Qundef) {
             RUBY_ASSERT_CRITICAL_SECTION_ENTER();
+            VALUE file = ac->file;
+            int line = ac->line;
             struct autoload_data *ele = autoload_data_for_named_constant(klass, id, &ac);
 
             if (!autoload_force && ele) {
@@ -3373,8 +3375,8 @@ const_tbl_update(struct autoload_const *ac, int autoload_force)
                 autoload_delete(klass, id);
                 ce->flag = visibility;
                 RB_OBJ_WRITE(klass, &ce->value, val);
-                RB_OBJ_WRITE(klass, &ce->file, ac->file);
-                ce->line = ac->line;
+                RB_OBJ_WRITE(klass, &ce->file, file);
+                ce->line = line;
             }
             RUBY_ASSERT_CRITICAL_SECTION_LEAVE();
             return;

@@ -620,6 +620,16 @@ class TestMJIT < Test::Unit::TestCase
     end;
   end
 
+  def test_compile_opt_pc
+    assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: 'hello', success_count: 1)
+    begin;
+      def test(arg = 'hello')
+        print arg
+      end
+      test
+    end;
+  end
+
   def test_mjit_output
     out, err = eval_with_jit('5.times { puts "MJIT" }', verbose: 1, min_calls: 5)
     assert_equal("MJIT\n" * 5, out)
@@ -710,10 +720,12 @@ class TestMJIT < Test::Unit::TestCase
       if RUBY_PLATFORM.match?(/mswin/)
         # "Permission Denied" error is preventing to remove so file on AppVeyor/RubyCI.
         omit 'Removing so file is randomly failing on AppVeyor/RubyCI mswin due to Permission Denied.'
-      else
-        # verify .c files are deleted on unload_units
-        assert_send([Dir, :empty?, dir], debug_info)
       end
+      if RUBY_PLATFORM.match?(/darwin/)
+        omit '.bundle.dSYM directory is left but removing it is not supported for now'
+      end
+      # verify .c files are deleted on unload_units
+      assert_send([Dir, :empty?, dir], debug_info)
     end
   end
 
@@ -957,23 +969,24 @@ class TestMJIT < Test::Unit::TestCase
   end
 
   def test_heap_promotion_of_ivar_in_the_middle_of_jit
+    omit if GC.using_rvargc?
+
     assert_eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", stdout: "true\ntrue\n", success_count: 2, min_calls: 2)
     begin;
       class A
         def initialize
           @iv0 = nil
           @iv1 = []
-          @iv2 = nil
         end
 
         def test(add)
           @iv0.nil?
-          @iv2.nil?
           add_ivar if add
           @iv1.empty?
         end
 
         def add_ivar
+          @iv2 = nil
           @iv3 = nil
         end
       end
@@ -998,10 +1011,13 @@ class TestMJIT < Test::Unit::TestCase
     if RUBY_PLATFORM.match?(/mswin/)
       omit 'Removing so file is randomly failing on AppVeyor/RubyCI mswin due to Permission Denied.'
     end
+    if RUBY_PLATFORM.match?(/darwin/)
+      omit '.bundle.dSYM directory is left but removing it is not supported for now'
+    end
     Dir.mktmpdir("jit_test_clean_so_") do |dir|
       code = "x = 0; 10.times {|i|x+=i}"
       eval_with_jit({"TMPDIR"=>dir}, code)
-      assert_send([Dir, :empty?, dir])
+      assert_send([Dir, :empty?, dir], "Directory #{dir} was not empty:\n#{Dir.glob("#{dir}/*").join("\n")}\n")
       eval_with_jit({"TMPDIR"=>dir}, code, save_temps: true)
       assert_not_send([Dir, :empty?, dir])
     end
@@ -1011,6 +1027,9 @@ class TestMJIT < Test::Unit::TestCase
     if /mswin|mingw/ =~ RUBY_PLATFORM
       # TODO: check call stack and close handle of code which is not on stack, and remove objects on best-effort basis
       omit 'Removing so file being used does not work on Windows'
+    end
+    if RUBY_PLATFORM.match?(/darwin/)
+      omit '.bundle.dSYM directory is left but removing it is not supported for now'
     end
     Dir.mktmpdir("jit_test_clean_objects_on_exec_") do |dir|
       eval_with_jit({"TMPDIR"=>dir}, "#{<<~"begin;"}\n#{<<~"end;"}", min_calls: 1)
@@ -1173,9 +1192,24 @@ class TestMJIT < Test::Unit::TestCase
       assert_equal("Successful MJIT finish\n" * 2, err.gsub(/^#{JIT_SUCCESS_PREFIX}:[^\n]+\n/, ''), debug_info)
 
       # ensure objects are deleted
+      if RUBY_PLATFORM.match?(/darwin/)
+        omit '.bundle.dSYM directory is left but removing it is not supported for now'
+      end
       assert_send([Dir, :empty?, dir], debug_info)
     end
   end if defined?(fork)
+
+  def test_jit_failure
+    _, err = eval_with_jit("#{<<~"begin;"}\n#{<<~"end;"}", min_calls: 1, verbose: 1)
+    begin;
+      1.times do
+        class A
+        end
+      end
+    end;
+    assert_match(/^MJIT warning: .+ unsupported instruction: defineclass/, err)
+    assert_match(/^JIT failure: block in <main>/, err)
+  end
 
   private
 
@@ -1195,7 +1229,7 @@ class TestMJIT < Test::Unit::TestCase
     success_actual = err.scan(/^#{JIT_SUCCESS_PREFIX}:/).size
     recompile_actual = err.scan(/^#{JIT_RECOMPILE_PREFIX}:/).size
     # Add --mjit-verbose=2 logs for cl.exe because compiler's error message is suppressed
-    # for cl.exe with --mjit-verbose=1. See `start_process` in mjit_worker.c.
+    # for cl.exe with --mjit-verbose=1. See `start_process` in mjit.c.
     if RUBY_PLATFORM.match?(/mswin/) && success_count != success_actual
       out2, err2 = eval_with_jit(script, verbose: 2, min_calls: min_calls, max_cache: max_cache)
     end

@@ -267,33 +267,13 @@ rb_obj_singleton_class(VALUE obj)
 MJIT_FUNC_EXPORTED void
 rb_obj_copy_ivar(VALUE dest, VALUE obj)
 {
-    VALUE *dst_buf = 0;
-    VALUE *src_buf = 0;
-    uint32_t len = ROBJECT_EMBED_LEN_MAX;
+    VALUE *dest_buf = ROBJECT_IVPTR(dest);
+    VALUE *src_buf = ROBJECT_IVPTR(obj);
+    uint32_t dest_len = ROBJECT_NUMIV(dest);
+    uint32_t src_len = ROBJECT_NUMIV(obj);
+    uint32_t len = dest_len < src_len ? dest_len : src_len;
 
-    if (RBASIC(obj)->flags & ROBJECT_EMBED) {
-        src_buf = ROBJECT(obj)->as.ary;
-
-        // embedded -> embedded
-        if (RBASIC(dest)->flags & ROBJECT_EMBED) {
-            dst_buf = ROBJECT(dest)->as.ary;
-        }
-        // embedded -> extended
-        else {
-            dst_buf = ROBJECT(dest)->as.heap.ivptr;
-        }
-    }
-    // extended -> extended
-    else {
-        uint32_t src_len = ROBJECT(obj)->as.heap.numiv;
-        uint32_t dst_len = ROBJECT(dest)->as.heap.numiv;
-
-        len = src_len < dst_len ? src_len : dst_len;
-        dst_buf = ROBJECT(dest)->as.heap.ivptr;
-        src_buf = ROBJECT(obj)->as.heap.ivptr;
-    }
-
-    MEMCPY(dst_buf, src_buf, VALUE, len);
+    MEMCPY(dest_buf, src_buf, VALUE, len);
 }
 
 static void
@@ -3157,16 +3137,22 @@ rb_check_integer_type(VALUE val)
 }
 
 int
-rb_bool_expected(VALUE obj, const char *flagname)
+rb_bool_expected(VALUE obj, const char *flagname, int raise)
 {
     switch (obj) {
-      case Qtrue: case Qfalse:
-        break;
-      default:
-        rb_raise(rb_eArgError, "expected true or false as %s: %+"PRIsVALUE,
-                 flagname, obj);
+      case Qtrue:
+        return TRUE;
+      case Qfalse:
+        return FALSE;
+      default: {
+        static const char message[] = "expected true or false as %s: %+"PRIsVALUE;
+        if (raise) {
+            rb_raise(rb_eArgError, message, flagname, obj);
+        }
+        rb_warning(message, flagname, obj);
+        return !NIL_P(obj);
+      }
     }
-    return obj != Qfalse;
 }
 
 int
@@ -3175,7 +3161,7 @@ rb_opts_exception_p(VALUE opts, int default_value)
     static const ID kwds[1] = {idException};
     VALUE exception;
     if (rb_get_kwargs(opts, kwds, 0, 1, &exception))
-        return rb_bool_expected(exception, "exception");
+        return rb_bool_expected(exception, "exception", TRUE);
     return default_value;
 }
 
@@ -3561,7 +3547,7 @@ rb_f_float1(rb_execution_context_t *ec, VALUE obj, VALUE arg)
 static VALUE
 rb_f_float(rb_execution_context_t *ec, VALUE obj, VALUE arg, VALUE opts)
 {
-    int exception = rb_bool_expected(opts, "exception");
+    int exception = rb_bool_expected(opts, "exception", TRUE);
     return rb_convert_to_float(arg, exception);
 }
 
@@ -4398,6 +4384,8 @@ InitVM_Object(void)
 		     rb_class_protected_instance_methods, -1); /* in class.c */
     rb_define_method(rb_cModule, "private_instance_methods",
 		     rb_class_private_instance_methods, -1);   /* in class.c */
+    rb_define_method(rb_cModule, "undefined_instance_methods",
+                     rb_class_undefined_instance_methods, 0); /* in class.c */
 
     rb_define_method(rb_cModule, "constants", rb_mod_constants, -1); /* in variable.c */
     rb_define_method(rb_cModule, "const_get", rb_mod_const_get, -1);

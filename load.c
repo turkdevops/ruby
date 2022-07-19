@@ -945,9 +945,10 @@ rb_f_require(VALUE obj, VALUE fname)
  * call-seq:
  *   require_relative(string) -> true or false
  *
- * Ruby tries to load the library named _string_ relative to the requiring
- * file's path.  If the file's path cannot be determined a LoadError is raised.
- * If a file is loaded +true+ is returned and false otherwise.
+ * Ruby tries to load the library named _string_ relative to the directory
+ * containing the requiring file.  If the file does not exist a LoadError is
+ * raised. Returns +true+ if the file was loaded and +false+ if the file was
+ * already loaded before.
  */
 VALUE
 rb_f_require_relative(VALUE obj, VALUE fname)
@@ -1303,16 +1304,20 @@ ruby_init_ext(const char *name, void (*init)(void))
 
 /*
  *  call-seq:
- *     mod.autoload(module, filename)   -> nil
+ *     mod.autoload(const, filename)   -> nil
  *
  *  Registers _filename_ to be loaded (using Kernel::require)
- *  the first time that _module_ (which may be a String or
+ *  the first time that _const_ (which may be a String or
  *  a symbol) is accessed in the namespace of _mod_.
  *
  *     module A
  *     end
  *     A.autoload(:B, "b")
  *     A::B.doit            # autoloads "b"
+ *
+ * If _const_ in _mod_ is defined as autoload, the file name to be
+ * loaded is replaced with _filename_.  If _const_ is defined but not
+ * as autoload, does nothing.
  */
 
 static VALUE
@@ -1366,13 +1371,17 @@ rb_mod_autoload_p(int argc, VALUE *argv, VALUE mod)
 
 /*
  *  call-seq:
- *     autoload(module, filename)   -> nil
+ *     autoload(const, filename)   -> nil
  *
  *  Registers _filename_ to be loaded (using Kernel::require)
- *  the first time that _module_ (which may be a String or
+ *  the first time that _const_ (which may be a String or
  *  a symbol) is accessed.
  *
  *     autoload(:MyModule, "/usr/local/lib/modules/my_module.rb")
+ *
+ * If _const_ is defined as autoload, the file name to be loaded is
+ * replaced with _filename_.  If _const_ is defined but not as
+ * autoload, does nothing.
  */
 
 static VALUE

@@ -1268,12 +1268,12 @@ do_include_modules_at(const VALUE klass, VALUE c, VALUE module, int search_super
             rb_module_add_to_subclasses_list(m, iclass);
 	}
 
-	if (FL_TEST(klass, RMODULE_IS_REFINEMENT)) {
+	if (BUILTIN_TYPE(klass) == T_MODULE && FL_TEST(klass, RMODULE_IS_REFINEMENT)) {
 	    VALUE refined_class =
 		rb_refinement_module_get_refined_class(klass);
 
             rb_id_table_foreach(RCLASS_M_TBL(module), add_refined_method_entry_i, (void *)refined_class);
-	    FL_SET(c, RMODULE_INCLUDED_INTO_REFINEMENT);
+            RUBY_ASSERT(BUILTIN_TYPE(c) == T_MODULE);
 	}
 
         tbl = RCLASS_CONST_TBL(module);
@@ -1497,7 +1497,7 @@ rb_mod_ancestors(VALUE mod)
 {
     VALUE p, ary = rb_ary_new();
     VALUE refined_class = Qnil;
-    if (FL_TEST(mod, RMODULE_IS_REFINEMENT)) {
+    if (BUILTIN_TYPE(mod) == T_MODULE && FL_TEST(mod, RMODULE_IS_REFINEMENT)) {
         refined_class = rb_refinement_module_get_refined_class(mod);
     }
 
@@ -1636,6 +1636,15 @@ static int
 ins_methods_pub_i(st_data_t name, st_data_t type, st_data_t ary)
 {
     return ins_methods_type_i(name, type, ary, METHOD_VISI_PUBLIC);
+}
+
+static int
+ins_methods_undef_i(st_data_t name, st_data_t type, st_data_t ary)
+{
+    if ((rb_method_visibility_t)type == METHOD_VISI_UNDEF) {
+	ins_methods_push(name, ary);
+    }
+    return ST_CONTINUE;
 }
 
 struct method_entry_arg {
@@ -1805,6 +1814,21 @@ VALUE
 rb_class_public_instance_methods(int argc, const VALUE *argv, VALUE mod)
 {
     return class_instance_method_list(argc, argv, mod, 0, ins_methods_pub_i);
+}
+
+/*
+ *  call-seq:
+ *     mod.undefined_instance_methods   -> array
+ *
+ *  Returns a list of the undefined instance methods defined in <i>mod</i>.
+ *  The undefined methods of any ancestors are not included.
+ */
+
+VALUE
+rb_class_undefined_instance_methods(VALUE mod)
+{
+    VALUE include_super = Qfalse;
+    return class_instance_method_list(1, &include_super, mod, 0, ins_methods_undef_i);
 }
 
 /*

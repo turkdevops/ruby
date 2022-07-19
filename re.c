@@ -20,6 +20,7 @@
 #include "internal/imemo.h"
 #include "internal/re.h"
 #include "internal/string.h"
+#include "internal/object.h"
 #include "internal/ractor.h"
 #include "internal/variable.h"
 #include "regint.h"
@@ -486,9 +487,13 @@ rb_reg_desc(const char *s, long len, VALUE re)
  *
  *    /ab+c/ix.source # => "ab+c"
  *
- *  Note that escape sequences are retained as is:
+ *  Regexp escape sequences are retained:
  *
  *    /\x20\+/.source  # => "\\x20\\+"
+ *
+ *  Lexer escape characters are not retained:
+ *
+ *    /\//.source  # => "/"
  *
  */
 
@@ -1527,7 +1532,7 @@ rb_reg_fixed_encoding_p(VALUE re)
 
 static VALUE
 rb_reg_preprocess(const char *p, const char *end, rb_encoding *enc,
-        rb_encoding **fixed_enc, onig_errmsg_buffer err);
+        rb_encoding **fixed_enc, onig_errmsg_buffer err, int options);
 
 NORETURN(static void reg_enc_error(VALUE re, VALUE str));
 
@@ -1608,7 +1613,7 @@ rb_reg_prepare_re0(VALUE re, VALUE str, onig_errmsg_buffer err)
 
     unescaped = rb_reg_preprocess(
 	pattern, pattern + RREGEXP_SRC_LEN(re), enc,
-	&fixed_enc, err);
+        &fixed_enc, err, 0);
 
     if (NIL_P(unescaped)) {
 	rb_raise(rb_eArgError, "regexp preprocess failed: %s", err);
@@ -2718,10 +2723,11 @@ unescape_unicode_bmp(const char **pp, const char *end,
 static int
 unescape_nonascii(const char *p, const char *end, rb_encoding *enc,
         VALUE buf, rb_encoding **encp, int *has_property,
-        onig_errmsg_buffer err)
+        onig_errmsg_buffer err, int options)
 {
     unsigned char c;
     char smallbuf[2];
+    int in_char_class = 0;
 
     while (p < end) {
         int chlen = rb_enc_precise_mbclen(p, end, enc);
@@ -2833,6 +2839,60 @@ escape_asis:
             }
             break;
 
+          case '#':
+            if ((options & ONIG_OPTION_EXTEND) && !in_char_class) {
+                /* consume and ignore comment in extended regexp */
+                while ((p < end) && ((c = *p++) != '\n'));
+                break;
+            }
+            rb_str_buf_cat(buf, (char *)&c, 1);
+            break;
+          case '[':
+            in_char_class++;
+            rb_str_buf_cat(buf, (char *)&c, 1);
+            break;
+          case ']':
+            if (in_char_class) {
+                in_char_class--;
+            }
+            rb_str_buf_cat(buf, (char *)&c, 1);
+            break;
+          case '(':
+            if (!in_char_class && p + 1 < end && *p == '?' && *(p+1) == '#') {
+                /* (?# is comment inside any regexp, and content inside should be ignored */
+                const char *orig_p = p;
+                int cont = 1;
+
+                while (cont && (p < end)) {
+                    switch (c = *p++) {
+		      default:
+                        if (!(c & 0x80)) break;
+			--p;
+			/* fallthrough */
+                      case '\\':
+                        chlen = rb_enc_precise_mbclen(p, end, enc);
+                        if (!MBCLEN_CHARFOUND_P(chlen)) {
+                            goto invalid_multibyte;
+                        }
+                        p += MBCLEN_CHARFOUND_LEN(chlen);
+                        break;
+                      case ')':
+                        cont = 0;
+                        break;
+                    }
+                }
+
+                if (cont) {
+                    /* unterminated (?#, rewind so it is syntax error */
+                    p = orig_p;
+                    c = '(';
+                    rb_str_buf_cat(buf, (char *)&c, 1);
+                }
+            }
+            else {
+                rb_str_buf_cat(buf, (char *)&c, 1);
+            }
+            break;
           default:
             rb_str_buf_cat(buf, (char *)&c, 1);
             break;
@@ -2844,7 +2904,7 @@ escape_asis:
 
 static VALUE
 rb_reg_preprocess(const char *p, const char *end, rb_encoding *enc,
-        rb_encoding **fixed_enc, onig_errmsg_buffer err)
+        rb_encoding **fixed_enc, onig_errmsg_buffer err, int options)
 {
     VALUE buf;
     int has_property = 0;
@@ -2858,7 +2918,7 @@ rb_reg_preprocess(const char *p, const char *end, rb_encoding *enc,
         rb_enc_associate(buf, enc);
     }
 
-    if (unescape_nonascii(p, end, enc, buf, fixed_enc, &has_property, err) != 0)
+    if (unescape_nonascii(p, end, enc, buf, fixed_enc, &has_property, err, options) != 0)
         return Qnil;
 
     if (has_property && !*fixed_enc) {
@@ -2886,7 +2946,7 @@ rb_reg_check_preprocess(VALUE str)
     end = p + RSTRING_LEN(str);
     enc = rb_enc_get(str);
 
-    buf = rb_reg_preprocess(p, end, enc, &fixed_enc, err);
+    buf = rb_reg_preprocess(p, end, enc, &fixed_enc, err, 0);
     RB_GC_GUARD(str);
 
     if (NIL_P(buf)) {
@@ -2928,7 +2988,7 @@ rb_reg_preprocess_dregexp(VALUE ary, int options)
         p = RSTRING_PTR(str);
         end = p + RSTRING_LEN(str);
 
-        buf = rb_reg_preprocess(p, end, src_enc, &fixed_enc, err);
+        buf = rb_reg_preprocess(p, end, src_enc, &fixed_enc, err, options);
 
         if (NIL_P(buf))
             rb_raise(rb_eArgError, "%s", err);
@@ -2975,7 +3035,7 @@ rb_reg_initialize(VALUE obj, const char *s, long len, rb_encoding *enc,
 	return -1;
     }
 
-    unescaped = rb_reg_preprocess(s, s+len, enc, &fixed_enc, err);
+    unescaped = rb_reg_preprocess(s, s+len, enc, &fixed_enc, err, options);
     if (NIL_P(unescaped))
         return -1;
 
@@ -3576,10 +3636,29 @@ rb_reg_match_p(VALUE re, VALUE str, long pos)
  * Alias for Regexp.new
  */
 
+static int
+str_to_option(VALUE str)
+{
+    int flag = 0;
+    const char *ptr;
+    long len;
+    str = rb_check_string_type(str);
+    if (NIL_P(str)) return -1;
+    RSTRING_GETMEM(str, ptr, len);
+    for (long i = 0; i < len; ++i) {
+	int f = char_to_option(ptr[i]);
+	if (!f) {
+	    rb_raise(rb_eArgError, "unknown regexp option: %"PRIsVALUE, str);
+	}
+	flag |= f;
+    }
+    return flag;
+}
+
 /*
  *  call-seq:
- *    Regexp.new(string, options = 0, timeout: nil) -> regexp
- *    Regexp.new(regexp) -> regexp
+ *    Regexp.new(string, options = 0, n_flag = nil, timeout: nil) -> regexp
+ *    Regexp.new(regexp, timeout: nil) -> regexp
  *
  *  With argument +string+ given, returns a new regexp with the given string
  *  and options:
@@ -3589,6 +3668,11 @@ rb_reg_match_p(VALUE re, VALUE str, long pos)
  *    r.options             # => 0
  *
  *  Optional argument +options+ is one of the following:
+ *
+ *  - A String of options:
+ *
+ *      Regexp.new('foo', 'i')  # => /foo/i
+ *      Regexp.new('foo', 'im') # => /foo/im
  *
  *  - The logical OR of one or more of the constants
  *    Regexp::EXTENDED, Regexp::IGNORECASE, and Regexp::MULTILINE:
@@ -3601,12 +3685,29 @@ rb_reg_match_p(VALUE re, VALUE str, long pos)
  *
  *  - +nil+ or +false+, which is ignored.
  *
+ *  If optional argument +n_flag+ if it is a string starts with
+ *  <code>'n'</code> or <code>'N'</code>, the encoding of +string+ is
+ *  ignored and the new regexp encoding is fixed to +ASCII-8BIT+ or
+ *  +US-ASCII+, by its content.
+ *
+ *      Regexp.new('foo', nil, 'n')     # => /foo/n
+ *      Regexp.new("\u3042", nil, 'n')  # => /\xE3\x81\x82/n
+ *
  *  If optional keyword argument +timeout+ is given,
- *  its integer value overrides the timeout interval for the class,
+ *  its float value overrides the timeout interval for the class,
  *  Regexp.timeout.
  *
- *  With argument +regexp+ given, returns a new regexp
- *  source, options, and timeout are the same as +self+.
+ *  With argument +regexp+ given, returns a new regexp. The source,
+ *  options, timeout are the same as +regexp+. +options+ and +n_flag+
+ *  arguments are ineffective.  The timeout can be overridden by
+ *  +timeout+ keyword.
+ *
+ *      options = Regexp::MULTILINE
+ *      r = Regexp.new('foo', options, timeout: 1.1) # => /foo/m
+ *      r2 = Regexp.new(r)                           # => /foo/m
+ *      r2.timeout                                   # => 1.1
+ *      r3 = Regexp.new(r, timeout: 3.14)            # => /foo/m
+ *      r3.timeout                                   # => 3.14
  *
  *  Regexp.compile is an alias for Regexp.new.
  *
@@ -3643,8 +3744,11 @@ rb_reg_initialize_m(int argc, VALUE *argv, VALUE self)
     }
     else {
         if (opts != Qundef) {
+	    int f;
 	    if (FIXNUM_P(opts)) flags = FIX2INT(opts);
-	    else if (RTEST(opts)) flags = ONIG_OPTION_IGNORECASE;
+	    else if ((f = str_to_option(opts)) >= 0) flags = f;
+	    else if (!NIL_P(opts) && rb_bool_expected(opts, "ignorecase", FALSE))
+		flags = ONIG_OPTION_IGNORECASE;
 	}
         if (n_flag != Qundef && !NIL_P(n_flag)) {
 	    char *kcode = StringValuePtr(n_flag);
@@ -4264,7 +4368,7 @@ rb_reg_check_timeout(regex_t *reg, void *end_time_)
 
 /*
  *  call-seq:
- *     Regexp.timeout  -> int or float or nil
+ *     Regexp.timeout  -> float or nil
  *
  *  It returns the current default timeout interval for Regexp matching in second.
  *  +nil+ means no default timeout configuration.
@@ -4280,7 +4384,7 @@ rb_reg_s_timeout_get(VALUE dummy)
 
 /*
  *  call-seq:
- *     Regexp.timeout = int or float or nil
+ *     Regexp.timeout = float or nil
  *
  *  It sets the default timeout interval for Regexp matching in second.
  *  +nil+ means no default timeout configuration.

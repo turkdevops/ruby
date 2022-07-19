@@ -27,6 +27,9 @@ fn main() {
         SRC_ROOT_ENV
     );
 
+    // We want Bindgen warnings printed to console
+    env_logger::init();
+
     // Remove this flag so rust-bindgen generates bindings
     // that are internal functions not public in libruby
     let filtered_clang_args = env::args().filter(|arg| arg != "-fvisibility=hidden");
@@ -56,9 +59,16 @@ fn main() {
         // Prune these types since they are system dependant and we don't use them
         .blocklist_type("__.*")
 
+        // Import YARV bytecode instruction constants
+        .allowlist_type("ruby_vminsn_type")
+
+        // From include/ruby/internal/config.h
+        .allowlist_var("USE_RVARGC")
+
         // From include/ruby/internal/intern/string.h
         .allowlist_function("rb_utf8_str_new")
-        .allowlist_function("rb_str_append")
+        .allowlist_function("rb_str_buf_append")
+        .allowlist_function("rb_str_dup")
 
         // This struct is public to Ruby C extensions
         // From include/ruby/internal/core/rbasic.h
@@ -122,12 +132,27 @@ fn main() {
         .allowlist_var("rb_cArray")
         .allowlist_var("rb_cHash")
 
+        // From include/ruby/internal/fl_type.h
+        .allowlist_type("ruby_fl_type")
+        .allowlist_type("ruby_fl_ushift")
+
+        // From include/ruby/internal/core/robject.h
+        .allowlist_type("ruby_robject_flags")
+        // .allowlist_type("ruby_robject_consts") // Removed when USE_RVARGC
+        .allowlist_var("ROBJECT_OFFSET_.*")
+
+        // From include/ruby/internal/core/rarray.h
+        .allowlist_type("ruby_rarray_flags")
+        .allowlist_type("ruby_rarray_consts")
+
+        // From include/ruby/internal/core/rclass.h
+        .allowlist_type("ruby_rmodule_flags")
+
         // From ruby/internal/globals.h
         .allowlist_var("rb_mKernel")
 
         // From vm_callinfo.h
-        .allowlist_type("VM_CALL.*")         // This doesn't work, possibly due to the odd structure of the #defines
-        .allowlist_type("vm_call_flag_bits") // So instead we include the other enum and do the bit-shift ourselves.
+        .allowlist_type("vm_call_flag_bits")
         .allowlist_type("rb_call_data")
         .blocklist_type("rb_callcache.*")      // Not used yet - opaque to make it easy to import rb_call_data
         .opaque_type("rb_callcache.*")
@@ -211,11 +236,16 @@ fn main() {
         .blocklist_type("rb_control_frame_struct")
         .opaque_type("rb_control_frame_struct")
         .allowlist_function("rb_vm_bh_to_procval")
+        .allowlist_type("vm_special_object_type")
+        .allowlist_var("VM_ENV_DATA_INDEX_SPECVAL")
+        .allowlist_var("VM_ENV_DATA_INDEX_FLAGS")
+        .allowlist_var("VM_ENV_DATA_SIZE")
 
         // From yjit.c
         .allowlist_function("rb_iseq_(get|set)_yjit_payload")
         .allowlist_function("rb_iseq_pc_at_idx")
         .allowlist_function("rb_iseq_opcode_at_pc")
+        .allowlist_function("rb_yjit_reserve_addr_space")
         .allowlist_function("rb_yjit_mark_writable")
         .allowlist_function("rb_yjit_mark_executable")
         .allowlist_function("rb_yjit_get_page_size")
@@ -236,6 +266,7 @@ fn main() {
         .allowlist_function("rb_yjit_obj_written")
         .allowlist_function("rb_yjit_str_simple_append")
         .allowlist_function("rb_ENCODING_GET")
+        .allowlist_function("rb_yjit_exit_locations_dict")
 
         // from vm_sync.h
         .allowlist_function("rb_vm_barrier")
@@ -269,6 +300,9 @@ fn main() {
         // From gc.h and internal/gc.h
         .allowlist_function("rb_class_allocate_instance")
         .allowlist_function("rb_obj_info")
+
+        // From include/ruby/debug.h
+        .allowlist_function("rb_profile_frames")
 
         // We define VALUE manually, don't import it
         .blocklist_type("VALUE")

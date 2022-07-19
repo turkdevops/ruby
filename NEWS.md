@@ -112,10 +112,17 @@ Note: We're only listing outstanding class updates.
     * Module.used_refinements has been added. [[Feature #14332]]
     * Module#refinements has been added. [[Feature #12737]]
     * Module#const_added has been added. [[Feature #17881]]
+    * Module#undefined_instance_methods has been added. [[Feature #12655]]
 
 * Proc
     * Proc#dup returns an instance of subclass. [[Bug #17545]]
     * Proc#parameters now accepts lambda keyword. [[Feature #15357]]
+
+* Regexp
+    * Regexp.new now supports passing the regexp flags not only as an Integer,
+      but also as a String Unknown flags raise errors.  Otherwise, anything
+      other than `true`, `false`, `nil` or Integer will be warned.
+      [[Feature #18788]]
 
 * Refinement
     * Refinement#refined_class has been added. [[Feature #12737]]
@@ -151,7 +158,7 @@ Note: We're only listing outstanding class updates.
     * etc 1.4.0
     * io-console 0.5.11
     * io-nonblock 0.1.1
-    * io-wait 0.2.3
+    * io-wait 0.3.0.pre
     * ipaddr 1.2.4
     * json 2.6.2
     * logger 1.5.1
@@ -162,11 +169,13 @@ Note: We're only listing outstanding class updates.
     * reline 0.3.1
     * securerandom 0.2.0
     * stringio 3.0.3
+    * timeout 0.3.0
 *   The following bundled gems are updated.
+    * minitest 5.16.2
     * net-imap 0.2.3
-    * rbs 2.5.0
-    * typeprof 0.21.2
-    * debug 1.5.0
+    * rbs 2.6.0
+    * typeprof 0.21.3
+    * debug 1.6.1
 *   The following default gems are now bundled gems.
 
 ## Compatibility issues
@@ -234,6 +243,7 @@ The following deprecated APIs are removed.
 ## Miscellaneous changes
 
 [Feature #12005]: https://bugs.ruby-lang.org/issues/12005
+[Feature #12655]: https://bugs.ruby-lang.org/issues/12655
 [Feature #12737]: https://bugs.ruby-lang.org/issues/12737
 [Feature #13110]: https://bugs.ruby-lang.org/issues/13110
 [Feature #14332]: https://bugs.ruby-lang.org/issues/14332
@@ -259,3 +269,4 @@ The following deprecated APIs are removed.
 [Bug #18625]:     https://bugs.ruby-lang.org/issues/18625
 [Bug #18633]:     https://bugs.ruby-lang.org/issues/18633
 [Bug #18782]:     https://bugs.ruby-lang.org/issues/18782
+[Feature #18788]: https://bugs.ruby-lang.org/issues/18788

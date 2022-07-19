@@ -19,13 +19,15 @@ module Bundler
     #   collection of gemspecs is returned. Otherwise, nil is returned.
     def self.resolve(requirements, source_requirements = {}, base = [], gem_version_promoter = GemVersionPromoter.new, additional_base_requirements = [], platforms = nil)
       base = SpecSet.new(base) unless base.is_a?(SpecSet)
-      resolver = new(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms)
+      metadata_requirements, regular_requirements = requirements.partition {|dep| dep.name.end_with?("\0") }
+      resolver = new(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms, metadata_requirements)
       result = resolver.start(requirements)
-      SpecSet.new(SpecSet.new(result).for(requirements.reject {|dep| dep.name.end_with?("\0") }))
+      SpecSet.new(SpecSet.new(result).for(regular_requirements))
     end
 
-    def initialize(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms)
+    def initialize(source_requirements, base, gem_version_promoter, additional_base_requirements, platforms, metadata_requirements)
       @source_requirements = source_requirements
+      @metadata_requirements = metadata_requirements
       @base = base
       @resolver = Molinillo::Resolver.new(self, self)
       @search_for = {}
@@ -141,9 +143,12 @@ module Bundler
             end
 
             spec_group_ruby = SpecGroup.create_for(specs_by_platform, [Gem::Platform::RUBY], Gem::Platform::RUBY)
-            groups << spec_group_ruby if spec_group_ruby
+            if spec_group_ruby
+              spec_group_ruby.force_ruby_platform = dependency.force_ruby_platform
+              groups << spec_group_ruby
+            end
 
-            next groups if @resolving_only_for_ruby
+            next groups if @resolving_only_for_ruby || dependency.force_ruby_platform
 
             spec_group = SpecGroup.create_for(specs_by_platform, @platforms, platform)
             groups << spec_group
@@ -231,19 +236,17 @@ module Bundler
     # before dependencies that are unconstrained
     def amount_constrained(dependency)
       @amount_constrained ||= {}
-      @amount_constrained[dependency.name] ||= begin
-        if (base = @base[dependency.name]) && !base.empty?
-          dependency.requirement.satisfied_by?(base.first.version) ? 0 : 1
-        else
-          all = index_for(dependency).search(dependency.name).size
+      @amount_constrained[dependency.name] ||= if (base = @base[dependency.name]) && !base.empty?
+        dependency.requirement.satisfied_by?(base.first.version) ? 0 : 1
+      else
+        all = index_for(dependency).search(dependency.name).size
 
-          if all <= 1
-            all - 1_000_000
-          else
-            search = search_for(dependency)
-            search = @prerelease_specified[dependency.name] ? search.count : search.count {|s| !s.version.prerelease? }
-            search - all
-          end
+        if all <= 1
+          all - 1_000_000
+        else
+          search = search_for(dependency)
+          search = @prerelease_specified[dependency.name] ? search.count : search.count {|s| !s.version.prerelease? }
+          search - all
         end
       end
     end
@@ -284,7 +287,7 @@ module Bundler
       if specs_matching_requirement.any?
         specs = specs_matching_requirement
         matching_part = requirement_label
-        requirement_label = "#{requirement_label} #{requirement.__platform}"
+        requirement_label = "#{requirement_label}' with platform '#{requirement.__platform}"
       end
 
       message = String.new("Could not find gem '#{requirement_label}'#{extra_message} in #{source}#{cache_message}.\n")
@@ -344,8 +347,6 @@ module Bundler
             trees.sort_by! {|t| t.reverse.map(&:name) }
           end
 
-          metadata_requirements = {}
-
           o << trees.map do |tree|
             t = "".dup
             depth = 2
@@ -354,7 +355,6 @@ module Bundler
             base_tree_name = base_tree.name
 
             if base_tree_name.end_with?("\0")
-              metadata_requirements[base_tree_name] = base_tree
               t = nil
             else
               tree.each do |req|
@@ -393,10 +393,10 @@ module Bundler
               end
             end
           elsif name.end_with?("\0")
-            o << %(\n  Current #{name} version:\n    #{SharedHelpers.pretty_dependency(metadata_requirements[name])}\n\n)
+            o << %(\n  Current #{name} version:\n    #{SharedHelpers.pretty_dependency(@metadata_requirements.find {|req| req.name == name })}\n\n)
           elsif conflict.locked_requirement
             o << "\n"
-            o << %(Running `bundle update` will rebuild your snapshot from scratch, using only\n)
+            o << %(Deleting your #{name_for_locking_dependency_source} file and running `bundle install` will rebuild your snapshot from scratch, using only\n)
             o << %(the gems in your Gemfile, which may resolve the conflict.\n)
           elsif !conflict.existing
             o << "\n"

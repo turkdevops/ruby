@@ -91,6 +91,59 @@ class TestRegexp < Test::Unit::TestCase
     assert_warn('', '[ruby-core:82328] [Bug #13798]') {re.to_s}
   end
 
+  def test_extended_comment_invalid_escape_bug_18294
+    assert_separately([], <<-RUBY)
+      re = / C:\\\\[a-z]{5} # e.g. C:\\users /x
+      assert_match(re, 'C:\\users')
+      assert_not_match(re, 'C:\\user')
+
+      re = /
+        foo  # \\M-ca
+        bar
+      /x
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /
+        f[#o]o  # \\M-ca
+        bar
+      /x
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /
+        f[[:alnum:]#]o  # \\M-ca
+        bar
+      /x
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /
+        f(?# \\M-ca)oo  # \\M-ca
+        bar
+      /x
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /f(?# \\M-ca)oobar/
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /[-(?# fca)]oobar/
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+
+      re = /f(?# ca\0\\M-ca)oobar/
+      assert_match(re, 'foobar')
+      assert_not_match(re, 'foobaz')
+    RUBY
+
+    assert_raise(SyntaxError) {eval "/\\users/x"}
+    assert_raise(SyntaxError) {eval "/[\\users]/x"}
+    assert_raise(SyntaxError) {eval "/(?<\\users)/x"}
+    assert_raise(SyntaxError) {eval "/# \\users/"}
+  end
+
   def test_union
     assert_equal :ok, begin
       Regexp.union(
@@ -573,6 +626,29 @@ class TestRegexp < Test::Unit::TestCase
     assert_raise(RegexpError) { Regexp.new('[\\40000000000') }
     assert_raise(RegexpError) { Regexp.new('[\\600000000000.') }
     assert_raise(RegexpError) { Regexp.new("((?<v>))\\g<0>") }
+  end
+
+  def test_initialize_bool_warning
+    assert_warning(/expected true or false as ignorecase/) do
+      Regexp.new("foo", :i)
+    end
+  end
+
+  def test_initialize_option
+    assert_equal(//i, Regexp.new("", "i"))
+    assert_equal(//m, Regexp.new("", "m"))
+    assert_equal(//x, Regexp.new("", "x"))
+    assert_equal(//imx, Regexp.new("", "imx"))
+    assert_equal(//, Regexp.new("", ""))
+    assert_equal(//imx, Regexp.new("", "mimix"))
+
+    assert_raise(ArgumentError) { Regexp.new("", "e") }
+    assert_raise(ArgumentError) { Regexp.new("", "n") }
+    assert_raise(ArgumentError) { Regexp.new("", "s") }
+    assert_raise(ArgumentError) { Regexp.new("", "u") }
+    assert_raise(ArgumentError) { Regexp.new("", "o") }
+    assert_raise(ArgumentError) { Regexp.new("", "j") }
+    assert_raise(ArgumentError) { Regexp.new("", "xmen") }
   end
 
   def test_match_control_meta_escape

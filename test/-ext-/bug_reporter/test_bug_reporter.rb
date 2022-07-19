@@ -1,14 +1,14 @@
 # frozen_string_literal: false
 require 'test/unit'
 require 'tmpdir'
+require_relative '../../lib/jit_support'
 
 class TestBugReporter < Test::Unit::TestCase
   def test_bug_reporter_add
     omit if ENV['RUBY_ON_BUG']
 
     description = RUBY_DESCRIPTION
-    description = description.sub(/\+MJIT /, '') if defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled?
-    description = description.sub(/\+YJIT /, '') if defined?(RubyVM::YJIT.enabled?) && RubyVM::YJIT.enabled?
+    description = description.sub(/\+MJIT /, '') unless JITSupport.mjit_force_enabled?
     expected_stderr = [
       :*,
       /\[BUG\]\sSegmentation\sfault.*\n/,

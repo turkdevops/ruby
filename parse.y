@@ -70,6 +70,16 @@ struct lex_context {
     BITFIELD(enum shareability, shareable_constant_value, 2);
 };
 
+#ifdef __GNUC__
+// Suppress "parameter passing for argument of type 'struct
+// lex_context' changed" notes.  `struct lex_context` is file scope,
+// and has no ABI compatibility issue.
+RBIMPL_WARNING_PUSH()
+RBIMPL_WARNING_IGNORED(-Wpsabi)
+RBIMPL_WARNING_POP()
+// Not sure why effective even after popped.
+#endif
+
 #include "parse.h"
 
 #define NO_LEX_CTXT (struct lex_context){0}
@@ -222,12 +232,12 @@ enum {
 };
 
 #define NUMPARAM_ID_P(id) numparam_id_p(id)
-#define NUMPARAM_ID_TO_IDX(id) (unsigned int)(((id) >> ID_SCOPE_SHIFT) - tNUMPARAM_1 + 1)
-#define NUMPARAM_IDX_TO_ID(idx) TOKEN2LOCALID((tNUMPARAM_1 + (idx) - 1))
+#define NUMPARAM_ID_TO_IDX(id) (unsigned int)(((id) >> ID_SCOPE_SHIFT) - (tNUMPARAM_1 - 1))
+#define NUMPARAM_IDX_TO_ID(idx) TOKEN2LOCALID((tNUMPARAM_1 - 1 + (idx)))
 static int
 numparam_id_p(ID id)
 {
-    if (!is_local_id(id)) return 0;
+    if (!is_local_id(id) || id < (tNUMPARAM_1 << ID_SCOPE_SHIFT)) return 0;
     unsigned int idx = NUMPARAM_ID_TO_IDX(id);
     return idx > 0 && idx <= NUMPARAM_MAX;
 }
@@ -2663,11 +2673,7 @@ rel_expr	: arg relop arg   %prec '>'
 		    }
 		;
 
-lex_ctxt	: tSP
-		    {
-			$$ = p->ctxt;
-		    }
-		| none
+lex_ctxt	: none
 		    {
 			$$ = p->ctxt;
 		    }
@@ -2856,14 +2862,13 @@ block_arg	: tAMPER arg_value
 		    }
                 | tAMPER
                     {
-                    /*%%%*/
                         if (!local_id(p, ANON_BLOCK_ID)) {
                             compile_error(p, "no anonymous block parameter");
                         }
+                    /*%%%*/
                         $$ = NEW_BLOCK_PASS(NEW_LVAR(ANON_BLOCK_ID, &@1), &@$);
-                    /*%
-                    $$ = Qnil;
-                    %*/
+                    /*% %*/
+                    /*% ripper: Qnil %*/
                     }
 		;
 
@@ -2894,10 +2899,10 @@ args		: arg_value
 		    }
 		| tSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_REST_ID)) {
                             compile_error(p, "no anonymous rest parameter");
                         }
+		    /*%%%*/
 			$$ = NEW_SPLAT(NEW_LVAR(ANON_REST_ID, &@1), &@$);
 		    /*% %*/
 		    /*% ripper: args_add_star!(args_new!, Qnil) %*/
@@ -2918,10 +2923,10 @@ args		: arg_value
 		    }
 		| args ',' tSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_REST_ID)) {
                             compile_error(p, "no anonymous rest parameter");
                         }
+		    /*%%%*/
 			$$ = rest_arg_append(p, $1, NEW_LVAR(ANON_REST_ID, &@3), &@$);
 		    /*% %*/
 		    /*% ripper: args_add_star!($1, Qnil) %*/
@@ -5489,8 +5494,8 @@ f_kwrest	: kwrest_mark tIDENTIFIER
 		    }
 		| kwrest_mark
 		    {
+			arg_var(p, ANON_KEYWORD_REST_ID);
 		    /*%%%*/
-			arg_var(p, shadowing_lvar(p, get_id(ANON_KEYWORD_REST_ID)));
 		    /*% %*/
 		    /*% ripper: kwrest_param!(Qnil) %*/
 		    }
@@ -5564,8 +5569,8 @@ f_rest_arg	: restarg_mark tIDENTIFIER
 		    }
 		| restarg_mark
 		    {
+			arg_var(p, ANON_REST_ID);
 		    /*%%%*/
-                        arg_var(p, shadowing_lvar(p, get_id(ANON_REST_ID)));
 		    /*% %*/
 		    /*% ripper: rest_param!(Qnil) %*/
 		    }
@@ -5585,11 +5590,10 @@ f_block_arg	: blkarg_mark tIDENTIFIER
 		    }
                 | blkarg_mark
                     {
+			arg_var(p, ANON_BLOCK_ID);
                     /*%%%*/
-                        arg_var(p, shadowing_lvar(p, get_id(ANON_BLOCK_ID)));
-                    /*%
-                    $$ = dispatch1(blockarg, Qnil);
-                    %*/
+                    /*% %*/
+		    /*% ripper: blockarg!(Qnil) %*/
                     }
 		;
 
@@ -5721,10 +5725,10 @@ assoc		: arg_value tASSOC arg_value
 		    }
 		| tDSTAR
 		    {
-		    /*%%%*/
                         if (!local_id(p, ANON_KEYWORD_REST_ID)) {
                             compile_error(p, "no anonymous keyword rest parameter");
                         }
+		    /*%%%*/
                         $$ = list_append(p, NEW_LIST(0, &@$),
                                          NEW_LVAR(ANON_KEYWORD_REST_ID, &@$));
 		    /*% %*/
@@ -6464,12 +6468,6 @@ lex_getline(struct parser_params *p)
     if (NIL_P(line)) return line;
     must_be_ascii_compatible(line);
     if (RB_OBJ_FROZEN(line)) line = rb_str_dup(line); // needed for RubyVM::AST.of because script_lines in iseq is deep-frozen
-#ifndef RIPPER
-    if (p->debug_lines) {
-	rb_enc_associate(line, p->enc);
-	rb_ary_push(p->debug_lines, line);
-    }
-#endif
     p->line_count++;
     return line;
 }
@@ -6578,7 +6576,7 @@ parser_str_new(const char *ptr, long len, rb_encoding *enc, int func, rb_encodin
 
     str = rb_enc_str_new(ptr, len, enc);
     if (!(func & STR_FUNC_REGEXP) && rb_enc_asciicompat(enc)) {
-	if (rb_enc_str_coderange(str) == ENC_CODERANGE_7BIT) {
+	if (is_ascii_string(str)) {
 	}
 	else if (enc0 == rb_usascii_encoding() && enc != rb_utf8_encoding()) {
 	    rb_enc_associate(str, rb_ascii8bit_encoding());
@@ -6616,7 +6614,7 @@ add_delayed_token(struct parser_params *p, const char *tok, const char *end)
 #endif
 
 static int
-nextline(struct parser_params *p)
+nextline(struct parser_params *p, int set_encoding)
 {
     VALUE v = p->lex.nextline;
     p->lex.nextline = 0;
@@ -6634,6 +6632,12 @@ nextline(struct parser_params *p)
 	    lex_goto_eol(p);
 	    return -1;
 	}
+#ifndef RIPPER
+	if (p->debug_lines) {
+	    if (set_encoding) rb_enc_associate(v, p->enc);
+	    rb_ary_push(p->debug_lines, v);
+	}
+#endif
 	p->cr_seen = FALSE;
     }
     else if (NIL_P(v)) {
@@ -6665,12 +6669,12 @@ parser_cr(struct parser_params *p, int c)
 }
 
 static inline int
-nextc(struct parser_params *p)
+nextc0(struct parser_params *p, int set_encoding)
 {
     int c;
 
     if (UNLIKELY((p->lex.pcur == p->lex.pend) || p->eofp || RTEST(p->lex.nextline))) {
-	if (nextline(p)) return -1;
+	if (nextline(p, set_encoding)) return -1;
     }
     c = (unsigned char)*p->lex.pcur++;
     if (UNLIKELY(c == '\r')) {
@@ -6679,6 +6683,7 @@ nextc(struct parser_params *p)
 
     return c;
 }
+#define nextc(p) nextc0(p, TRUE)
 
 static void
 pushback(struct parser_params *p, int c)
@@ -6803,17 +6808,21 @@ tokadd_codepoint(struct parser_params *p, rb_encoding **encp,
     int codepoint = scan_hex(p->lex.pcur, wide ? p->lex.pend - p->lex.pcur : 4, &numlen);
     literal_flush(p, p->lex.pcur);
     p->lex.pcur += numlen;
-    if (wide ? (numlen == 0 || numlen > 6) : (numlen < 4))  {
-	yyerror0("invalid Unicode escape");
-	return wide && numlen > 0;
-    }
-    if (codepoint > 0x10ffff) {
-	yyerror0("invalid Unicode codepoint (too large)");
-	return wide;
-    }
-    if ((codepoint & 0xfffff800) == 0xd800) {
-	yyerror0("invalid Unicode codepoint");
-	return wide;
+    if (p->lex.strterm == NULL ||
+        (p->lex.strterm->flags & STRTERM_HEREDOC) ||
+        (p->lex.strterm->u.literal.u1.func != str_regexp)) {
+        if (wide ? (numlen == 0 || numlen > 6) : (numlen < 4))  {
+            yyerror0("invalid Unicode escape");
+            return wide && numlen > 0;
+        }
+        if (codepoint > 0x10ffff) {
+            yyerror0("invalid Unicode codepoint (too large)");
+            return wide;
+        }
+        if ((codepoint & 0xfffff800) == 0xd800) {
+            yyerror0("invalid Unicode codepoint");
+            return wide;
+        }
     }
     if (regexp_literal) {
 	tokcopy(p, (int)numlen);
@@ -7448,7 +7457,7 @@ parser_string_term(struct parser_params *p, int func)
     }
     if ((func & STR_FUNC_LABEL) && IS_LABEL_SUFFIX(0)) {
 	nextc(p);
-	SET_LEX_STATE(EXPR_BEG|EXPR_LABEL);
+	SET_LEX_STATE(EXPR_ARG|EXPR_LABELED);
 	return tLABEL_END;
     }
     SET_LEX_STATE(EXPR_END);
@@ -8465,7 +8474,7 @@ set_file_encoding(struct parser_params *p, const char *str, const char *send)
 static void
 parser_prepare(struct parser_params *p)
 {
-    int c = nextc(p);
+    int c = nextc0(p, FALSE);
     p->token_info_enabled = !compile_for_eval && RTEST(ruby_verbose);
     switch (c) {
       case '#':
@@ -8477,6 +8486,11 @@ parser_prepare(struct parser_params *p)
 	    (unsigned char)p->lex.pcur[1] == 0xbf) {
 	    p->enc = rb_utf8_encoding();
 	    p->lex.pcur += 2;
+#ifndef RIPPER
+	    if (p->debug_lines) {
+		rb_enc_associate(p->lex.lastline, p->enc);
+	    }
+#endif
 	    p->lex.pbeg = p->lex.pcur;
 	    return;
 	}
@@ -9217,7 +9231,7 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
 		    return keyword_do_block;
 		return keyword_do;
 	    }
-	    if (IS_lex_state_for(state, (EXPR_BEG | EXPR_LABELED)))
+	    if (IS_lex_state_for(state, (EXPR_BEG | EXPR_LABELED | EXPR_CLASS)))
 		return kw->id[0];
 	    else {
 		if (kw->id[0] != kw->id[1])
@@ -11928,7 +11942,7 @@ logop(struct parser_params *p, ID id, NODE *left, NODE *right,
 static void
 no_blockarg(struct parser_params *p, NODE *node)
 {
-    if (node && nd_type_p(node, NODE_BLOCK_PASS)) {
+    if (nd_type_p(node, NODE_BLOCK_PASS)) {
 	compile_error(p, "block argument should not be given");
     }
 }
@@ -12931,21 +12945,21 @@ rb_reg_fragment_setenc(struct parser_params* p, VALUE str, int options)
 	int opt, idx;
 	rb_char_to_option_kcode(c, &opt, &idx);
 	if (idx != ENCODING_GET(str) &&
-	    rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+	    !is_ascii_string(str)) {
             goto error;
 	}
 	ENCODING_SET(str, idx);
     }
     else if (RE_OPTION_ENCODING_NONE(options)) {
         if (!ENCODING_IS_ASCII8BIT(str) &&
-            rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+            !is_ascii_string(str)) {
             c = 'n';
             goto error;
         }
 	rb_enc_associate(str, rb_ascii8bit_encoding());
     }
     else if (p->enc == rb_usascii_encoding()) {
-	if (rb_enc_str_coderange(str) != ENC_CODERANGE_7BIT) {
+	if (!is_ascii_string(str)) {
 	    /* raise in re.c */
 	    rb_enc_associate(str, rb_usascii_encoding());
 	}

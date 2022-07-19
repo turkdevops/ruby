@@ -1,14 +1,14 @@
 prelude: |
-  class C
-    def initialize
+  class C < Array
+    def set_ivars
       @a = nil
       @b = nil
       @c = nil
-      @d = nil
-      @e = nil
     end
   end
+
+  c = C.new
 benchmark:
-  vm_ivar_init: |
-    C.new
+  vm_ivar_generic_set: |
+    c.set_ivars
 loop_count: 30000000

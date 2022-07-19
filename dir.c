@@ -709,7 +709,7 @@ static int
 fundamental_encoding_p(rb_encoding *enc)
 {
     switch (rb_enc_to_index(enc)) {
-      case ENCINDEX_ASCII:
+      case ENCINDEX_ASCII_8BIT:
       case ENCINDEX_US_ASCII:
       case ENCINDEX_UTF_8:
 	return TRUE;
@@ -1131,8 +1131,8 @@ rb_dir_getwd(void)
 
     switch (fsenc) {
       case ENCINDEX_US_ASCII:
-	fsenc = ENCINDEX_ASCII;
-      case ENCINDEX_ASCII:
+	fsenc = ENCINDEX_ASCII_8BIT;
+      case ENCINDEX_ASCII_8BIT:
 	break;
 #if defined _WIN32 || defined __APPLE__
       default:
@@ -2948,7 +2948,7 @@ dir_glob_option_base(VALUE base)
 static int
 dir_glob_option_sort(VALUE sort)
 {
-    return (rb_bool_expected(sort, "sort") ? 0 : FNM_GLOB_NOSORT);
+    return (rb_bool_expected(sort, "sort", TRUE) ? 0 : FNM_GLOB_NOSORT);
 }
 
 static VALUE
