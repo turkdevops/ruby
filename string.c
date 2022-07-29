@@ -3329,9 +3329,24 @@ VALUE
 rb_str_buf_append(VALUE str, VALUE str2)
 {
     int str2_cr = rb_enc_str_coderange(str2);
-    if (str2_cr == ENC_CODERANGE_7BIT && str_enc_fastpath(str)) {
-        str_buf_cat4(str, RSTRING_PTR(str2), RSTRING_LEN(str2), true);
-        return str;
+
+    if (str_enc_fastpath(str)) {
+        switch (str2_cr) {
+          case ENC_CODERANGE_7BIT:
+            // If RHS is 7bit we can do simple concatenation
+            str_buf_cat4(str, RSTRING_PTR(str2), RSTRING_LEN(str2), true);
+            return str;
+          case ENC_CODERANGE_VALID:
+            // If RHS is valid, we can do simple concatenation if encodings are the same
+            if (ENCODING_GET_INLINED(str) == ENCODING_GET_INLINED(str2)) {
+                str_buf_cat4(str, RSTRING_PTR(str2), RSTRING_LEN(str2), true);
+                int str_cr = ENC_CODERANGE(str);
+                if (UNLIKELY(str_cr != ENC_CODERANGE_VALID)) {
+                    ENC_CODERANGE_SET(str, RB_ENC_CODERANGE_AND(str_cr, str2_cr));
+                }
+                return str;
+            }
+        }
     }
 
     rb_enc_cr_str_buf_cat(str, RSTRING_PTR(str2), RSTRING_LEN(str2),
@@ -10764,7 +10779,23 @@ rb_str_b(VALUE str)
         str2 = str_alloc_embed(rb_cString, RSTRING_EMBED_LEN(str) + TERM_LEN(str));
     }
     str_replace_shared_without_enc(str2, str);
-    ENC_CODERANGE_CLEAR(str2);
+
+    // BINARY strings can never be broken; they're either 7-bit ASCII or VALID.
+    // If we know the receiver's code range then we know the result's code range.
+    int cr = ENC_CODERANGE(str);
+    switch (cr) {
+      case ENC_CODERANGE_7BIT:
+        ENC_CODERANGE_SET(str2, ENC_CODERANGE_7BIT);
+        break;
+      case ENC_CODERANGE_BROKEN:
+      case ENC_CODERANGE_VALID:
+        ENC_CODERANGE_SET(str2, ENC_CODERANGE_VALID);
+        break;
+      default:
+        ENC_CODERANGE_CLEAR(str2);
+        break;
+    }
+
     return str2;
 }
 

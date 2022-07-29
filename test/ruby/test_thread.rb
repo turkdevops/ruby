@@ -35,6 +35,7 @@ class TestThread < Test::Unit::TestCase
     th = Module.new {break module_eval("class C\u{30b9 30ec 30c3 30c9} < Thread; self; end")}.start do
       m.synchronize {}
     end
+    Thread.pass until th.stop?
     s = th.inspect
     assert_include(s, "::C\u{30b9 30ec 30c3 30c9}:")
     assert_include(s, " #{__FILE__}:#{line} ")
@@ -971,6 +972,8 @@ _eom
   end
 
   def test_thread_timer_and_interrupt
+    omit "[Bug #18613]" if /freebsd/ =~ RUBY_PLATFORM
+
     bug5757 = '[ruby-dev:44985]'
     pid = nil
     cmd = 'Signal.trap(:INT, "DEFAULT"); pipe=IO.pipe; Thread.start {Thread.pass until Thread.main.stop?; puts; STDOUT.flush}; pipe[0].read'
