@@ -29,16 +29,37 @@ require 'rdoc'
 #   see <tt>:nodoc:</tt>, <tt>:doc:</tt>, and <tt>:notnew</tt>.
 # - \RDoc directives in single-line comments;
 #   see other {Directives}[rdoc-ref:RDoc::MarkupReference@Directives].
-# - The Ruby code itself;
-#   see {Documentation Derived from Ruby Code}[rdoc-ref:RDoc::MarkupReference@Documentation+Derived+from+Ruby+Code]
+# - The Ruby code itself (but not from C code);
+#   see {Documentation Derived from Ruby Code}[rdoc-ref:RDoc::MarkupReference@Documentation+Derived+from+Ruby+Code].
 #
 # == Markup in Comments
 #
-# A single-line or multi-line comment that immediately precedes
-# the definition of a class, module, method, alias, constant, or attribute
-# becomes the documentation for that defined object.
+# The treatment of markup in comments varies according to the type of file:
 #
-# (\RDoc ignores other such comments that do not precede definitions.)
+# - <tt>.rb</tt> (Ruby code file): markup is parsed from Ruby comments.
+# - <tt>.c</tt> (C code file): markup is parsed from C comments.
+# - <tt>.rdoc</tt> (RDoc text file): markup is parsed from the entire file.
+#
+# The comment associated with
+# a Ruby class, module, method, alias, constant, or attribute
+# becomes the documentation for that defined object:
+#
+# - In a Ruby file, that comment immediately precedes
+#   the definition of the object.
+# - In a C file, that comment immediately precedes
+#   the function that implements a method,
+#   or otherwise immediately precedes the definition of the object.
+#
+# In either a Ruby or a C file,
+# \RDoc ignores comments that do not precede object definitions.
+#
+# In an \RDoc file, the text is not associated with any code object,
+# but may (depending on how the documentation is built),
+# become a separate page.
+#
+# Almost all examples on this page are all RDoc-like;
+# that is, they have no comment markers like Ruby <tt>#</tt>
+# or C <tt>/* ... */</tt>.
 #
 # === Margins
 #
@@ -96,11 +117,11 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # \RDoc produces HTML and command-line documentation for Ruby projects.
-#   # \RDoc includes the rdoc and ri tools for generating and displaying
-#   # documentation from the command-line.
-#   #
-#   # You'll love it.
+#   \RDoc produces HTML and command-line documentation for Ruby projects.
+#   \RDoc includes the rdoc and ri tools for generating and displaying
+#   documentation from the command-line.
+#
+#   You'll love it.
 #
 # Rendered HTML:
 # >>>
@@ -133,15 +154,15 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # This is not verbatim text.
-#   #
-#   #   This is verbatim text.
-#   #     Whitespace is honored.     # See?
-#   #       Whitespace is honored.     # See?
-#   #
-#   #   This is still the same verbatim text block.
-#   #
-#   # This is not verbatim text.
+#   This is not verbatim text.
+#
+#     This is verbatim text.
+#       Whitespace is honored.     # See?
+#         Whitespace is honored.     # See?
+#
+#     This is still the same verbatim text block.
+#
+#   This is not verbatim text.
 #
 # Rendered HTML:
 # >>>
@@ -279,13 +300,13 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # - An item.
-#   # - Another.
-#   # - An item spanning
-#   #   multiple lines.
-#   #
-#   # * Yet another.
-#   # - Last one.
+#   - An item.
+#   - Another.
+#   - An item spanning
+#     multiple lines.
+#
+#   * Yet another.
+#   - Last one.
 #
 # Rendered HTML:
 # >>>
@@ -305,13 +326,13 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # 100. An item.
-#   # 10. Another.
-#   # 1. An item spanning
-#   #    multiple lines.
-#   #
-#   # 1. Yet another.
-#   # 1000. Last one.
+#   100. An item.
+#   10. Another.
+#   1. An item spanning
+#      multiple lines.
+#
+#   1. Yet another.
+#   1000. Last one.
 #
 # Rendered HTML:
 # >>>
@@ -331,13 +352,13 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # z. An item.
-#   # y. Another.
-#   # x. An item spanning
-#   #    multiple lines.
-#   #
-#   # x. Yet another.
-#   # a. Last one.
+#   z. An item.
+#   y. Another.
+#   x. An item spanning
+#      multiple lines.
+#
+#   x. Yet another.
+#   a. Last one.
 #
 # Rendered HTML:
 # >>>
@@ -356,13 +377,13 @@ require 'rdoc'
 #
 # Example input:
 #
-#   # [foo] An item.
-#   # bat:: Another.
-#   # [bag] An item spanning
-#   #       multiple lines.
-#   #
-#   # [bar baz] Yet another.
-#   # bam:: Last one.
+#   [foo] An item.
+#   bat:: Another.
+#   [bag] An item spanning
+#         multiple lines.
+#
+#   [bar baz] Yet another.
+#   bam:: Last one.
 #
 # Rendered HTML:
 # >>>
@@ -381,20 +402,20 @@ require 'rdoc'
 #
 # Examples:
 #
-#   # = Section 1
-#   # == Section 1.1
-#   # === Section 1.1.1
-#   # === Section 1.1.2
-#   # == Section 1.2
-#   # = Section 2
-#   # = Foo
-#   # == Bar
-#   # === Baz
-#   # ==== Bam
-#   # ===== Bat
-#   # ====== Bad
-#   # ============Still a Heading (Level 6)
-#   # \== Not a Heading
+#   = Section 1
+#   == Section 1.1
+#   === Section 1.1.1
+#   === Section 1.1.2
+#   == Section 1.2
+#   = Section 2
+#   = Foo
+#   == Bar
+#   === Baz
+#   ==== Bam
+#   ===== Bat
+#   ====== Bad
+#   ============Still a Heading (Level 6)
+#   \== Not a Heading
 #
 # A heading may contain only one type of nested block:
 #
@@ -628,27 +649,27 @@ require 'rdoc'
 #
 # Example input:
 #
-#   <i>Two words</i> in a paragraph.
+#   <i>Italicized words</i> in a paragraph.
 #
 #   >>>
-#     <i>Two words in a block quote</i>.
+#     <i>Italicized words in a block quote</i>.
 #
-#   - <i>Two words</i> in a bullet list item.
+#   - <i>Italicized words</i> in a list item.
 #
-#   ====== <i>Two words</i> in a Heading
+#   ====== <i>Italicized words</i> in a Heading
 #
 #   <i>Italicized passage containing *bold* and +monofont+.</i>
 #
 # Rendered HTML:
 # >>>
-#   <i>Two words</i> in a paragraph.
+#   <i>Italicized words</i> in a paragraph.
 #
 #   >>>
-#     <i>Two words in a block quote</i>.
+#     <i>Italicized words in a block quote</i>.
 #
-#   - <i>Two words</i> in a bullet list item.
+#   - <i>Italicized words</i> in a list item.
 #
-#   ====== <i>Two words</i> in a Heading
+#   ====== <i>Italicized words</i> in a Heading
 #
 #   <i>Italicized passage containing *bold* and +monofont+.</i>
 #
@@ -657,29 +678,25 @@ require 'rdoc'
 #
 # Example input:
 #
-#   _Word_ in a paragraph.
+#   _Italic_ in a paragraph.
 #
 #   >>>
-#     _Word_ in a block quote.
+#     _Italic_ in a block quote.
 #
-#   - _Word_ in a bullet list item.
+#   - _Italic_ in a list item.
 #
-#   [_word_] _Word_ in a labeled list item.
-#
-#   ====== _Word_ in a Heading
+#   ====== _Italic_ in a Heading
 #
 # Rendered HTML:
 # >>>
-#   _Word_ in a paragraph.
+#   _Italic_ in a paragraph.
 #
 #   >>>
-#     _Word_ in a block quote.
+#     _Italic_ in a block quote.
 #
-#   - _Word_ in a bullet list item.
+#   - _Italic_ in a list item.
 #
-#   [_word_] _Word_ in a labeled list item.
-#
-#   ====== _Word_ in a Heading
+#   ====== _Italic_ in a Heading
 #
 # ===== Bold
 #
@@ -687,28 +704,28 @@ require 'rdoc'
 #
 # Example input:
 #
-#   <b>Two words</b> in a paragraph.
+#   <b>Bold words</b> in a paragraph.
 #
 #   >>>
-#     <b>Two words</b> in a block quote.
+#     <b>Bold words</b> in a block quote.
 #
-#   - <b>Two words</b> in a bullet list item.
+#   - <b>Bold words</b> in a list item.
 #
-#   ====== <b>Two words</b> in a Heading
+#   ====== <b>Bold words</b> in a Heading
 #
 #   <b>Bold passage containing _italics_ and +monofont+.</b>
 #
 # Rendered HTML:
 #
 # >>>
-#   <b>Two words</b> in a paragraph.
+#   <b>Bold words</b> in a paragraph.
 #
 #   >>>
-#     <b>Two words</b> in a block quote.
+#     <b>Bold words</b> in a block quote.
 #
-#   - <b>Two words</b> in a bullet list item.
+#   - <b>Bold words</b> in a list item.
 #
-#   ====== <b>Two words</b> in a Heading
+#   ====== <b>Bold words</b> in a Heading
 #
 #   <b>Bold passage containing _italics_ and +monofont+.</b>
 #
@@ -717,30 +734,26 @@ require 'rdoc'
 #
 # Example input:
 #
-#   *Word* in a paragraph.
+#   *Bold* in a paragraph.
 #
 #   >>>
-#     *Word* in a block quote.
+#     *Bold* in a block quote.
 #
-#   - *Word* in a bullet list item.
+#   - *Bold* in a list item.
 #
-#   [*word*] *Word* in a labeled list item.
-#
-#   ===== *Word* in a Heading
+#   ===== *Bold* in a Heading
 #
 # Rendered HTML:
 #
 # >>>
-#   *Word* in a paragraph.
+#   *Bold* in a paragraph.
 #
 #   >>>
-#     *Word* in a block quote.
+#     *Bold* in a block quote.
 #
-#   - *Word* in a bullet list item.
+#   - *Bold* in a list item.
 #
-#   [*word*] *Word* in a labeled list item.
-#
-#   ===== *Word* in a Heading
+#   ===== *Bold* in a Heading
 #
 # ===== Monofont
 #
@@ -750,28 +763,28 @@ require 'rdoc'
 #
 # Example input:
 #
-#   <tt>Two words</tt> in a paragraph.
+#   <tt>Monofont words</tt> in a paragraph.
 #
 #   >>>
-#     <tt>Two words</tt> in a block quote.
+#     <tt>Monofont words</tt> in a block quote.
 #
-#   - <tt>Two words</tt> in a bullet list item.
+#   - <tt>Monofont words</tt> in a list item.
 #
-#   ====== <tt>Two words</tt> in heading
+#   ====== <tt>Monofont words</tt> in heading
 #
 #   <tt>Monofont passage containing _italics_ and *bold*.</tt>
 #
 # Rendered HTML:
 #
 # >>>
-#   <tt>Two words</tt> in a paragraph.
+#   <tt>Monofont words</tt> in a paragraph.
 #
 #   >>>
-#     <tt>Two words</tt> in a block quote.
+#     <tt>Monofont words</tt> in a block quote.
 #
-#   - <tt>Two words</tt> in a bullet list item.
+#   - <tt>Monofont words</tt> in a list item.
 #
-#   ====== <tt>Two words</tt> in heading
+#   ====== <tt>Monofont words</tt> in heading
 #
 #   <tt>Monofont passage containing _italics_ and *bold*.</tt>
 #
@@ -780,26 +793,26 @@ require 'rdoc'
 #
 # Example input:
 #
-#   +Word+ in a paragraph.
+#   +Monofont+ in a paragraph.
 #
 #   >>>
-#     +Word+ in a block quote.
+#     +Monofont+ in a block quote.
 #
-#   - +Word+ in a bullet list item.
+#   - +Monofont+ in a list item.
 #
-#   ====== +Word+ in a Heading
+#   ====== +Monofont+ in a Heading
 #
 # Rendered HTML:
 #
 # >>>
-#   +Word+ in a paragraph.
+#   +Monofont+ in a paragraph.
 #
 #   >>>
-#     +Word+ in a block quote.
+#     +Monofont+ in a block quote.
 #
-#   - +Word+ in a bullet list item.
+#   - +Monofont+ in a list item.
 #
-#   ====== +Word+ in a Heading
+#   ====== +Monofont+ in a Heading
 #
 # ==== Escaping Text Markup
 #
@@ -1147,10 +1160,10 @@ class RDoc::MarkupReference
   #
   # Here is the <tt>:call-seq:</tt> directive given for the method:
   #
-  #   # :call-seq:
-  #   #   call_seq_directive(foo, bar)
-  #   #   Can be anything -> bar
-  #   #   Also anything more -> baz or bat
+  #   :call-seq:
+  #     call_seq_directive(foo, bar)
+  #     Can be anything -> bar
+  #     Also anything more -> baz or bat
   #
   def call_seq_directive
     nil
