@@ -88,11 +88,15 @@ class OpenSSL::TestEC < OpenSSL::PKeyTestCase
     assert_equal(true, key2.check_key)
 
     # Behavior of EVP_PKEY_public_check changes between OpenSSL 1.1.1 and 3.0
-    key4 = Fixtures.pkey("p256_too_large")
+    # The public key does not match the private key
+    key4 = OpenSSL::PKey.read(<<~EOF)
+    -----BEGIN EC PRIVATE KEY-----
+    MHcCAQEEIP+TT0V8Fndsnacji9tyf6hmhHywcOWTee9XkiBeJoVloAoGCCqGSM49
+    AwEHoUQDQgAEBkhhJIU/2/YdPSlY2I1k25xjK4trr5OXSgXvBC21PtY0HQ7lor7A
+    jzT0giJITqmcd81fwGw5+96zLcdxTF1hVQ==
+    -----END EC PRIVATE KEY-----
+    EOF
     assert_raise(OpenSSL::PKey::ECError) { key4.check_key }
-
-    key5 = Fixtures.pkey("p384_invalid")
-    assert_raise(OpenSSL::PKey::ECError) { key5.check_key }
 
     # EC#private_key= is deprecated in 3.0 and won't work on OpenSSL 3.0
     if !openssl?(3, 0, 0)
@@ -229,6 +233,8 @@ class OpenSSL::TestEC < OpenSSL::PKeyTestCase
   end
 
   def test_ECPrivateKey_encrypted
+    omit_on_fips
+
     p256 = Fixtures.pkey("p256")
     # key = abcdef
     pem = <<~EOF
@@ -419,28 +425,6 @@ class OpenSSL::TestEC < OpenSSL::PKeyTestCase
       # 3 * (6, 3) + 3 * (5, 1) = (7, 6)
       result_a2 = point_a.mul(3, 3)
       assert_equal B(%w{ 04 07 06 }), result_a2.to_octet_string(:uncompressed)
-      EnvUtil.suppress_warning do # Point#mul(ary, ary [, bn]) is deprecated
-        begin
-          result_b1 = point_a.mul([3], [])
-        rescue NotImplementedError
-          # LibreSSL and OpenSSL 3.0 do no longer support this form of calling
-          next
-        end
-
-        # 3 * point_a = 3 * (6, 3) = (16, 13)
-        result_b1 = point_a.mul([3], [])
-        assert_equal B(%w{ 04 10 0D }), result_b1.to_octet_string(:uncompressed)
-        # 3 * point_a + 2 * point_a = 3 * (6, 3) + 2 * (6, 3) = (7, 11)
-        result_b1 = point_a.mul([3, 2], [point_a])
-        assert_equal B(%w{ 04 07 0B }), result_b1.to_octet_string(:uncompressed)
-        # 3 * point_a + 5 * point_a.group.generator = 3 * (6, 3) + 5 * (5, 1) = (13, 10)
-        result_b1 = point_a.mul([3], [], 5)
-        assert_equal B(%w{ 04 0D 0A }), result_b1.to_octet_string(:uncompressed)
-
-        assert_raise(ArgumentError) { point_a.mul([1], [point_a]) }
-        assert_raise(TypeError) { point_a.mul([1], nil) }
-        assert_raise(TypeError) { point_a.mul([nil], []) }
-      end
     rescue OpenSSL::PKey::EC::Group::Error
       # CentOS patches OpenSSL to reject curves defined over Fp where p < 256 bits
       raise if $!.message !~ /unsupported field/
@@ -453,6 +437,9 @@ class OpenSSL::TestEC < OpenSSL::PKeyTestCase
     # invalid argument
     point = p256_key.public_key
     assert_raise(TypeError) { point.mul(nil) }
+
+    # mul with arrays was removed in version 4.0.0
+    assert_raise(NotImplementedError) { point.mul([1], []) }
   end
 
 # test Group: asn1_flag, point_conversion

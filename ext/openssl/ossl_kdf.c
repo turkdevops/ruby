@@ -3,9 +3,7 @@
  * Copyright (C) 2007, 2017 Ruby/OpenSSL Project Authors
  */
 #include "ossl.h"
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
-# include <openssl/kdf.h>
-#endif
+#include <openssl/kdf.h>
 
 static VALUE mKDF, eKDF;
 
@@ -18,7 +16,7 @@ static VALUE mKDF, eKDF;
  * of _length_ bytes.
  *
  * For more information about PBKDF2, see RFC 2898 Section 5.2
- * (https://tools.ietf.org/html/rfc2898#section-5.2).
+ * (https://www.rfc-editor.org/rfc/rfc2898#section-5.2).
  *
  * === Parameters
  * pass       :: The password.
@@ -81,10 +79,10 @@ kdf_pbkdf2_hmac(int argc, VALUE *argv, VALUE self)
  * bcrypt.
  *
  * The keyword arguments _N_, _r_ and _p_ can be used to tune scrypt. RFC 7914
- * (published on 2016-08, https://tools.ietf.org/html/rfc7914#section-2) states
+ * (published on 2016-08, https://www.rfc-editor.org/rfc/rfc7914#section-2) states
  * that using values r=8 and p=1 appears to yield good results.
  *
- * See RFC 7914 (https://tools.ietf.org/html/rfc7914) for more information.
+ * See RFC 7914 (https://www.rfc-editor.org/rfc/rfc7914) for more information.
  *
  * === Parameters
  * pass   :: Passphrase.
@@ -141,13 +139,12 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
 }
 #endif
 
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
 /*
  * call-seq:
  *    KDF.hkdf(ikm, salt:, info:, length:, hash:) -> String
  *
  * HMAC-based Extract-and-Expand Key Derivation Function (HKDF) as specified in
- * {RFC 5869}[https://tools.ietf.org/html/rfc5869].
+ * {RFC 5869}[https://www.rfc-editor.org/rfc/rfc5869].
  *
  * New in OpenSSL 1.1.0.
  *
@@ -165,7 +162,7 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
  *   The hash function.
  *
  * === Example
- *   # The values from https://datatracker.ietf.org/doc/html/rfc5869#appendix-A.1
+ *   # The values from https://www.rfc-editor.org/rfc/rfc5869#appendix-A.1
  *   ikm = ["0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"].pack("H*")
  *   salt = ["000102030405060708090a0b0c"].pack("H*")
  *   info = ["f0f1f2f3f4f5f6f7f8f9"].pack("H*")
@@ -238,7 +235,6 @@ kdf_hkdf(int argc, VALUE *argv, VALUE self)
 
     return str;
 }
-#endif
 
 void
 Init_ossl_kdf(void)
@@ -305,7 +301,5 @@ Init_ossl_kdf(void)
 #if defined(HAVE_EVP_PBE_SCRYPT)
     rb_define_module_function(mKDF, "scrypt", kdf_scrypt, -1);
 #endif
-#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
     rb_define_module_function(mKDF, "hkdf", kdf_hkdf, -1);
-#endif
 }

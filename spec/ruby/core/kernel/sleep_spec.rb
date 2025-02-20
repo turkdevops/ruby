@@ -1,5 +1,4 @@
 require_relative '../../spec_helper'
-require_relative 'fixtures/classes'
 
 describe "Kernel#sleep" do
   it "is a private method" do
@@ -22,7 +21,7 @@ describe "Kernel#sleep" do
     sleep(Rational(1, 999)).should >= 0
   end
 
-  it "accepts any Object that reponds to divmod" do
+  it "accepts any Object that responds to divmod" do
     o = Object.new
     def o.divmod(*); [0, 0.001]; end
     sleep(o).should >= 0
@@ -50,6 +49,17 @@ describe "Kernel#sleep" do
 
     t.wakeup
     t.value.should == 5
+  end
+
+  it "sleeps with nanosecond precision" do
+    start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    100.times do
+      sleep(0.0001)
+    end
+    end_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+    actual_duration = end_time - start_time
+    actual_duration.should > 0.01 # 100 * 0.0001 => 0.01
   end
 
   ruby_version_is ""..."3.3" do

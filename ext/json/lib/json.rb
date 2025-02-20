@@ -1,4 +1,4 @@
-#frozen_string_literal: false
+# frozen_string_literal: true
 require 'json/common'
 
 ##
@@ -285,6 +285,15 @@ require 'json/common'
 #   # Raises JSON::NestingError (nesting of 2 is too deep):
 #   JSON.generate(obj, max_nesting: 2)
 #
+# ====== Escaping Options
+#
+# Options +script_safe+ (boolean) specifies wether <tt>'\u2028'</tt>, <tt>'\u2029'</tt>
+# and <tt>'/'</tt> should be escaped as to make the JSON object safe to interpolate in script
+# tags.
+#
+# Options +ascii_only+ (boolean) specifies wether all characters outside the ASCII range
+# should be escaped.
+#
 # ====== Output Options
 #
 # The default formatting options generate the most compact
@@ -369,13 +378,13 @@ require 'json/common'
 #   json1 = JSON.generate(ruby)
 #   ruby1 = JSON.parse(json1, create_additions: true)
 #   # Make a nice display.
-#   display = <<EOT
-#   Generated JSON:
-#     Without addition:  #{json0} (#{json0.class})
-#     With addition:     #{json1} (#{json1.class})
-#   Parsed JSON:
-#     Without addition:  #{ruby0.inspect} (#{ruby0.class})
-#     With addition:     #{ruby1.inspect} (#{ruby1.class})
+#   display = <<~EOT
+#     Generated JSON:
+#       Without addition:  #{json0} (#{json0.class})
+#       With addition:     #{json1} (#{json1.class})
+#     Parsed JSON:
+#       Without addition:  #{ruby0.inspect} (#{ruby0.class})
+#       With addition:     #{ruby1.inspect} (#{ruby1.class})
 #   EOT
 #   puts display
 #
@@ -553,13 +562,13 @@ require 'json/common'
 #   json1 = JSON.generate(foo1)
 #   obj1 = JSON.parse(json1, create_additions: true)
 #   #   Make a nice display.
-#   display = <<EOT
-#   Generated JSON:
-#     Without custom addition:  #{json0} (#{json0.class})
-#     With custom addition:     #{json1} (#{json1.class})
-#   Parsed JSON:
-#     Without custom addition:  #{obj0.inspect} (#{obj0.class})
-#     With custom addition:     #{obj1.inspect} (#{obj1.class})
+#   display = <<~EOT
+#     Generated JSON:
+#       Without custom addition:  #{json0} (#{json0.class})
+#       With custom addition:     #{json1} (#{json1.class})
+#     Parsed JSON:
+#       Without custom addition:  #{obj0.inspect} (#{obj0.class})
+#       With custom addition:     #{obj1.inspect} (#{obj1.class})
 #   EOT
 #   puts display
 #
@@ -574,10 +583,5 @@ require 'json/common'
 #
 module JSON
   require 'json/version'
-
-  begin
-    require 'json/ext'
-  rescue LoadError
-    require 'json/pure'
-  end
+  require 'json/ext'
 end

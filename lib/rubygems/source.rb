@@ -12,9 +12,9 @@ class Gem::Source
   include Gem::Text
 
   FILES = { # :nodoc:
-    :released => "specs",
-    :latest => "latest_specs",
-    :prerelease => "prerelease_specs",
+    released: "specs",
+    latest: "latest_specs",
+    prerelease: "prerelease_specs",
   }.freeze
 
   ##
@@ -79,7 +79,7 @@ class Gem::Source
       uri
     end
 
-    bundler_api_uri = enforce_trailing_slash(fetch_uri)
+    bundler_api_uri = enforce_trailing_slash(fetch_uri) + "versions"
 
     begin
       fetcher = Gem::RemoteFetcher.fetcher
@@ -101,7 +101,6 @@ class Gem::Source
   def cache_dir(uri)
     # Correct for windows paths
     escaped_path = uri.path.sub(%r{^/([a-z]):/}i, '/\\1-/')
-    escaped_path.tap(&Gem::UNTAINT)
 
     File.join Gem.spec_cache_dir, "#{uri.host}%#{uri.port}", File.dirname(escaped_path)
   end
@@ -135,8 +134,9 @@ class Gem::Source
 
     if File.exist? local_spec
       spec = Gem.read_binary local_spec
+      Gem.load_safe_marshal
       spec = begin
-               Marshal.load(spec)
+               Gem::SafeMarshal.safe_load(spec)
              rescue StandardError
                nil
              end
@@ -157,8 +157,9 @@ class Gem::Source
       end
     end
 
+    Gem.load_safe_marshal
     # TODO: Investigate setting Gem::Specification#loaded_from to a URI
-    Marshal.load spec
+    Gem::SafeMarshal.safe_load spec
   end
 
   ##
@@ -188,8 +189,9 @@ class Gem::Source
 
     spec_dump = fetcher.cache_update_path spec_path, local_file, update_cache?
 
+    Gem.load_safe_marshal
     begin
-      Gem::NameTuple.from_list Marshal.load(spec_dump)
+      Gem::NameTuple.from_list Gem::SafeMarshal.safe_load(spec_dump)
     rescue ArgumentError
       if update_cache? && !retried
         FileUtils.rm local_file
@@ -211,14 +213,16 @@ class Gem::Source
   end
 
   def pretty_print(q) # :nodoc:
-    q.group 2, "[Remote:", "]" do
-      q.breakable
-      q.text @uri.to_s
-
-      if api = uri
+    q.object_group(self) do
+      q.group 2, "[Remote:", "]" do
         q.breakable
-        q.text "API URI: "
-        q.text api.to_s
+        q.text @uri.to_s
+
+        if api = uri
+          q.breakable
+          q.text "API URI: "
+          q.text api.to_s
+        end
       end
     end
   end

@@ -4,6 +4,7 @@ require_relative "endpoint"
 
 $LOAD_PATH.unshift Dir[Spec::Path.base_system_gem_path.join("gems/compact_index*/lib")].first.to_s
 require "compact_index"
+require "digest"
 
 class CompactIndexAPI < Endpoint
   helpers do
@@ -17,9 +18,10 @@ class CompactIndexAPI < Endpoint
 
     def etag_response
       response_body = yield
-      checksum = Digest(:MD5).hexdigest(response_body)
-      return if not_modified?(checksum)
-      headers "ETag" => quote(checksum)
+      etag = Digest::MD5.hexdigest(response_body)
+      headers "ETag" => quote(etag)
+      return if not_modified?(etag)
+      headers "Repr-Digest" => "sha-256=:#{Digest::SHA256.base64digest(response_body)}:"
       headers "Surrogate-Control" => "max-age=2592000, stale-while-revalidate=60"
       content_type "text/plain"
       requested_range_for(response_body)
@@ -29,17 +31,16 @@ class CompactIndexAPI < Endpoint
       raise
     end
 
-    def not_modified?(checksum)
+    def not_modified?(etag)
       etags = parse_etags(request.env["HTTP_IF_NONE_MATCH"])
 
-      return unless etags.include?(checksum)
-      headers "ETag" => quote(checksum)
+      return unless etags.include?(etag)
       status 304
       body ""
     end
 
     def requested_range_for(response_body)
-      ranges = Rack::Utils.byte_ranges(env, response_body.bytesize)
+      ranges = Rack::Utils.get_byte_ranges(env["HTTP_RANGE"], response_body.bytesize)
 
       if ranges
         status 206
@@ -66,24 +67,29 @@ class CompactIndexAPI < Endpoint
       @gems ||= {}
       @gems[gem_repo] ||= begin
         specs = Bundler::Deprecate.skip_during do
-          %w[specs.4.8 prerelease_specs.4.8].map do |filename|
-            Marshal.load(File.open(gem_repo.join(filename)).read).map do |name, version, platform|
+          %w[specs.4.8 prerelease_specs.4.8].flat_map do |filename|
+            spec_index = gem_repo.join(filename)
+            next [] unless File.exist?(spec_index)
+
+            Marshal.load(File.binread(spec_index)).map do |name, version, platform|
               load_spec(name, version, platform, gem_repo)
             end
-          end.flatten
+          end
         end
 
         specs.group_by(&:name).map do |name, versions|
           gem_versions = versions.map do |spec|
-            deps = spec.dependencies.select {|d| d.type == :runtime }.map do |d|
+            deps = spec.runtime_dependencies.map do |d|
               reqs = d.requirement.requirements.map {|r| r.join(" ") }.join(", ")
               CompactIndex::Dependency.new(d.name, reqs)
             end
-            checksum = begin
-                         Digest(:SHA256).file("#{gem_repo}/gems/#{spec.original_name}.gem").base64digest
-                       rescue StandardError
-                         nil
-                       end
+            begin
+              checksum = ENV.fetch("BUNDLER_SPEC_#{name.upcase}_CHECKSUM") do
+                Digest(:SHA256).file("#{gem_repo}/gems/#{spec.original_name}.gem").hexdigest
+              end
+            rescue StandardError
+              checksum = nil
+            end
             CompactIndex::GemVersion.new(spec.version.version, spec.platform.to_s, checksum, nil,
               deps, spec.required_ruby_version.to_s, spec.required_rubygems_version.to_s)
           end

@@ -155,7 +155,7 @@
 # Notice that even +inspect+ (and more basic methods like <tt>__id__</tt>) is inaccessible
 # on a moved object.
 #
-# Class and Module objects are shareable so the class/module definitions are shared between ractors.
+# +Class+ and +Module+ objects are shareable so the class/module definitions are shared between ractors.
 # \Ractor objects are also shareable. All operations on shareable objects are thread-safe, so the thread-safety property
 # will be kept. We can not define mutable shareable objects in Ruby, but C extensions can introduce them.
 #
@@ -358,129 +358,13 @@ class Ractor
   def self.select(*ractors, yield_value: yield_unspecified = true, move: false)
     raise ArgumentError, 'specify at least one ractor or `yield_value`' if yield_unspecified && ractors.empty?
 
-    begin
-      if ractors.delete Ractor.current
-        do_receive = true
-      else
-        do_receive = false
-      end
-      selector = Ractor::Selector.new(*ractors)
-
-      if yield_unspecified
-        selector.wait receive: do_receive
-      else
-        selector.wait receive: do_receive, yield_value: yield_value, move: move
-      end
-    ensure
-      selector.clear
-    end
-  end
-
-  #
-  # Ractor::Selector provides a functionality to wait multiple Ractor events.
-  # Ractor::Selector#wait is more lightweight than Ractor.select()
-  # because we don't have to specify all target ractors for each wait time.
-  #
-  # Ractor.select() uses Ractor::Selector internally to implement it.
-  #
-  class Selector
-    # call-seq:
-    #   Ractor::Selector.new(*ractors)
-    #
-    # Creates a selector object.
-    #
-    # If a ractors parameter is given, it is same as the following code.
-    #
-    #    selector = Ractor::Selector.new
-    #    ractors.each{|r| selector.add r}
-    #
-    def self.new(*rs)
-      selector = __builtin_cexpr! %q{
-        ractor_selector_create(self);
-      }
-      rs.each{|r| selector.add(r) }
-      selector
+    if ractors.delete Ractor.current
+      do_receive = true
+    else
+      do_receive = false
     end
 
-    # call-seq:
-    #   selector.add(ractor)
-    #
-    # Registers a ractor as a taking target by the selector.
-    #
-    def add r
-      __builtin_ractor_selector_add r
-    end
-
-    # call-seq:
-    #   selector.remove(ractor)
-    #
-    # Deregisters a ractor as a taking target by the selector.
-    #
-    def remove r
-      __builtin_ractor_selector_remove r
-    end
-
-    # call-seq:
-    #   selector.clear
-    #
-    # Deregisters all ractors.
-    def clear
-      __builtin_ractor_selector_clear
-    end
-
-    # call-seq:
-    #   selector.empty?
-    #
-    # Returns true if the number of ractors in the waiting set at the current time is zero.
-    #
-    # Note that even if <tt>#empty?</tt> returns false, the subsequent <tt>#wait</tt>
-    # may raise an exception because other ractors may close the target ractors.
-    #
-    def empty?
-      __builtin_ractor_selector_empty_p
-    end
-
-    # call-seq:
-    #   selector.wait(receive: false, yield_value: yield_value, move: false) -> [ractor or symbol, value]
-    #
-    # Waits Ractor events. It is lighter than Ractor.select() for many ractors.
-    #
-    # The simplest form is waiting for taking a value from one of
-    # registerred ractors like that.
-    #
-    #   selector = Ractor::Selector.new(r1, r2, r3)
-    #   r, v = selector.wait
-    #
-    # On this case, when r1, r2 or r3 is ready to take (yielding a value),
-    # this method takes the value from the ready (yielded) ractor
-    # and returns [the yielded ractor, the taking value].
-    #
-    # Note that if a take target ractor is closed, the ractor will be removed
-    # automatically.
-    #
-    # If you also want to wait with receiving an object from other ractors,
-    # you can specify receive: true keyword like:
-    #
-    #   r, v = selector.wait receive: true
-    #
-    # On this case, wait for taking from r1, r2 or r3 and waiting for receving
-    # a value from other ractors.
-    # If it successes the receiving, it returns an array object [:receive, the received value].
-    #
-    # If you also want to wait with yielding a value, you can specify
-    # :yield_value like:
-    #
-    #   r, v = selector.wait yield_value: obj
-    #
-    # On this case wait for taking from r1, r2, or r3 and waiting for taking
-    # yielding value (obj) by another ractor.
-    # If antoher ractor takes the value (obj), it returns an array object [:yield, nil].
-    #
-    # You can specify a keyword parameter <tt>move: true</tt> like Ractor.yield(obj, move: true)
-    #
-    def wait receive: false, yield_value: yield_unspecified = true, move: false
-      __builtin_ractor_selector_wait receive, !yield_unspecified, yield_value, move
-    end
+    __builtin_ractor_select_internal ractors, do_receive, !yield_unspecified, yield_value, move
   end
 
   #
@@ -847,6 +731,7 @@ class Ractor
   end
 
   class RemoteError
+    # The Ractor an uncaught exception is raised in.
     attr_reader :ractor
   end
 
@@ -950,14 +835,44 @@ class Ractor
     end
   end
 
-  # get a value from ractor-local storage
+  # get a value from ractor-local storage of current Ractor
+  # Obsolete and use Ractor.[] instead.
   def [](sym)
     Primitive.ractor_local_value(sym)
   end
 
-  # set a value in ractor-local storage
+  # set a value in ractor-local storage of current Ractor
+  # Obsolete and use Ractor.[]= instead.
   def []=(sym, val)
     Primitive.ractor_local_value_set(sym, val)
+  end
+
+  # get a value from ractor-local storage of current Ractor
+  def self.[](sym)
+    Primitive.ractor_local_value(sym)
+  end
+
+  # set a value in ractor-local storage of current Ractor
+  def self.[]=(sym, val)
+    Primitive.ractor_local_value_set(sym, val)
+  end
+
+  # call-seq:
+  #   Ractor.store_if_absent(key){ init_block }
+  #
+  # If the correponding value is not set, yield a value with
+  # init_block and store the value in thread-safe manner.
+  # This method returns corresponding stored value.
+  #
+  #   (1..10).map{
+  #     Thread.new(it){|i|
+  #       Ractor.store_if_absent(:s){ f(); i }
+  #       #=> return stored value of key :s
+  #     }
+  #   }.map(&:value).uniq.size #=> 1 and f() is called only once
+  #
+  def self.store_if_absent(sym)
+    Primitive.ractor_local_value_store_if_absent(sym)
   end
 
   # returns main ractor
@@ -965,5 +880,40 @@ class Ractor
     __builtin_cexpr! %q{
       rb_ractor_self(GET_VM()->ractor.main_ractor);
     }
+  end
+
+  # return true if the current ractor is main ractor
+  def self.main?
+    __builtin_cexpr! %q{
+      RBOOL(GET_VM()->ractor.main_ractor == rb_ec_ractor_ptr(ec))
+    }
+  end
+
+  # internal method
+  def self._require feature # :nodoc:
+    if main?
+      super feature
+    else
+      Primitive.ractor_require feature
+    end
+  end
+
+  class << self
+    private
+
+    # internal method that is called when the first "Ractor.new" is called
+    def _activated # :nodoc:
+      Kernel.prepend Module.new{|m|
+        m.set_temporary_name '<RactorRequire>'
+
+        def require feature # :nodoc: -- otherwise RDoc outputs it as a class method
+          if Ractor.main?
+            super
+          else
+            Ractor._require feature
+          end
+        end
+      }
+    end
   end
 end

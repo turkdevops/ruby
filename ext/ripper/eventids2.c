@@ -65,6 +65,8 @@ static ripper_scanner_ids_t ripper_scanner_ids;
 
 #include "eventids2table.c"
 
+STATIC_ASSERT(eventids2_table_size, RIPPER_EVENTIDS2_TABLE_SIZE == sizeof(ripper_scanner_ids)/sizeof(ID));
+
 void
 ripper_init_eventids2(void)
 {
@@ -253,7 +255,6 @@ ripper_token2eventid(enum yytokentype tok)
         [tRATIONAL]		= O(rational),
         [tREGEXP_BEG]		= O(regexp_beg),
         [tREGEXP_END]		= O(regexp_end),
-        [tRPAREN]		= O(rparen),
         [tRSHFT]		= O(op),
         [tSTAR] 		= O(op),
         [tDSTAR]		= O(op),

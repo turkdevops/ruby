@@ -153,6 +153,54 @@ class OpenSSL::TestPKCS7 < OpenSSL::TestCase
     assert_equal(data, p7.decrypt(@rsa1024, @ee2_cert))
 
     assert_equal(data, p7.decrypt(@rsa1024))
+
+    # Default cipher has been removed in v3.3
+    assert_raise_with_message(ArgumentError, /RC2-40-CBC/) {
+      OpenSSL::PKCS7.encrypt(certs, data)
+    }
+  end
+
+  def test_data
+    asn1 = OpenSSL::ASN1::Sequence([
+      OpenSSL::ASN1::ObjectId("pkcs7-data"),
+      OpenSSL::ASN1::OctetString("content", 0, :EXPLICIT),
+    ])
+    p7 = OpenSSL::PKCS7.new
+    p7.type = :data
+    p7.data = "content"
+    assert_raise(OpenSSL::PKCS7::PKCS7Error) { p7.add_certificate(@ee1_cert) }
+    assert_raise(OpenSSL::PKCS7::PKCS7Error) { p7.certificates = [@ee1_cert] }
+    assert_raise(OpenSSL::PKCS7::PKCS7Error) { p7.cipher = "aes-128-cbc" }
+    assert_equal(asn1.to_der, p7.to_der)
+
+    p7 = OpenSSL::PKCS7.new(asn1)
+    assert_equal(:data, p7.type)
+    assert_equal(false, p7.detached?)
+    # Not applicable
+    assert_nil(p7.certificates)
+    assert_nil(p7.crls)
+    # Not applicable. Should they return nil or raise an exception instead?
+    assert_equal([], p7.signers)
+    assert_equal([], p7.recipients)
+    # PKCS7#verify can't distinguish verification failure and other errors
+    store = OpenSSL::X509::Store.new
+    assert_equal(false, p7.verify([@ee1_cert], store))
+    assert_raise(OpenSSL::PKCS7::PKCS7Error) { p7.decrypt(@rsa1024) }
+  end
+
+  def test_empty_signed_data_ruby_bug_19974
+    data = "-----BEGIN PKCS7-----\nMAsGCSqGSIb3DQEHAg==\n-----END PKCS7-----\n"
+    assert_raise(ArgumentError) { OpenSSL::PKCS7.new(data) }
+
+    data = <<END
+MIME-Version: 1.0
+Content-Disposition: attachment; filename="smime.p7m"
+Content-Type: application/x-pkcs7-mime; smime-type=signed-data; name="smime.p7m"
+Content-Transfer-Encoding: base64
+
+#{data}
+END
+    assert_raise(OpenSSL::PKCS7::PKCS7Error) { OpenSSL::PKCS7.read_smime(data) }
   end
 
   def test_graceful_parsing_failure #[ruby-core:43250]
@@ -210,6 +258,12 @@ END
 
     smime = OpenSSL::PKCS7.write_smime(p7, nil, 0)
     assert_equal(p7.to_der, OpenSSL::PKCS7.read_smime(smime).to_der)
+  end
+
+  def test_to_text
+    p7 = OpenSSL::PKCS7.new
+    p7.type = "signed"
+    assert_match(/signed/, p7.to_text)
   end
 
   def test_degenerate_pkcs7

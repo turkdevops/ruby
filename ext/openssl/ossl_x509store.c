@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -108,9 +108,9 @@ ossl_verify_cb_call(VALUE proc, int ok, X509_STORE_CTX *ctx)
 /*
  * Classes
  */
-VALUE cX509Store;
-VALUE cX509StoreContext;
-VALUE eX509StoreError;
+static VALUE cX509Store;
+static VALUE cX509StoreContext;
+static VALUE eX509StoreError;
 
 static void
 ossl_x509store_mark(void *ptr)
@@ -212,10 +212,6 @@ ossl_x509store_initialize(int argc, VALUE *argv, VALUE self)
     GetX509Store(self, store);
     if (argc != 0)
         rb_warn("OpenSSL::X509::Store.new does not take any arguments");
-#if !defined(HAVE_OPAQUE_OPENSSL)
-    /* [Bug #405] [Bug #1678] [Bug #3000]; already fixed? */
-    store->ex_data.sk = NULL;
-#endif
     X509_STORE_set_verify_cb(store, x509store_verify_cb);
     ossl_x509store_set_vfy_cb(self, Qnil);
 
@@ -223,7 +219,6 @@ ossl_x509store_initialize(int argc, VALUE *argv, VALUE self)
     rb_iv_set(self, "@error", Qnil);
     rb_iv_set(self, "@error_string", Qnil);
     rb_iv_set(self, "@chain", Qnil);
-    rb_iv_set(self, "@time", Qnil);
 
     return self;
 }
@@ -329,7 +324,12 @@ ossl_x509store_set_trust(VALUE self, VALUE trust)
 static VALUE
 ossl_x509store_set_time(VALUE self, VALUE time)
 {
-    rb_iv_set(self, "@time", time);
+    X509_STORE *store;
+    X509_VERIFY_PARAM *param;
+
+    GetX509Store(self, store);
+    param = X509_STORE_get0_param(store);
+    X509_VERIFY_PARAM_set_time(param, NUM2LONG(rb_Integer(time)));
     return time;
 }
 
@@ -357,15 +357,6 @@ ossl_x509store_add_file(VALUE self, VALUE file)
         ossl_raise(eX509StoreError, "X509_STORE_add_lookup");
     if (X509_LOOKUP_load_file(lookup, path, X509_FILETYPE_PEM) != 1)
         ossl_raise(eX509StoreError, "X509_LOOKUP_load_file");
-#if OPENSSL_VERSION_NUMBER < 0x10101000 || defined(LIBRESSL_VERSION_NUMBER)
-    /*
-     * X509_load_cert_crl_file() which is called from X509_LOOKUP_load_file()
-     * did not check the return value of X509_STORE_add_{cert,crl}(), leaking
-     * "cert already in hash table" errors on the error queue, if duplicate
-     * certificates are found. This will be fixed by OpenSSL 1.1.1.
-     */
-    ossl_clear_error();
-#endif
 
     return self;
 }
@@ -564,7 +555,6 @@ ossl_x509stctx_new(X509_STORE_CTX *ctx)
 static VALUE ossl_x509stctx_set_flags(VALUE, VALUE);
 static VALUE ossl_x509stctx_set_purpose(VALUE, VALUE);
 static VALUE ossl_x509stctx_set_trust(VALUE, VALUE);
-static VALUE ossl_x509stctx_set_time(VALUE, VALUE);
 
 /*
  * call-seq:
@@ -575,7 +565,7 @@ static VALUE ossl_x509stctx_set_time(VALUE, VALUE);
 static VALUE
 ossl_x509stctx_initialize(int argc, VALUE *argv, VALUE self)
 {
-    VALUE store, cert, chain, t;
+    VALUE store, cert, chain;
     X509_STORE_CTX *ctx;
     X509_STORE *x509st;
     X509 *x509 = NULL;
@@ -599,8 +589,6 @@ ossl_x509stctx_initialize(int argc, VALUE *argv, VALUE self)
         sk_X509_pop_free(x509s, X509_free);
         ossl_raise(eX509StoreError, "X509_STORE_CTX_init");
     }
-    if (!NIL_P(t = rb_iv_get(store, "@time")))
-	ossl_x509stctx_set_time(self, t);
     rb_iv_set(self, "@verify_callback", rb_iv_get(store, "@verify_callback"));
     rb_iv_set(self, "@cert", cert);
 
@@ -631,7 +619,7 @@ ossl_x509stctx_verify(VALUE self)
         ossl_clear_error();
         return Qfalse;
       default:
-        ossl_raise(eX509CertError, "X509_verify_cert");
+        ossl_raise(eX509StoreError, "X509_verify_cert");
     }
 }
 

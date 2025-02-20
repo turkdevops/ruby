@@ -9,17 +9,11 @@ module JITSupport
     @yjit_supported = ![nil, 'no'].include?(RbConfig::CONFIG['YJIT_SUPPORT'])
   end
 
+  def yjit_enabled?
+    defined?(RubyVM::YJIT.enabled?) && RubyVM::YJIT.enabled?
+  end
+
   def yjit_force_enabled?
     "#{RbConfig::CONFIG['CFLAGS']} #{RbConfig::CONFIG['CPPFLAGS']}".match?(/(\A|\s)-D ?YJIT_FORCE_ENABLE\b/)
-  end
-
-  def rjit_supported?
-    return @rjit_supported if defined?(@rjit_supported)
-    # nil in mswin
-    @rjit_supported = ![nil, 'no'].include?(RbConfig::CONFIG['RJIT_SUPPORT'])
-  end
-
-  def rjit_force_enabled?
-    "#{RbConfig::CONFIG['CFLAGS']} #{RbConfig::CONFIG['CPPFLAGS']}".match?(/(\A|\s)-D ?RJIT_FORCE_ENABLE\b/)
   end
 end

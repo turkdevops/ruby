@@ -9,17 +9,14 @@ end
 
 require "test/unit"
 
-ENV["JARS_SKIP"] = "true" if Gem.java_platform? # avoid unnecessary and noisy `jar-dependencies` post install hook
-
 require "fileutils"
 require "pathname"
 require "pp"
 require "rubygems/package"
 require "shellwords"
 require "tmpdir"
-require "uri"
+require "rubygems/vendor/uri/lib/uri"
 require "zlib"
-require "benchmark" # stdlib
 require_relative "mock_gem_ui"
 
 module Gem
@@ -105,39 +102,32 @@ class Gem::TestCase < Test::Unit::TestCase
     refute File.directory?(path), msg
   end
 
-  # https://github.com/seattlerb/minitest/blob/21d9e804b63c619f602f3f4ece6c71b48974707a/lib/minitest/assertions.rb#L188
-  def _synchronize
-    yield
-  end
-
-  # https://github.com/seattlerb/minitest/blob/21d9e804b63c619f602f3f4ece6c71b48974707a/lib/minitest/assertions.rb#L546
+  # Originally copied from minitest/assertions.rb
   def capture_subprocess_io
-    _synchronize do
-      require "tempfile"
+    require "tempfile"
 
-      captured_stdout = Tempfile.new("out")
-      captured_stderr = Tempfile.new("err")
+    captured_stdout = Tempfile.new("out")
+    captured_stderr = Tempfile.new("err")
 
-      orig_stdout = $stdout.dup
-      orig_stderr = $stderr.dup
-      $stdout.reopen captured_stdout
-      $stderr.reopen captured_stderr
+    orig_stdout = $stdout.dup
+    orig_stderr = $stderr.dup
+    $stdout.reopen captured_stdout
+    $stderr.reopen captured_stderr
 
-      yield
+    yield
 
-      $stdout.rewind
-      $stderr.rewind
+    $stdout.rewind
+    $stderr.rewind
 
-      return captured_stdout.read, captured_stderr.read
-    ensure
-      $stdout.reopen orig_stdout
-      $stderr.reopen orig_stderr
+    [captured_stdout.read, captured_stderr.read]
+  ensure
+    $stdout.reopen orig_stdout
+    $stderr.reopen orig_stderr
 
-      orig_stdout.close
-      orig_stderr.close
-      captured_stdout.close!
-      captured_stderr.close!
-    end
+    orig_stdout.close
+    orig_stderr.close
+    captured_stdout.close!
+    captured_stderr.close!
   end
 
   ##
@@ -155,6 +145,14 @@ class Gem::TestCase < Test::Unit::TestCase
     else
       RbConfig::CONFIG.delete "ENABLE_SHARED"
     end
+  end
+
+  ##
+  # Overrides the Gem.install_extension_in_lib function and restores the
+  # original when the block ends
+  #
+  def extension_in_lib(value = true) # :nodoc:
+    Gem.stub(:install_extension_in_lib, value) { yield }
   end
 
   ##
@@ -282,12 +280,14 @@ class Gem::TestCase < Test::Unit::TestCase
   def setup
     @orig_hooks = {}
     @orig_env = ENV.to_hash
-    @tmp = File.expand_path("tmp")
 
-    FileUtils.mkdir_p @tmp
+    top_srcdir = __dir__ + "/../.."
+    @tmp = File.expand_path(ENV.fetch("GEM_TEST_TMPDIR", "tmp"), top_srcdir)
+
+    FileUtils.mkdir_p(@tmp, mode: 0o700) # =rwx
+    @tmp = File.realpath(@tmp)
 
     @tempdir = Dir.mktmpdir("test_rubygems_", @tmp)
-    @tempdir.tap(&Gem::UNTAINT)
 
     ENV["GEM_VENDOR"] = nil
     ENV["GEMRC"] = nil
@@ -337,7 +337,6 @@ class Gem::TestCase < Test::Unit::TestCase
                       File.expand_path(s)
                     end
       if expand_path != s
-        expand_path.tap(&Gem::UNTAINT)
         if s.instance_variable_defined?(:@gem_prelude_index)
           expand_path.instance_variable_set(:@gem_prelude_index, expand_path)
         end
@@ -350,11 +349,16 @@ class Gem::TestCase < Test::Unit::TestCase
     Dir.chdir @tempdir
 
     ENV["HOME"] = @userhome
+    # Remove "RUBY_CODESIGN", which is used by mkmf-generated Makefile to
+    # sign extension bundles on macOS, to avoid trying to find the specified key
+    # from the fake $HOME/Library/Keychains directory.
+    ENV.delete "RUBY_CODESIGN"
     Gem.instance_variable_set :@config_file, nil
     Gem.instance_variable_set :@user_home, nil
     Gem.instance_variable_set :@config_home, nil
     Gem.instance_variable_set :@data_home, nil
     Gem.instance_variable_set :@state_home, @statehome
+    Gem.instance_variable_set :@state_file, nil
     Gem.instance_variable_set :@gemdeps, nil
     Gem.instance_variable_set :@env_requirements_by_name, nil
     Gem.send :remove_instance_variable, :@ruby_version if
@@ -364,7 +368,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     ENV["GEM_PRIVATE_KEY_PASSPHRASE"] = PRIVATE_KEY_PASSPHRASE
 
-    Gem.instance_variable_set(:@default_specifications_dir, nil)
+    Gem.instance_variable_set(:@default_specifications_dir, File.join(@gemhome, "specifications", "default"))
     if Gem.java_platform?
       @orig_default_gem_home = RbConfig::CONFIG["default_gem_home"]
       RbConfig::CONFIG["default_gem_home"] = @gemhome
@@ -396,7 +400,7 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem::RemoteFetcher.fetcher = Gem::FakeFetcher.new
 
     @gem_repo = "http://gems.example.com/"
-    @uri = URI.parse @gem_repo
+    @uri = Gem::URI.parse @gem_repo
     Gem.sources.replace [@gem_repo]
 
     Gem.searcher = nil
@@ -442,9 +446,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
     Dir.chdir @current_dir
 
-    FileUtils.rm_rf @tempdir
-
-    restore_env
+    ENV.replace(@orig_env)
 
     Gem::ConfigFile.send :remove_const, :SYSTEM_WIDE_CONFIG_FILE
     Gem::ConfigFile.send :const_set, :SYSTEM_WIDE_CONFIG_FILE,
@@ -471,6 +473,10 @@ class Gem::TestCase < Test::Unit::TestCase
     end
 
     @back_ui.close
+
+    FileUtils.rm_rf @tempdir
+
+    refute_directory_exists @tempdir, "#{@tempdir} used by test #{method_name} is still in use"
   end
 
   def credential_setup
@@ -525,6 +531,16 @@ class Gem::TestCase < Test::Unit::TestCase
     ENV["BUNDLE_GEMFILE"] = File.join(@tempdir, "Gemfile")
   end
 
+  def with_env(overrides, &block)
+    orig_env = ENV.to_h
+    ENV.replace(overrides)
+    begin
+      block.call
+    ensure
+      ENV.replace(orig_env)
+    end
+  end
+
   ##
   # A git_gem is used with a gem dependencies file.  The gem created here
   # has no files, just a gem specification for the given +name+ and +version+.
@@ -576,7 +592,7 @@ class Gem::TestCase < Test::Unit::TestCase
   end
 
   def in_path?(executable) # :nodoc:
-    return true if %r{\A([A-Z]:|/)} =~ executable && File.exist?(executable)
+    return true if %r{\A([A-Z]:|/)}.match?(executable) && File.exist?(executable)
 
     ENV["PATH"].split(File::PATH_SEPARATOR).any? do |directory|
       File.exist? File.join directory, executable
@@ -598,17 +614,17 @@ class Gem::TestCase < Test::Unit::TestCase
         end
       end
 
-      gem = File.join(@tempdir, File.basename(gem)).tap(&Gem::UNTAINT)
+      gem = File.join(@tempdir, File.basename(gem))
     end
 
-    Gem::Installer.at(gem, options.merge({ :wrappers => true })).install
+    Gem::Installer.at(gem, options.merge({ wrappers: true })).install
   end
 
   ##
   # Builds and installs the Gem::Specification +spec+ into the user dir
 
   def install_gem_user(spec)
-    install_gem spec, :user_install => true
+    install_gem spec, user_install: true
   end
 
   ##
@@ -620,7 +636,7 @@ class Gem::TestCase < Test::Unit::TestCase
       def ask_if_ok(spec)
         true
       end
-    end.new(spec.name, :executables => true, :user_install => true).uninstall
+    end.new(spec.name, executables: true, user_install: true).uninstall
   end
 
   ##
@@ -637,7 +653,7 @@ class Gem::TestCase < Test::Unit::TestCase
   # Reads a Marshal file at +path+
 
   def read_cache(path)
-    File.open path.dup.tap(&Gem::UNTAINT), "rb" do |io|
+    File.open path.dup, "rb" do |io|
       Marshal.load io.read
     end
   end
@@ -772,7 +788,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
   def install_specs(*specs)
     specs.each do |spec|
-      Gem::Installer.for_spec(spec, :force => true).install
+      Gem::Installer.for_spec(spec, force: true).install
     end
 
     Gem.searcher = nil
@@ -783,7 +799,7 @@ class Gem::TestCase < Test::Unit::TestCase
 
   def install_default_gems(*specs)
     specs.each do |spec|
-      installer = Gem::Installer.for_spec(spec, :install_as_default => true)
+      installer = Gem::Installer.for_spec(spec, install_as_default: true)
       installer.install
       Gem.register_default_spec(spec)
     end
@@ -797,8 +813,14 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem::Specification.unresolved_deps.values.map(&:to_s).sort
   end
 
-  def new_default_spec(name, version, deps = nil, *files)
+  def new_default_spec(name, version, deps = nil, *files, executable: false)
     spec = util_spec name, version, deps
+
+    if executable
+      spec.executables = %w[executable]
+
+      write_file File.join(@tempdir, "bin", "executable")
+    end
 
     spec.loaded_from = File.join(@gemhome, "specifications", "default", spec.spec_name)
     spec.files = files
@@ -808,10 +830,8 @@ class Gem::TestCase < Test::Unit::TestCase
     Gem.instance_variable_set(:@default_gem_load_paths, [*Gem.send(:default_gem_load_paths), lib_dir])
     $LOAD_PATH.unshift(lib_dir)
     files.each do |file|
-      rb_path = File.join(lib_dir, file)
-      FileUtils.mkdir_p(File.dirname(rb_path))
-      File.open(rb_path, "w") do |rb|
-        rb << "# #{file}"
+      write_file File.join(lib_dir, file) do |io|
+        io.write "# #{file}"
       end
     end
 
@@ -1354,12 +1374,12 @@ Also, a list:
   #
   # Yields the +specification+ to the block, if given
 
-  def vendor_gem(name = "a", version = 1)
+  def vendor_gem(name = "a", version = 1, &block)
     directory = File.join "vendor", name
 
     FileUtils.mkdir_p directory
 
-    save_gemspec name, version, directory
+    save_gemspec name, version, directory, &block
   end
 
   ##
@@ -1510,23 +1530,6 @@ Also, a list:
     PUBLIC_KEY  = nil
     PUBLIC_CERT = nil
   end if Gem::HAVE_OPENSSL
-
-  private
-
-  def restore_env
-    unless Gem.win_platform?
-      ENV.replace(@orig_env)
-      return
-    end
-
-    # Fallback logic for Windows below to workaround
-    # https://bugs.ruby-lang.org/issues/16798. Can be dropped once all
-    # supported rubies include the fix for that.
-
-    ENV.clear
-
-    @orig_env.each {|k, v| ENV[k] = v }
-  end
 end
 
 # https://github.com/seattlerb/minitest/blob/13c48a03d84a2a87855a4de0c959f96800100357/lib/minitest/mock.rb#L192

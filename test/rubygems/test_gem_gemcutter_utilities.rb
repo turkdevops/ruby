@@ -53,7 +53,7 @@ class TestGemGemcutterUtilities < Gem::TestCase
   end
 
   def test_api_key
-    keys = { :rubygems_api_key => "KEY" }
+    keys = { rubygems_api_key: "KEY" }
 
     File.open Gem.configuration.credentials_path, "w" do |f|
       f.write Gem::ConfigFile.dump_with_rubygems_yaml(keys)
@@ -65,7 +65,7 @@ class TestGemGemcutterUtilities < Gem::TestCase
   end
 
   def test_api_key_override
-    keys = { :rubygems_api_key => "KEY", :other => "OTHER" }
+    keys = { rubygems_api_key: "KEY", other: "OTHER" }
 
     File.open Gem.configuration.credentials_path, "w" do |f|
       f.write Gem::ConfigFile.dump_with_rubygems_yaml(keys)
@@ -306,7 +306,7 @@ class TestGemGemcutterUtilities < Gem::TestCase
     ENV["RUBYGEMS_HOST"] = @fetcher.host
     Gem::RemoteFetcher.fetcher = @fetcher
 
-    @sign_in_ui = Gem::MockGemUi.new("#{email}\n#{password}\n\n\n\n\n\n\n\n\n" + extra_input)
+    @sign_in_ui = Gem::MockGemUi.new("#{email}\n#{password}\n\n\n" + extra_input)
 
     use_ui @sign_in_ui do
       if args.length > 0
@@ -318,7 +318,7 @@ class TestGemGemcutterUtilities < Gem::TestCase
   end
 
   def test_verify_api_key
-    keys = { :other => "a5fdbb6ba150cbb83aad2bb2fede64cf040453903" }
+    keys = { other: "a5fdbb6ba150cbb83aad2bb2fede64cf040453903" }
     File.open Gem.configuration.credentials_path, "w" do |f|
       f.write Gem::ConfigFile.dump_with_rubygems_yaml(keys)
     end

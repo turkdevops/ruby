@@ -15,8 +15,8 @@ class Gem::Commands::UninstallCommand < Gem::Command
 
   def initialize
     super "uninstall", "Uninstall gems from the local repository",
-          :version => Gem::Requirement.default, :user_install => true,
-          :check_dev => false, :vendor => false
+          version: Gem::Requirement.default, user_install: true,
+          check_dev: false, vendor: false
 
     add_option("-a", "--[no-]all",
       "Uninstall all matching versions") do |value, options|
@@ -157,9 +157,14 @@ that is a dependency of an existing gem.  You can use the
 
       gem_specs = Gem::Specification.find_all_by_name(name, original_gem_version[name])
 
-      say("Gem '#{name}' is not installed") if gem_specs.empty?
-      gem_specs.each do |spec|
-        deplist.add spec
+      if gem_specs.empty?
+        say("Gem '#{name}' is not installed")
+      else
+        gem_specs.reject!(&:default_gem?) if gem_specs.size > 1
+
+        gem_specs.each do |spec|
+          deplist.add spec
+        end
       end
     end
 
@@ -168,10 +173,10 @@ that is a dependency of an existing gem.  You can use the
     gems_to_uninstall = {}
 
     deps.each do |dep|
-      next if gems_to_uninstall[dep.name]
-      gems_to_uninstall[dep.name] = true
-
-      unless original_gem_version[dep.name] == Gem::Requirement.default
+      if original_gem_version[dep.name] == Gem::Requirement.default
+        next if gems_to_uninstall[dep.name]
+        gems_to_uninstall[dep.name] = true
+      else
         options[:version] = dep.version
       end
 
@@ -184,7 +189,7 @@ that is a dependency of an existing gem.  You can use the
   rescue Gem::GemNotInHomeException => e
     spec = e.spec
     alert("In order to remove #{spec.name}, please execute:\n" \
-          "\tgem uninstall #{spec.name} --install-dir=#{spec.installation_path}")
+          "\tgem uninstall #{spec.name} --install-dir=#{spec.base_dir}")
   rescue Gem::UninstallError => e
     spec = e.spec
     alert_error("Error: unable to successfully uninstall '#{spec.name}' which is " \

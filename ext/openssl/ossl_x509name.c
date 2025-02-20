@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -32,8 +32,8 @@
 /*
  * Classes
  */
-VALUE cX509Name;
-VALUE eX509NameError;
+static VALUE cX509Name;
+static VALUE eX509NameError;
 
 static void
 ossl_x509name_free(void *ptr)
@@ -354,11 +354,7 @@ ossl_x509name_to_a(VALUE self)
 
     GetX509Name(self, name);
     entries = X509_NAME_entry_count(name);
-    if (entries < 0) {
-	OSSL_Debug("name entries < 0!");
-	return rb_ary_new();
-    }
-    ret = rb_ary_new2(entries);
+    ret = rb_ary_new_capa(entries);
     for (i=0; i<entries; i++) {
 	if (!(entry = X509_NAME_get_entry(name, i))) {
 	    ossl_raise(eX509NameError, NULL);

@@ -37,6 +37,7 @@ size_t rb_ary_size_as_embedded(VALUE ary);
 void rb_ary_make_embedded(VALUE ary);
 bool rb_ary_embeddable_p(VALUE ary);
 VALUE rb_ary_diff(VALUE ary1, VALUE ary2);
+RUBY_EXTERN VALUE rb_cArray_empty_frozen;
 
 static inline VALUE rb_ary_entry_internal(VALUE ary, long offset);
 static inline bool ARY_PTR_USING_P(VALUE ary);
@@ -136,9 +137,16 @@ RBIMPL_ATTR_ARTIFICIAL()
 static inline VALUE
 RARRAY_AREF(VALUE ary, long i)
 {
+    VALUE val;
     RBIMPL_ASSERT_TYPE(ary, RUBY_T_ARRAY);
 
-    return RARRAY_CONST_PTR(ary)[i];
+    RBIMPL_WARNING_PUSH();
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 13
+    RBIMPL_WARNING_IGNORED(-Warray-bounds);
+#endif
+    val = RARRAY_CONST_PTR(ary)[i];
+    RBIMPL_WARNING_POP();
+    return val;
 }
 
 #endif /* INTERNAL_ARRAY_H */

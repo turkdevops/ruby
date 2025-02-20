@@ -11,6 +11,8 @@ module Bundler
 
     attr_accessor :dependency_names
 
+    attr_reader :checksum_store
+
     def unmet_deps
       specs.unmet_dependency_names
     end
@@ -32,6 +34,8 @@ module Bundler
     def can_lock?(spec)
       spec.source == self
     end
+
+    def prefer_local!; end
 
     def local!; end
 

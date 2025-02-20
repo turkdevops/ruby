@@ -118,7 +118,7 @@ class TestFiberScheduler < Test::Unit::TestCase
   end
 
   def test_autoload
-    100.times do
+    10.times do
       Object.autoload(:TestFiberSchedulerAutoload, File.expand_path("autoload.rb", __dir__))
 
       thread = Thread.new do
@@ -181,5 +181,33 @@ class TestFiberScheduler < Test::Unit::TestCase
     signaller.kill
     thread.join
     signaller.join
+  end
+
+  def test_condition_variable
+    condition_variable = ::Thread::ConditionVariable.new
+    mutex = ::Thread::Mutex.new
+
+    error = nil
+
+    thread = Thread.new do
+      Thread.current.report_on_exception = false
+
+      scheduler = Scheduler.new
+      Fiber.set_scheduler scheduler
+
+      fiber = Fiber.schedule do
+        begin
+          mutex.synchronize do
+            condition_variable.wait(mutex)
+          end
+        rescue => error
+        end
+      end
+
+      fiber.raise(RuntimeError)
+    end
+
+    thread.join
+    assert_kind_of RuntimeError, error
   end
 end

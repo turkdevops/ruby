@@ -3,7 +3,7 @@
 #
 # set.rb - defines the Set class
 #
-# Copyright (c) 2002-2020 Akinori MUSHA <knu@iDaemons.org>
+# Copyright (c) 2002-2024 Akinori MUSHA <knu@iDaemons.org>
 #
 # Documentation by Akinori MUSHA and Gavin Sinclair.
 #
@@ -216,7 +216,7 @@
 #   has been modified while an element in the set.
 #
 class Set
-  VERSION = "1.0.3"
+  VERSION = "1.1.1"
 
   include Enumerable
 
@@ -286,18 +286,10 @@ class Set
     @hash = orig.instance_variable_get(:@hash).dup
   end
 
-  if Kernel.instance_method(:initialize_clone).arity != 1
-    # Clone internal hash.
-    def initialize_clone(orig, **options)
-      super
-      @hash = orig.instance_variable_get(:@hash).clone(**options)
-    end
-  else
-    # Clone internal hash.
-    def initialize_clone(orig)
-      super
-      @hash = orig.instance_variable_get(:@hash).clone
-    end
+  # Clone internal hash.
+  def initialize_clone(orig, **options)
+    super
+    @hash = orig.instance_variable_get(:@hash).clone(**options)
   end
 
   def freeze    # :nodoc:
@@ -343,7 +335,7 @@ class Set
     end
   end
 
-  # Converts the set to an array.  The order of elements is uncertain.
+  # Returns an array containing all elements in the set.
   #
   #     Set[1, 2].to_a                    #=> [1, 2]
   #     Set[1, 'c', :s].to_a              #=> [1, "c", :s]
@@ -361,16 +353,19 @@ class Set
     klass.new(self, *args, &block)
   end
 
-  def flatten_merge(set, seen = Set.new) # :nodoc:
+  def flatten_merge(set, seen = {}) # :nodoc:
     set.each { |e|
       if e.is_a?(Set)
-        if seen.include?(e_id = e.object_id)
+        case seen[e_id = e.object_id]
+        when true
           raise ArgumentError, "tried to flatten recursive Set"
+        when false
+          next
         end
 
-        seen.add(e_id)
+        seen[e_id] = true
         flatten_merge(e, seen)
-        seen.delete(e_id)
+        seen[e_id] = false
       else
         add(e)
       end
@@ -389,7 +384,7 @@ class Set
   # Equivalent to Set#flatten, but replaces the receiver with the
   # result in place.  Returns nil if no modifications were made.
   def flatten!
-    replace(flatten()) if any? { |e| e.is_a?(Set) }
+    replace(flatten()) if any?(Set)
   end
 
   # Returns true if the set contains the given object.
@@ -409,7 +404,7 @@ class Set
     when set.instance_of?(self.class) && @hash.respond_to?(:>=)
       @hash >= set.instance_variable_get(:@hash)
     when set.is_a?(Set)
-      size >= set.size && set.all? { |o| include?(o) }
+      size >= set.size && set.all?(self)
     else
       raise ArgumentError, "value must be a set"
     end
@@ -422,7 +417,7 @@ class Set
     when set.instance_of?(self.class) && @hash.respond_to?(:>)
       @hash > set.instance_variable_get(:@hash)
     when set.is_a?(Set)
-      size > set.size && set.all? { |o| include?(o) }
+      size > set.size && set.all?(self)
     else
       raise ArgumentError, "value must be a set"
     end
@@ -435,7 +430,7 @@ class Set
     when set.instance_of?(self.class) && @hash.respond_to?(:<=)
       @hash <= set.instance_variable_get(:@hash)
     when set.is_a?(Set)
-      size <= set.size && all? { |o| set.include?(o) }
+      size <= set.size && all?(set)
     else
       raise ArgumentError, "value must be a set"
     end
@@ -448,7 +443,7 @@ class Set
     when set.instance_of?(self.class) && @hash.respond_to?(:<)
       @hash < set.instance_variable_get(:@hash)
     when set.is_a?(Set)
-      size < set.size && all? { |o| set.include?(o) }
+      size < set.size && all?(set)
     else
       raise ArgumentError, "value must be a set"
     end
@@ -479,12 +474,12 @@ class Set
     case set
     when Set
       if size < set.size
-        any? { |o| set.include?(o) }
+        any?(set)
       else
-        set.any? { |o| include?(o) }
+        set.any?(self)
       end
     when Enumerable
-      set.any? { |o| include?(o) }
+      set.any?(self)
     else
       raise ArgumentError, "value must be enumerable"
     end
@@ -548,22 +543,22 @@ class Set
   # Deletes every element of the set for which block evaluates to
   # true, and returns self. Returns an enumerator if no block is
   # given.
-  def delete_if
+  def delete_if(&block)
     block_given? or return enum_for(__method__) { size }
-    # @hash.delete_if should be faster, but using it breaks the order
-    # of enumeration in subclasses.
-    select { |o| yield o }.each { |o| @hash.delete(o) }
+    # Instead of directly using @hash.delete_if, perform enumeration
+    # using self.each that subclasses may override.
+    select(&block).each { |o| @hash.delete(o) }
     self
   end
 
   # Deletes every element of the set for which block evaluates to
   # false, and returns self. Returns an enumerator if no block is
   # given.
-  def keep_if
+  def keep_if(&block)
     block_given? or return enum_for(__method__) { size }
-    # @hash.keep_if should be faster, but using it breaks the order of
-    # enumeration in subclasses.
-    reject { |o| yield o }.each { |o| @hash.delete(o) }
+    # Instead of directly using @hash.keep_if, perform enumeration
+    # using self.each that subclasses may override.
+    reject(&block).each { |o| @hash.delete(o) }
     self
   end
 
@@ -667,7 +662,7 @@ class Set
   #     Set[1, 2] ^ Set[2, 3]                   #=> #<Set: {3, 1}>
   #     Set[1, 'b', 'c'] ^ ['b', 'd']           #=> #<Set: {"d", 1, "c"}>
   def ^(enum)
-    n = Set.new(enum)
+    n = self.class.new(enum)
     each { |o| n.add(o) unless n.delete?(o) }
     n
   end

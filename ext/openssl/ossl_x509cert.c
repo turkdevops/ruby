@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -28,7 +28,7 @@
  * Classes
  */
 VALUE cX509Cert;
-VALUE eX509CertError;
+static VALUE eX509CertError;
 
 static void
 ossl_x509_free(void *ptr)
@@ -328,13 +328,15 @@ ossl_x509_get_signature_algorithm(VALUE self)
 {
     X509 *x509;
     BIO *out;
+    const ASN1_OBJECT *obj;
     VALUE str;
 
     GetX509(self, x509);
     out = BIO_new(BIO_s_mem());
     if (!out) ossl_raise(eX509CertError, NULL);
 
-    if (!i2a_ASN1_OBJECT(out, X509_get0_tbs_sigalg(x509)->algorithm)) {
+    X509_ALGOR_get0(&obj, NULL, NULL, X509_get0_tbs_sigalg(x509));
+    if (!i2a_ASN1_OBJECT(out, obj)) {
 	BIO_free(out);
 	ossl_raise(eX509CertError, NULL);
     }
@@ -539,7 +541,11 @@ ossl_x509_sign(VALUE self, VALUE key, VALUE digest)
     const EVP_MD *md;
 
     pkey = GetPrivPKeyPtr(key); /* NO NEED TO DUP */
-    md = ossl_evp_get_digestbyname(digest);
+    if (NIL_P(digest)) {
+        md = NULL; /* needed for some key types, e.g. Ed25519 */
+    } else {
+        md = ossl_evp_get_digestbyname(digest);
+    }
     GetX509(self, x509);
     if (!X509_sign(x509, pkey, md)) {
 	ossl_raise(eX509CertError, NULL);
@@ -613,10 +619,7 @@ ossl_x509_get_extensions(VALUE self)
 
     GetX509(self, x509);
     count = X509_get_ext_count(x509);
-    if (count < 0) {
-	return rb_ary_new();
-    }
-    ary = rb_ary_new2(count);
+    ary = rb_ary_new_capa(count);
     for (i=0; i<count; i++) {
 	ext = X509_get_ext(x509, i); /* NO DUP - don't free! */
 	rb_ary_push(ary, ossl_x509ext_new(ext));
@@ -705,6 +708,36 @@ ossl_x509_eq(VALUE self, VALUE other)
     GetX509(other, b);
 
     return !X509_cmp(a, b) ? Qtrue : Qfalse;
+}
+
+/*
+ * call-seq:
+ *    cert.tbs_bytes => string
+ *
+ * Returns the DER-encoded bytes of the certificate's to be signed certificate.
+ * This is mainly useful for validating embedded certificate transparency signatures.
+ */
+static VALUE
+ossl_x509_tbs_bytes(VALUE self)
+{
+    X509 *x509;
+    int len;
+    unsigned char *p0;
+    VALUE str;
+
+    GetX509(self, x509);
+    len = i2d_re_X509_tbs(x509, NULL);
+    if (len <= 0) {
+        ossl_raise(eX509CertError, "i2d_re_X509_tbs");
+    }
+    str = rb_str_new(NULL, len);
+    p0 = (unsigned char *)RSTRING_PTR(str);
+    if (i2d_re_X509_tbs(x509, &p0) <= 0) {
+        ossl_raise(eX509CertError, "i2d_re_X509_tbs");
+    }
+    ossl_str_adjust(str, p0);
+
+    return str;
 }
 
 struct load_chained_certificates_arguments {
@@ -999,4 +1032,5 @@ Init_ossl_x509cert(void)
     rb_define_method(cX509Cert, "add_extension", ossl_x509_add_extension, 1);
     rb_define_method(cX509Cert, "inspect", ossl_x509_inspect, 0);
     rb_define_method(cX509Cert, "==", ossl_x509_eq, 1);
+    rb_define_method(cX509Cert, "tbs_bytes", ossl_x509_tbs_bytes, 0);
 }

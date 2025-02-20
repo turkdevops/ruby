@@ -37,7 +37,7 @@ TEST_TARGETS := $(patsubst test,test-short,$(TEST_TARGETS))
 TEST_DEPENDS := $(filter-out test $(TEST_TARGETS),$(TEST_DEPENDS))
 TEST_TARGETS := $(patsubst test-short,btest-ruby test-knownbug test-basic,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-basic,test-basic test-leaked-globals,$(TEST_TARGETS))
-TEST_TARGETS := $(patsubst test-bundled-gems,test-bundled-gems-run,$(TEST_TARGETS))
+TEST_TARGETS := $(patsubst test-bundled-gems,test-bundled-gems-spec test-bundled-gems-run,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-bundled-gems-run,test-bundled-gems-run $(PREPARE_BUNDLED_GEMS),$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-bundled-gems-prepare,test-bundled-gems-prepare $(PRECHECK_BUNDLED_GEMS) test-bundled-gems-fetch,$(TEST_TARGETS))
 TEST_TARGETS := $(patsubst test-bundler-parallel,test-bundler-parallel $(PREPARE_BUNDLER),$(TEST_TARGETS))
@@ -97,6 +97,7 @@ ORDERED_TEST_TARGETS := $(filter $(TEST_TARGETS), \
 	test-bundler-prepare test-bundler test-bundler-parallel \
 	test-bundled-gems-precheck test-bundled-gems-fetch \
 	test-bundled-gems-prepare test-bundled-gems-run \
+	test-bundled-gems-spec \
 	)
 
 # grep ^yes-test-.*-precheck: template/Makefile.in defs/gmake.mk common.mk
@@ -193,15 +194,22 @@ $(SCRIPTBINDIR):
 	$(Q) mkdir $@
 
 .PHONY: commit
-commit: $(if $(filter commit,$(MAKECMDGOALS)),$(filter-out commit,$(MAKECMDGOALS))) up
+COMMIT_PREPARE := $(subst :,\:,$(filter-out commit do-commit,$(MAKECMDGOALS))) up
+
+commit: pre-commit $(DOT_WAIT) do-commit $(DOT_WAIT) post_commit
+pre-commit: $(COMMIT_PREPARE)
+do-commit: $(if $(DOT_WAIT),,pre-commit)
 	@$(BASERUBY) -C "$(srcdir)" -I./tool/lib -rvcs -e 'VCS.detect(".").commit'
+post-commit: $(if $(DOT_WAIT),,do-commit)
 	+$(Q) \
 	{ \
 	  $(in-srcdir) \
 	  exec sed -f tool/prereq.status defs/gmake.mk template/Makefile.in common.mk; \
 	} | \
-	$(MAKE) $(mflags) Q=$(Q) ECHO=$(ECHO) srcdir="$(srcdir)" srcs_vpath="" CHDIR="$(CHDIR)" \
-		BOOTSTRAPRUBY="$(BOOTSTRAPRUBY)" MINIRUBY="$(BASERUBY)" BASERUBY="$(BASERUBY)" \
+	$(MAKE) $(mflags) Q=$(Q) ECHO=$(ECHO) \
+		top_srcdir="$(top_srcdir)" srcdir="$(srcdir)" srcs_vpath="" CHDIR="$(CHDIR)" \
+		BOOTSTRAPRUBY="$(BOOTSTRAPRUBY)" BOOTSTRAPRUBY_OPT="$(BOOTSTRAPRUBY_OPT)" \
+		MINIRUBY="$(BASERUBY)" BASERUBY="$(BASERUBY)" HAVE_BASERUBY="$(HAVE_BASERUBY)" \
 		VCSUP="" ENC_MK=.top-enc.mk REVISION_FORCE=PHONY CONFIGURE="$(CONFIGURE)" -f - \
 		update-src srcs all-incs
 
@@ -364,9 +372,11 @@ $(bundled-gem-revision): \
 	| $(srcdir)/.bundle/.timestamp $(srcdir)/gems/src/$(1)/.git
 	$(ECHO) Update $(1) to $(3)
 	$(Q) $(CHDIR) "$(srcdir)/gems/src/$(1)" && \
-	    $(GIT) fetch origin $(3) && \
-	    $(GIT) checkout --detach $(3) && \
-	:
+	    if [ `$(GIT) rev-parse HEAD` != $(3) ]; then \
+	        $(GIT) fetch origin $(3) && \
+	        $(GIT) checkout --detach $(3) && \
+	        :; \
+	    fi
 	echo $(3) | $(IFCHANGE) $$(@) -
 
 # The repository of minitest does not include minitest.gemspec because it uses hoe.
@@ -406,6 +416,17 @@ endif
 .SECONDARY: update-unicode-auxiliary-files
 .SECONDARY: update-unicode-ucd-emoji-files
 .SECONDARY: update-unicode-emoji-files
+
+ifneq ($(DOT_WAIT),)
+.NOTPARALLEL: update-unicode
+.NOTPARALLEL: update-unicode-files
+.NOTPARALLEL: update-unicode-auxiliary-files
+.NOTPARALLEL: update-unicode-ucd-emoji-files
+.NOTPARALLEL: update-unicode-emoji-files
+.NOTPARALLEL: $(UNICODE_FILES) $(UNICODE_PROPERTY_FILES)
+.NOTPARALLEL: $(UNICODE_AUXILIARY_FILES)
+.NOTPARALLEL: $(UNICODE_UCD_EMOJI_FILES) $(UNICODE_EMOJI_FILES)
+endif
 
 ifeq ($(HAVE_GIT),yes)
 REVISION_LATEST := $(shell $(CHDIR) $(srcdir) && $(GIT) log -1 --format=%H 2>/dev/null)
@@ -449,6 +470,10 @@ benchmark/%: miniruby$(EXEEXT) update-benchmark-driver PHONY
 	            --executables="built-ruby::$(BENCH_RUBY) --disable-gem" \
 	            $(srcdir)/$@ $(BENCH_OPTS) $(OPTS)
 
+clean-local:: TARGET_SO = $(PROGRAM) $(WPROGRAM) $(LIBRUBY_SO) $(STATIC_RUBY) miniruby goruby
+clean-local::
+	-$(Q)$(RMALL) $(cleanlibs)
+
 clean-srcs-ext::
 	$(Q)$(RM) $(patsubst $(srcdir)/%,%,$(EXT_SRCS))
 
@@ -484,12 +509,17 @@ $(RUBYSPEC_CAPIEXT)/%.$(DLEXT): $(srcdir)/$(RUBYSPEC_CAPIEXT)/%.c $(srcdir)/$(RU
 	$(ECHO) building $@
 	$(Q) $(MAKEDIRS) $(@D)
 	$(Q) $(DLDSHARED) -L. $(XDLDFLAGS) $(XLDFLAGS) $(LDFLAGS) $(INCFLAGS) $(CPPFLAGS) $(OUTFLAG)$@ $< $(LIBRUBYARG)
+ifneq ($(POSTLINK),)
+	$(Q) $(POSTLINK)
+endif
 	$(Q) $(RMALL) $@.*
 
-rubyspec-capiext: $(patsubst %.c,$(RUBYSPEC_CAPIEXT)/%.$(DLEXT),$(notdir $(wildcard $(srcdir)/$(RUBYSPEC_CAPIEXT)/*.c)))
+RUBYSPEC_CAPIEXT_SO := $(patsubst %.c,$(RUBYSPEC_CAPIEXT)/%.$(DLEXT),$(notdir $(wildcard $(srcdir)/$(RUBYSPEC_CAPIEXT)/*.c)))
+rubyspec-capiext: $(RUBYSPEC_CAPIEXT_SO)
 	@ $(NULLCMD)
 
 ifeq ($(ENABLE_SHARED),yes)
+ruby: $(if $(LIBRUBY_SO_UPDATE),$(RUBYSPEC_CAPIEXT_SO))
 exts: rubyspec-capiext
 endif
 
@@ -499,20 +529,39 @@ spec/%/ spec/%_spec.rb: programs exts PHONY
 ruby.pc: $(filter-out ruby.pc,$(ruby_pc))
 
 matz: up
+	$(eval OLD := $(MAJOR).$(MINOR).0)
 	$(eval MINOR := $(shell expr $(MINOR) + 1))
-	$(eval message := Development of $(MAJOR).$(MINOR).0 started.)
+	$(eval NEW := $(MAJOR).$(MINOR).0)
+	$(eval message := Development of $(NEW) started.)
 	$(eval files := include/ruby/version.h include/ruby/internal/abi.h)
+	$(GIT) -C $(srcdir) mv -f NEWS.md doc/NEWS/NEWS-$(OLD).md
+	$(GIT) -C $(srcdir) commit -m "[DOC] Flush NEWS.md"
 	sed -i~ \
 	-e "s/^\(#define RUBY_API_VERSION_MINOR\) .*/\1 $(MINOR)/" \
 	-e "s/^\(#define RUBY_ABI_VERSION\) .*/\1 0/" \
 	 $(files:%=$(srcdir)/%)
-	$(GIT) -C $(srcdir) commit -m "$(message)" $(files)
+	$(GIT) -C $(srcdir) add $(files)
+	$(BASERUBY) -C $(srcdir) -p -00 \
+	-e 'BEGIN {old, new = ARGV.shift(2); STDOUT.reopen("NEWS.md")}' \
+	-e 'case $$.' \
+	-e 'when 1; $$_.sub!(/Ruby \K[0-9.]+/, new)' \
+	-e 'when 2; $$_.sub!(/\*\*\K[0-9.]+(?=\*\*)/, old)' \
+	-e 'end' \
+	-e 'next if /^[\[ *]/ =~ $$_' \
+	-e '$$_.sub!(/\n{2,}\z/, "\n\n")' \
+	$(OLD) $(NEW) doc/NEWS/NEWS-$(OLD).md
+	$(GIT) -C $(srcdir) add NEWS.md
+	$(GIT) -C $(srcdir) commit -m "$(message)"
 
 tags:
 	$(MAKE) GIT="$(GIT)" -C "$(srcdir)" -f defs/tags.mk
 
+
+# ripper_srcs makes all sources at once. invoking this target multiple
+# times in parallel means all sources will be built for the number of
+# sources times respectively.
 ifneq ($(DOT_WAIT),)
-ripper_srcs: $(addprefix $(DOT_WAIT) ,$(RIPPER_SRCS))
+.NOTPARALLEL: ripper_srcs
 else
 ripper_src =
 $(foreach r,$(RIPPER_SRCS),$(eval $(value r): | $(value ripper_src))\

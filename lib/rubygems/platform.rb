@@ -12,10 +12,13 @@ class Gem::Platform
 
   attr_accessor :cpu, :os, :version
 
-  def self.local
-    arch = RbConfig::CONFIG["arch"]
-    arch = "#{arch}_60" if /mswin(?:32|64)$/.match?(arch)
-    @local ||= new(arch)
+  def self.local(refresh: false)
+    return @local if @local && !refresh
+    @local = begin
+      arch = Gem.target_rbconfig["arch"]
+      arch = "#{arch}_60" if /mswin(?:32|64)$/.match?(arch)
+      new(arch)
+    end
   end
 
   def self.match(platform)
@@ -41,10 +44,20 @@ class Gem::Platform
     match_gem?(spec.platform, spec.name)
   end
 
-  def self.match_gem?(platform, gem_name)
-    # NOTE: this method might be redefined by Ruby implementations to
-    # customize behavior per RUBY_ENGINE, gem_name or other criteria.
-    match_platforms?(platform, Gem.platforms)
+  if RUBY_ENGINE == "truffleruby"
+    def self.match_gem?(platform, gem_name)
+      raise "Not a string: #{gem_name.inspect}" unless String === gem_name
+
+      if REUSE_AS_BINARY_ON_TRUFFLERUBY.include?(gem_name)
+        match_platforms?(platform, [Gem::Platform::RUBY, Gem::Platform.local])
+      else
+        match_platforms?(platform, Gem.platforms)
+      end
+    end
+  else
+    def self.match_gem?(platform, gem_name)
+      match_platforms?(platform, Gem.platforms)
+    end
   end
 
   def self.sort_priority(platform)
@@ -77,7 +90,7 @@ class Gem::Platform
     when String then
       arch = arch.split "-"
 
-      if arch.length > 2 && arch.last !~ /\d+(\.\d+)?$/ # reassemble x86-linux-{libc}
+      if arch.length > 2 && !arch.last.match?(/\d+(\.\d+)?$/) # reassemble x86-linux-{libc}
         extra = arch.pop
         arch.last << "-#{extra}"
       end
@@ -89,7 +102,7 @@ class Gem::Platform
              else cpu
       end
 
-      if arch.length == 2 && arch.last =~ /^\d+(\.\d+)?$/ # for command-line
+      if arch.length == 2 && arch.last.match?(/^\d+(\.\d+)?$/) # for command-line
         @os, @version = arch
         return
       end
@@ -122,6 +135,7 @@ class Gem::Platform
                       when /netbsdelf/ then             ["netbsdelf", nil]
                       when /openbsd(\d+\.\d+)?/ then    ["openbsd",   $1]
                       when /solaris(\d+\.\d+)?/ then    ["solaris",   $1]
+                      when /wasi/ then                  ["wasi",      nil]
                       # test
                       when /^(\w+_platform)(\d+)?/ then [$1,          $2]
                       else ["unknown", nil]
@@ -163,7 +177,7 @@ class Gem::Platform
   # they have the same version, or either one has no version
   #
   # Additionally, the platform will match if the local CPU is 'arm' and the
-  # other CPU starts with "arm" (for generic ARM family support).
+  # other CPU starts with "armv" (for generic 32-bit ARM family support).
   #
   # Of note, this method is not commutative. Indeed the OS 'linux' has a
   # special case: the version is the libc name, yet while "no version" stands
@@ -184,7 +198,7 @@ class Gem::Platform
 
     # cpu
     ([nil,"universal"].include?(@cpu) || [nil, "universal"].include?(other.cpu) || @cpu == other.cpu ||
-    (@cpu == "arm" && other.cpu.start_with?("arm"))) &&
+    (@cpu == "arm" && other.cpu.start_with?("armv"))) &&
 
       # os
       @os == other.os &&

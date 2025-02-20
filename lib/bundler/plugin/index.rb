@@ -34,6 +34,10 @@ module Bundler
         rescue GenericSystemCallError
           # no need to fail when on a read-only FS, for example
           nil
+        rescue ArgumentError => e
+          # ruby 3.4 checks writability in Dir.tmpdir
+          raise unless e.message&.include?("could not find a temporary directory")
+          nil
         end
         load_index(local_index_file) if SharedHelpers.in_bundle?
       end
@@ -134,6 +138,14 @@ module Bundler
       # Returns the list of plugin names handling the passed event
       def hook_plugins(event)
         @hooks[event] || []
+      end
+
+      # This plugin is installed inside the .bundle/plugin directory,
+      # and thus is managed solely by Bundler
+      def installed_in_plugin_root?(name)
+        return false unless (path = installed?(name))
+
+        path.start_with?("#{Plugin.root}/")
       end
 
       private

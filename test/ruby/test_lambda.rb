@@ -177,32 +177,6 @@ class TestLambdaParameters < Test::Unit::TestCase
     RUBY
   end
 
-  def pass_along(&block)
-    lambda(&block)
-  end
-
-  def pass_along2(&block)
-    pass_along(&block)
-  end
-
-  def test_create_non_lambda_for_proc_one_level
-    prev_warning, Warning[:deprecated] = Warning[:deprecated], false
-    f = pass_along {}
-    refute_predicate(f, :lambda?, '[Bug #15620]')
-    assert_nothing_raised(ArgumentError) { f.call(:extra_arg) }
-  ensure
-    Warning[:deprecated] = prev_warning
-  end
-
-  def test_create_non_lambda_for_proc_two_levels
-    prev_warning, Warning[:deprecated] = Warning[:deprecated], false
-    f = pass_along2 {}
-    refute_predicate(f, :lambda?, '[Bug #15620]')
-    assert_nothing_raised(ArgumentError) { f.call(:extra_arg) }
-  ensure
-    Warning[:deprecated] = prev_warning
-  end
-
   def test_instance_exec
     bug12568 = '[ruby-core:76300] [Bug #12568]'
     assert_nothing_raised(ArgumentError, bug12568) do
@@ -302,27 +276,27 @@ class TestLambdaParameters < Test::Unit::TestCase
   end
 
   def test_do_lambda_source_location
-    exp_lineno = __LINE__ + 3
+    exp = [__LINE__ + 1, 12, __LINE__ + 5, 7]
     lmd = ->(x,
              y,
              z) do
       #
     end
-    file, lineno = lmd.source_location
+    file, *loc = lmd.source_location
     assert_match(/^#{ Regexp.quote(__FILE__) }$/, file)
-    assert_equal(exp_lineno, lineno, "must be at the beginning of the block")
+    assert_equal(exp, loc)
   end
 
   def test_brace_lambda_source_location
-    exp_lineno = __LINE__ + 3
+    exp = [__LINE__ + 1, 12, __LINE__ + 5, 5]
     lmd = ->(x,
              y,
              z) {
       #
     }
-    file, lineno = lmd.source_location
+    file, *loc = lmd.source_location
     assert_match(/^#{ Regexp.quote(__FILE__) }$/, file)
-    assert_equal(exp_lineno, lineno, "must be at the beginning of the block")
+    assert_equal(exp, loc)
   end
 
   def test_not_orphan_return
