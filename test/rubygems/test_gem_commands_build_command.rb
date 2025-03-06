@@ -26,8 +26,9 @@ class TestGemCommandsBuildCommand < Gem::TestCase
     end
 
     @gem = util_spec "some_gem" do |s|
-      s.license = "AGPL-3.0"
+      s.license = "AGPL-3.0-only"
       s.files = ["README.md"]
+      s.required_ruby_version = "2.3.0"
     end
 
     @cmd = Gem::Commands::BuildCommand.new
@@ -178,6 +179,7 @@ class TestGemCommandsBuildCommand < Gem::TestCase
   def test_execute_strict_with_warnings
     bad_gem = util_spec "some_bad_gem" do |s|
       s.files = ["README.md"]
+      s.required_ruby_version = ">= 1.9.3"
     end
 
     gemspec_file = File.join(@tempdir, bad_gem.spec_name)
@@ -198,8 +200,8 @@ class TestGemCommandsBuildCommand < Gem::TestCase
     end
 
     error = @ui.error.split "\n"
-    assert_equal "WARNING:  licenses is empty, but is recommended.  Use a license identifier from", error.shift
-    assert_equal "http://spdx.org/licenses or 'Nonstandard' for a nonstandard license,", error.shift
+    assert_equal "WARNING:  licenses is empty, but is recommended. Use an license identifier from", error.shift
+    assert_equal "https://spdx.org/licenses or 'Nonstandard' for a nonstandard license,", error.shift
     assert_equal "or set it to nil if you don't want to specify a license.", error.shift
     assert_equal "WARNING:  See https://guides.rubygems.org/specification-reference/ for help", error.shift
     assert_equal [], error

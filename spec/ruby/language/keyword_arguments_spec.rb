@@ -87,13 +87,16 @@ describe "Keyword arguments" do
   end
 
   context "**" do
-    it "does not copy a non-empty Hash for a method taking (*args)" do
-      def m(*args)
-        args[0]
-      end
+    ruby_version_is "3.3" do
+      it "copies a non-empty Hash for a method taking (*args)" do
+        def m(*args)
+          args[0]
+        end
 
-      h = {a: 1}
-      m(**h).should.equal?(h)
+        h = {a: 1}
+        m(**h).should_not.equal?(h)
+        h.should == {a: 1}
+      end
     end
 
     it "copies the given Hash for a method taking (**kwargs)" do
@@ -390,6 +393,34 @@ describe "Keyword arguments" do
         m(kw)[0][0].should.equal?(kw)
         Hash.ruby2_keywords_hash?(kw).should == false
       end
+    end
+  end
+
+  context "in define_method(name, &proc)" do
+    # This tests that a free-standing proc used in define_method and converted to ruby2_keywords adopts that logic.
+    # See jruby/jruby#8119 for a case where aggressive JIT optimization broke later ruby2_keywords changes.
+    it "works with ruby2_keywords" do
+      m = Class.new do
+        def bar(a, foo: nil)
+          [a, foo]
+        end
+
+        # define_method and ruby2_keywords using send to avoid peephole optimizations
+        def self.setup
+          pr = make_proc
+          send :define_method, :foo, &pr
+          send :ruby2_keywords, :foo
+        end
+
+        # create proc in isolated method to force jit compilation on some implementations
+        def self.make_proc
+          proc { |a, *args| bar(a, *args) }
+        end
+      end
+
+      m.setup
+
+      m.new.foo(1, foo:2).should == [1, 2]
     end
   end
 end

@@ -22,7 +22,6 @@ describe "Module#ruby2_keywords" do
     end
 
     h = {a: 1}
-    obj.regular(**h).should.equal?(h)
 
     last = mark(**h).last
     Hash.ruby2_keywords_hash?(last).should == true
@@ -238,7 +237,7 @@ describe "Module#ruby2_keywords" do
       obj.singleton_class.class_exec do
         ruby2_keywords :not_existing
       end
-    }.should raise_error(NameError, /undefined method `not_existing'/)
+    }.should raise_error(NameError, /undefined method [`']not_existing'/)
   end
 
   it "accepts String as well" do

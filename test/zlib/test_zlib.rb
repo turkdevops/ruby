@@ -506,6 +506,7 @@ if defined? Zlib
     end
 
     def test_multithread_deflate
+      pend 'hangs' if RUBY_ENGINE == 'truffleruby'
       zd = Zlib::Deflate.new
 
       s = "x" * 10000
@@ -522,6 +523,7 @@ if defined? Zlib
     end
 
     def test_multithread_inflate
+      pend 'hangs' if RUBY_ENGINE == 'truffleruby'
       zi = Zlib::Inflate.new
 
       s = Zlib.deflate("x" * 10000)
@@ -543,7 +545,7 @@ if defined? Zlib
       zd = Zlib::Deflate.new
 
       s = SecureRandom.random_bytes(1024**2)
-      assert_raise(Zlib::InProgressError) do
+      assert_raise(ThreadError) do
         zd.deflate(s) do
           zd.deflate(s)
         end
@@ -561,7 +563,7 @@ if defined? Zlib
 
       s = Zlib.deflate(SecureRandom.random_bytes(1024**2))
 
-      assert_raise(Zlib::InProgressError) do
+      assert_raise(ThreadError) do
         zi.inflate(s) do
           zi.inflate(s)
         end
@@ -792,14 +794,15 @@ if defined? Zlib
       }
     end
 
-    if defined? File::TMPFILE
+    if defined?(File::TMPFILE) and RUBY_ENGINE != 'truffleruby'
       def test_path_tmpfile
         sio = StringIO.new("".dup, 'w')
         gz = Zlib::GzipWriter.new(sio)
         gz.write "hi"
         gz.close
 
-        File.open(Dir.mktmpdir, File::RDWR | File::TMPFILE) do |io|
+        tmpdir = Dir.mktmpdir("zlib_file_tmpfile")
+        File.open(tmpdir, File::RDWR | File::TMPFILE) do |io|
           io.write sio.string
           io.rewind
 
@@ -823,6 +826,8 @@ if defined? Zlib
         omit 'O_TMPFILE not supported (EISDIR)'
       rescue Errno::EOPNOTSUPP
         omit 'O_TMPFILE not supported (EOPNOTSUPP)'
+      ensure
+        Dir.rmdir(tmpdir) if tmpdir
       end
     end
   end
@@ -986,6 +991,25 @@ if defined? Zlib
           assert_raise(ArgumentError) { f.read(-1) }
           assert_equal(str, f.read)
         end
+
+        Zlib::GzipReader.open(t.path) do |f|
+          s = "".b
+
+          assert_raise(ArgumentError) { f.read(-1, s) }
+
+          assert_same s, f.read(1, s)
+          assert_equal "\xE3".b, s
+
+          assert_same s, f.read(2, s)
+          assert_equal "\x81\x82".b, s
+
+          assert_same s, f.read(6, s)
+          assert_equal "\u3044\u3046".b, s
+
+          assert_nil f.read(1, s)
+          assert_equal "".b, s
+          assert_predicate f, :eof?
+        end
       }
     end
 
@@ -1000,10 +1024,14 @@ if defined? Zlib
 
         Zlib::GzipReader.open(t.path) do |f|
           s = "".dup
-          f.readpartial(3, s)
+          assert_same s, f.readpartial(3, s)
           assert("foo".start_with?(s))
 
           assert_raise(ArgumentError) { f.readpartial(-1) }
+
+          assert_same s, f.readpartial(3, s)
+
+          assert_predicate f, :eof?
         end
       }
     end
@@ -1203,6 +1231,38 @@ if defined? Zlib
       }
     end
 
+    # Various methods of Zlib::GzipReader failed when to reading files
+    # just a few bytes larger than GZFILE_READ_SIZE.
+    def test_gzfile_read_size_boundary
+      Tempfile.create("test_zlib_gzip_read_size_boundary") {|t|
+        t.close
+        # NO_COMPRESSION helps with recreating the error condition.
+        # The error happens on compressed files too, but it's harder to reproduce.
+        # For example, ~12750 bytes are needed to trigger the error using __FILE__.
+        # We avoid this because the test file will change over time.
+        Zlib::GzipWriter.open(t.path, Zlib::NO_COMPRESSION) do |gz|
+          gz.print("\n" * 2024) # range from 2024 to 2033 triggers the error
+          gz.flush
+        end
+
+        Zlib::GzipReader.open(t.path) do |f|
+          f.readpartial(1024) until f.eof?
+          assert_raise(EOFError) { f.readpartial(1) }
+        end
+
+        Zlib::GzipReader.open(t.path) do |f|
+          f.readline until f.eof?
+          assert_raise(EOFError) { f.readline }
+        end
+
+        Zlib::GzipReader.open(t.path) do |f|
+          b = f.readbyte until f.eof?
+          f.ungetbyte(b)
+          f.readbyte
+          assert_raise(EOFError) { f.readbyte }
+        end
+      }
+    end
   end
 
   class TestZlibGzipWriter < Test::Unit::TestCase

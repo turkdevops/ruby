@@ -35,7 +35,7 @@ More precisely, every latest stable MRI release should [pass](https://github.com
 
 ### Synchronization with Ruby Implementations
 
-The specs are synchronized both ways around once a month by @eregon between ruby/spec, MRI, JRuby and TruffleRuby,
+The specs are synchronized both ways around once a month by @andrykonchin between ruby/spec, MRI, JRuby and TruffleRuby,
 using [this script](https://github.com/ruby/mspec/blob/master/tool/sync/sync-rubyspec.rb).
 Each of these repositories has a full copy of the specs under `spec/ruby` to ease editing specs.
 Any of these repositories can be used to add or edit specs, use what is most convenient for you.
@@ -44,7 +44,7 @@ For *testing* the development version of a Ruby implementation, one should alway
 Also, this repository doesn't always contain the latest spec changes from MRI (it's synchronized monthly), and does not contain tags (specs marked as failing on that Ruby implementation).
 Running specs on a Ruby implementation can be done with:
 
-```
+```console
 $ cd ruby_implementation/spec/ruby
 # Add ../ruby_implementation/bin in PATH, or pass -t /path/to/bin/ruby
 $ ../mspec/bin/mspec
@@ -127,6 +127,12 @@ Exceptions to these rules are contained in the file `.mspec.constants`.
 MSpec can automatically add new top-level constants in this file with:
 
     $ CHECK_LEAKS=save mspec ../mspec/bin/mspec file
+
+### Running Specs on S390x CPU Architecture
+
+Run the specs with `DFLTCC=0` if you see failing specs related to the zlib library on s390x CPU architecture. The failures can happen with the zlib library applying the patch madler/zlib#410 to enable the deflate algorithm producing a different compressed byte stream.
+
+    $ DFLTCC=0 ../mspec/bin/mspec
 
 ### Contributing and Writing Specs
 

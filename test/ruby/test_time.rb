@@ -77,6 +77,7 @@ class TestTime < Test::Unit::TestCase
 
     assert_equal(Time.new(2021), Time.new("2021"))
     assert_equal(Time.new(2021, 12, 25, in: "+09:00"), Time.new("2021-12-25+09:00"))
+    assert_equal(Time.new(2021, 12, 25, in: "+09:00"), Time.new("2021-12-25+09:00", in: "-01:00"))
 
     assert_equal(0.123456r, Time.new("2021-12-25 00:00:00.123456 +09:00").subsec)
     assert_equal(0.123456789r, Time.new("2021-12-25 00:00:00.123456789876 +09:00").subsec)
@@ -150,6 +151,18 @@ class TestTime < Test::Unit::TestCase
     }
     assert_raise_with_message(ArgumentError, /can't parse/) {
       Time.new("2020-12-02 00:00:00 ")
+    }
+    assert_raise_with_message(ArgumentError, /utc_offset/) {
+      Time.new("2020-12-25 00:00:00 +0960")
+    }
+    assert_raise_with_message(ArgumentError, /utc_offset/) {
+      Time.new("2020-12-25 00:00:00 +09:60")
+    }
+    assert_raise_with_message(ArgumentError, /utc_offset/) {
+      Time.new("2020-12-25 00:00:00 +090060")
+    }
+    assert_raise_with_message(ArgumentError, /utc_offset/) {
+      Time.new("2020-12-25 00:00:00 +09:00:60")
     }
   end
 
@@ -1407,7 +1420,10 @@ class TestTime < Test::Unit::TestCase
   def test_memsize
     # Time objects are common in some code, try to keep them small
     omit "Time object size test" if /^(?:i.?86|x86_64)-linux/ !~ RUBY_PLATFORM
-    omit "GC is in debug" if GC::INTERNAL_CONSTANTS[:DEBUG]
+    omit "GC is in debug" if GC::INTERNAL_CONSTANTS[:RVALUE_OVERHEAD] > 0
+    omit "memsize is not accurate due to using malloc_usable_size" if GC::INTERNAL_CONSTANTS[:SIZE_POOL_COUNT] == 1
+    omit "Only run this test on 64-bit" if RbConfig::SIZEOF["void*"] != 8
+
     require 'objspace'
     t = Time.at(0)
     sizeof_timew =
@@ -1418,7 +1434,7 @@ class TestTime < Test::Unit::TestCase
       end
     sizeof_vtm = RbConfig::SIZEOF["void*"] * 4 + 8
     expect = GC::INTERNAL_CONSTANTS[:BASE_SLOT_SIZE] + sizeof_timew + sizeof_vtm
-    assert_equal expect, ObjectSpace.memsize_of(t)
+    assert_operator ObjectSpace.memsize_of(t), :<=, expect
   rescue LoadError => e
     omit "failed to load objspace: #{e.message}"
   end
@@ -1439,5 +1455,64 @@ class TestTime < Test::Unit::TestCase
 
   def test_parse_zero_bigint
     assert_equal 0, Time.new("2020-10-28T16:48:07.000Z").nsec, '[Bug #19390]'
+  end
+
+  def test_xmlschema_encode
+    [:xmlschema, :iso8601].each do |method|
+      bug6100 = '[ruby-core:42997]'
+
+      t = Time.utc(2001, 4, 17, 19, 23, 17, 300000)
+      assert_equal("2001-04-17T19:23:17Z", t.__send__(method))
+      assert_equal("2001-04-17T19:23:17.3Z", t.__send__(method, 1))
+      assert_equal("2001-04-17T19:23:17.300000Z", t.__send__(method, 6))
+      assert_equal("2001-04-17T19:23:17.3000000Z", t.__send__(method, 7))
+      assert_equal("2001-04-17T19:23:17.3Z", t.__send__(method, 1.9), bug6100)
+
+      t = Time.utc(2001, 4, 17, 19, 23, 17, 123456)
+      assert_equal("2001-04-17T19:23:17.1234560Z", t.__send__(method, 7))
+      assert_equal("2001-04-17T19:23:17.123456Z", t.__send__(method, 6))
+      assert_equal("2001-04-17T19:23:17.12345Z", t.__send__(method, 5))
+      assert_equal("2001-04-17T19:23:17.1Z", t.__send__(method, 1))
+      assert_equal("2001-04-17T19:23:17.1Z", t.__send__(method, 1.9), bug6100)
+
+      t = Time.at(2.quo(3)).getlocal("+09:00")
+      assert_equal("1970-01-01T09:00:00.666+09:00", t.__send__(method, 3))
+      assert_equal("1970-01-01T09:00:00.6666666666+09:00", t.__send__(method, 10))
+      assert_equal("1970-01-01T09:00:00.66666666666666666666+09:00", t.__send__(method, 20))
+      assert_equal("1970-01-01T09:00:00.6+09:00", t.__send__(method, 1.1), bug6100)
+      assert_equal("1970-01-01T09:00:00.666+09:00", t.__send__(method, 3.2), bug6100)
+
+      t = Time.at(123456789.quo(9999999999)).getlocal("+09:00")
+      assert_equal("1970-01-01T09:00:00.012+09:00", t.__send__(method, 3))
+      assert_equal("1970-01-01T09:00:00.012345678+09:00", t.__send__(method, 9))
+      assert_equal("1970-01-01T09:00:00.0123456789+09:00", t.__send__(method, 10))
+      assert_equal("1970-01-01T09:00:00.0123456789012345678+09:00", t.__send__(method, 19))
+      assert_equal("1970-01-01T09:00:00.01234567890123456789+09:00", t.__send__(method, 20))
+      assert_equal("1970-01-01T09:00:00.012+09:00", t.__send__(method, 3.8), bug6100)
+
+      t = Time.utc(1)
+      assert_equal("0001-01-01T00:00:00Z", t.__send__(method))
+
+      begin
+        Time.at(-1)
+      rescue ArgumentError
+        # ignore
+      else
+        t = Time.utc(1960, 12, 31, 23, 0, 0, 123456)
+        assert_equal("1960-12-31T23:00:00.123456Z", t.__send__(method, 6))
+      end
+
+      t = get_t2000.getlocal("-09:30") # Pacific/Marquesas
+      assert_equal("1999-12-31T14:30:00-09:30", t.__send__(method))
+
+      assert_equal("10000-01-01T00:00:00Z", Time.utc(10000).__send__(method))
+      assert_equal("9999-01-01T00:00:00Z", Time.utc(9999).__send__(method))
+      assert_equal("0001-01-01T00:00:00Z", Time.utc(1).__send__(method)) # 1 AD
+      assert_equal("0000-01-01T00:00:00Z", Time.utc(0).__send__(method)) # 1 BC
+      assert_equal("-0001-01-01T00:00:00Z", Time.utc(-1).__send__(method)) # 2 BC
+      assert_equal("-0004-01-01T00:00:00Z", Time.utc(-4).__send__(method)) # 5 BC
+      assert_equal("-9999-01-01T00:00:00Z", Time.utc(-9999).__send__(method))
+      assert_equal("-10000-01-01T00:00:00Z", Time.utc(-10000).__send__(method))
+    end
   end
 end

@@ -208,7 +208,7 @@ gem 'other', version
     ENV["PATH"] = [ENV["PATH"], bin_dir].join(File::PATH_SEPARATOR)
 
     use_ui @ui do
-      installer.check_that_user_bin_dir_is_in_path
+      installer.check_that_user_bin_dir_is_in_path(["executable"])
     end
 
     assert_empty @ui.error
@@ -218,7 +218,7 @@ gem 'other', version
     ENV["PATH"] = [orig_path, bin_dir.tr(File::SEPARATOR, File::ALT_SEPARATOR)].join(File::PATH_SEPARATOR)
 
     use_ui @ui do
-      installer.check_that_user_bin_dir_is_in_path
+      installer.check_that_user_bin_dir_is_in_path(["executable"])
     end
 
     assert_empty @ui.error
@@ -236,7 +236,7 @@ gem 'other', version
     installer.bin_dir.replace File.join @userhome, "bin"
 
     use_ui @ui do
-      installer.check_that_user_bin_dir_is_in_path
+      installer.check_that_user_bin_dir_is_in_path(["executable"])
     end
 
     assert_empty @ui.error
@@ -248,7 +248,7 @@ gem 'other', version
     installer = setup_base_installer
 
     use_ui @ui do
-      installer.check_that_user_bin_dir_is_in_path
+      installer.check_that_user_bin_dir_is_in_path(["executable"])
     end
 
     expected = installer.bin_dir
@@ -258,6 +258,7 @@ gem 'other', version
     end
 
     assert_match expected, @ui.error
+    assert_match "(executable)", @ui.error
   end
 
   def test_ensure_dependency
@@ -299,7 +300,7 @@ gem 'other', version
     end
 
     policy = Gem::Security::HighSecurity
-    installer = Gem::Installer.at a_gem, :security_policy => policy
+    installer = Gem::Installer.at a_gem, security_policy: policy
 
     assert_raise Gem::Security::Exception do
       installer.ensure_loadable_spec
@@ -352,16 +353,14 @@ gem 'other', version
     ENV["PATH"] = [ENV["PATH"], bin_dir].compact.join(File::PATH_SEPARATOR)
 
     options = {
-      :bin_dir => bin_dir,
-      :install_dir => "/non/existent",
+      bin_dir: bin_dir,
+      install_dir: "/non/existent",
     }
 
     inst = Gem::Installer.at "", options
 
-    Gem::Installer.path_warning = false
-
     use_ui @ui do
-      inst.check_that_user_bin_dir_is_in_path
+      inst.check_that_user_bin_dir_is_in_path(["executable"])
     end
 
     assert_equal "", @ui.error
@@ -749,8 +748,8 @@ gem 'other', version
 
     installer = Gem::Installer.at(
       gem_with_dangling_symlink,
-      :user_install => false,
-      :force => true
+      user_install: false,
+      force: true
     )
 
     build_rake_in do
@@ -821,7 +820,7 @@ gem 'other', version
     File.chmod(0o555, Gem.plugindir)
     system_path = File.join(Gem.plugindir, "a_plugin.rb")
     user_path = File.join(Gem.plugindir(Gem.user_dir), "a_plugin.rb")
-    installer = util_installer spec, Gem.dir, :user
+    installer = Gem::Installer.at spec.cache_file, user_install: true, force: true
 
     assert_equal spec, installer.install
 
@@ -846,7 +845,7 @@ gem 'other', version
     build_root = File.join(@tempdir, "build_root")
     build_root_path = File.join(build_root, Gem.plugindir.gsub(/^[a-zA-Z]:/, ""), "a_plugin.rb")
 
-    installer = Gem::Installer.at spec.cache_file, :build_root => build_root
+    installer = Gem::Installer.at spec.cache_file, build_root: build_root
 
     assert_equal spec, installer.install
 
@@ -953,7 +952,7 @@ end
 
     path = Gem::Package.build @spec
 
-    installer = Gem::Installer.at path, :install_dir => "#{@gemhome}3"
+    installer = Gem::Installer.at path, install_dir: "#{@gemhome}3"
     assert_equal @spec, installer.install
   end
 
@@ -977,7 +976,7 @@ end
   def test_initialize_user_install
     @gem = setup_base_gem
 
-    installer = Gem::Installer.at @gem, :user_install => true
+    installer = Gem::Installer.at @gem, user_install: true
 
     assert_equal File.join(Gem.user_dir, "gems", @spec.full_name),
                  installer.gem_dir
@@ -988,11 +987,24 @@ end
     @gem = setup_base_gem
 
     installer =
-      Gem::Installer.at @gem, :user_install => true, :bin_dir => @tempdir
+      Gem::Installer.at @gem, user_install: true, bin_dir: @tempdir
 
     assert_equal File.join(Gem.user_dir, "gems", @spec.full_name),
                  installer.gem_dir
     assert_equal @tempdir, installer.bin_dir
+  end
+
+  def test_install_dir_takes_precedence_to_user_install
+    gemhome2 = "#{@gemhome}2"
+
+    @gem = setup_base_gem
+
+    installer =
+      Gem::Installer.at @gem, install_dir: gemhome2, user_install: true
+    installer.install
+
+    assert_path_exist File.join(gemhome2, "gems", @spec.full_name)
+    assert_path_not_exist File.join(Gem.user_dir, "gems", @spec.full_name)
   end
 
   def test_install
@@ -1070,6 +1082,8 @@ end
     end
 
     assert_match(/ran executable/, e.message)
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
   end
 
   def test_conflicting_binstubs
@@ -1118,6 +1132,8 @@ end
     # We expect the bin stub to activate the version that actually contains
     # the binstub.
     assert_match("I have an executable", e.message)
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
   end
 
   def test_install_creates_binstub_that_understand_version
@@ -1147,6 +1163,8 @@ end
     end
 
     assert_includes(e.message, "can't find gem a (= 3.0)")
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
   end
 
   def test_install_creates_binstub_that_prefers_user_installed_gem_to_default
@@ -1179,6 +1197,8 @@ end
     end
 
     assert_equal(e.message, "ran executable")
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
   end
 
   def test_install_creates_binstub_that_dont_trust_encoding
@@ -1209,6 +1229,36 @@ end
     end
 
     assert_match(/ran executable/, e.message)
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
+  end
+
+  def test_install_does_not_leave_lockfile_for_binstub
+    installer = util_setup_installer
+
+    installer.wrappers = true
+
+    File.class_eval do
+      alias_method :original_chmod, :chmod
+      define_method(:chmod) do |mode|
+        original_chmod(mode)
+        raise Gem::Ext::BuildError if path.end_with?("/executable")
+      end
+    end
+
+    assert_raise(Gem::Ext::BuildError) do
+      installer.install
+    end
+
+    assert_path_not_exist(File.join(installer.bin_dir, "executable.lock"))
+    # TODO: remove already copied files at failures.
+    # assert_path_not_exist(File.join(installer.bin_dir, "executable"))
+  ensure
+    File.class_eval do
+      remove_method :chmod
+      alias_method :chmod, :original_chmod
+      remove_method :original_chmod
+    end
   end
 
   def test_install_with_no_prior_files
@@ -1237,7 +1287,7 @@ end
         Gem::Package.build @spec
       end
     end
-    installer = Gem::Installer.at @gem, :force => true
+    installer = Gem::Installer.at @gem, force: true
     build_rake_in do
       use_ui @ui do
         assert_equal @spec, installer.install
@@ -1255,7 +1305,7 @@ end
     end
 
     use_ui @ui do
-      installer = Gem::Installer.at missing_dep_gem, :force => true
+      installer = Gem::Installer.at missing_dep_gem, force: true
       installer.install
     end
 
@@ -1267,9 +1317,29 @@ end
     build_root = File.join(@tempdir, "build_root")
 
     @gem = setup_base_gem
-    installer = Gem::Installer.at @gem, :build_root => build_root
+    installer = Gem::Installer.at @gem, build_root: build_root
 
     assert_equal @spec, installer.install
+  end
+
+  def test_install_build_root_when_gem_home_not_writable_does_not_fallback_to_user_install_inside_build_root
+    build_root = File.join(@tempdir, "build_root")
+
+    orig_gem_home = ENV.delete("GEM_HOME")
+
+    @gem = setup_base_gem
+
+    FileUtils.chmod "-w", @gemhome
+
+    installer = Gem::Installer.at @gem, build_root: build_root
+
+    assert_equal @spec, installer.install
+
+    build_root_path = File.join(build_root, @gemhome.gsub(/^[a-zA-Z]:/, ""))
+    assert File.exist?(build_root_path), "gem not written to build_root"
+  ensure
+    FileUtils.chmod "+w", @gemhome
+    ENV["GEM_HOME"] = orig_gem_home
   end
 
   def test_install_missing_dirs
@@ -1396,7 +1466,7 @@ end
     use_ui @ui do
       path = Gem::Package.build @spec
 
-      installer = Gem::Installer.at path, :post_install_message => false
+      installer = Gem::Installer.at path, post_install_message: false
       installer.install
     end
 
@@ -1420,7 +1490,7 @@ end
     use_ui @ui do
       path = Gem::Package.build @spec
 
-      installer = Gem::Installer.at path, :install_dir => gemhome2
+      installer = Gem::Installer.at path, install_dir: gemhome2
       installer.install
     end
 
@@ -1459,7 +1529,7 @@ end
 
     # reinstall the gem, this is also the same as pristine
     use_ui @ui do
-      installer = Gem::Installer.at path, :force => true
+      installer = Gem::Installer.at path, force: true
       installer.install
     end
 
@@ -1485,7 +1555,7 @@ end
     use_ui @ui do
       path = Gem::Package.build @spec
 
-      installer = Gem::Installer.at path, :user_install => true
+      installer = Gem::Installer.at path, user_install: true
       installer.install
     end
 
@@ -1497,7 +1567,7 @@ end
   end
 
   def test_find_lib_file_after_install
-    pend "extensions don't quite work on jruby" if Gem.java_platform?
+    pend "needs investigation" if Gem.java_platform?
 
     @spec = setup_base_spec
     @spec.extensions << "extconf.rb"
@@ -1585,7 +1655,7 @@ end
   end
 
   def test_install_extension_flat
-    pend "extensions don't quite work on jruby" if Gem.java_platform?
+    pend "needs investigation" if Gem.java_platform?
 
     begin
       @spec = setup_base_spec
@@ -1619,24 +1689,11 @@ end
         installer.install
       end
       assert_path_exist so
-    rescue StandardError
-      puts "-" * 78
-      puts File.read File.join(@gemhome, "gems", "a-2", "Makefile")
-      puts "-" * 78
-
-      path = File.join(@gemhome, "gems", "a-2", "gem_make.out")
-
-      if File.exist?(path)
-        puts File.read(path)
-        puts "-" * 78
-      end
-
-      raise
     end
   end
 
   def test_install_extension_clean_intermediate_files
-    pend "extensions don't quite work on jruby" if Gem.java_platform?
+    pend "needs investigation" if Gem.java_platform?
     @spec = setup_base_spec
     @spec.require_paths = ["."]
     @spec.extensions << "extconf.rb"
@@ -1737,7 +1794,7 @@ end
     # that it work everything out on it's own.
     Gem::Specification.reset
 
-    installer = Gem::Installer.at gem, :install_dir => gemhome2
+    installer = Gem::Installer.at gem, install_dir: gemhome2
 
     build_rake_in do
       use_ui @ui do
@@ -1885,9 +1942,9 @@ end
 
     installer = Gem::Installer.at(
       gem_with_ill_formated_platform,
-      :install_dir => @gemhome,
-      :user_install => false,
-      :force => true
+      install_dir: @gemhome,
+      user_install: false,
+      force: true
     )
 
     use_ui @ui do
@@ -1927,7 +1984,7 @@ end
     plugins_dir = File.join(build_root, @gemhome.gsub(/^[a-zA-Z]:/, ""), "plugins")
 
     @gem = setup_base_gem
-    installer = use_ui(@ui) { Gem::Installer.at @gem, :build_root => build_root }
+    installer = use_ui(@ui) { Gem::Installer.at @gem, build_root: build_root }
 
     assert_equal build_root, installer.build_root
     assert_equal bin_dir, installer.bin_dir
@@ -1940,6 +1997,48 @@ end
     assert_equal "  Bin dir: #{bin_dir}", errors.shift
     assert_equal "  Gem home: #{gem_home}", errors.shift
     assert_equal "  Plugins dir: #{plugins_dir}", errors.shift
+  end
+
+  def test_process_options_fallback_to_user_install_when_gem_home_not_writable
+    if Process.uid.zero?
+      pend("skipped in root privilege")
+      return
+    end
+
+    orig_gem_home = ENV.delete("GEM_HOME")
+
+    @gem = setup_base_gem
+
+    FileUtils.chmod 0o000, @gemhome
+
+    installer = use_ui(@ui) { Gem::Installer.at @gem }
+
+    assert_equal Gem.user_dir, installer.gem_home
+    assert_equal "Defaulting to user installation because default installation directory (#{@gemhome}) is not writable.", @ui.output.strip
+  ensure
+    FileUtils.chmod 0o755, @gemhome
+    ENV["GEM_HOME"] = orig_gem_home
+  end
+
+  def test_process_options_does_not_fallback_to_user_install_when_gem_home_not_writable_and_no_user_install
+    if Process.uid.zero?
+      pend("skipped in root privilege")
+      return
+    end
+
+    orig_gem_home = ENV.delete("GEM_HOME")
+
+    @gem = setup_base_gem
+
+    FileUtils.chmod 0o000, @gemhome
+
+    installer = use_ui(@ui) { Gem::Installer.at @gem, user_install: false }
+
+    assert_equal @gemhome, installer.gem_home
+    assert_empty @ui.output.strip
+  ensure
+    FileUtils.chmod 0o755, @gemhome
+    ENV["GEM_HOME"] = orig_gem_home
   end
 
   def test_shebang_arguments
@@ -2248,7 +2347,7 @@ end
 
   def test_write_build_info_file_install_dir
     @gem = setup_base_gem
-    installer = Gem::Installer.at @gem, :install_dir => "#{@gemhome}2"
+    installer = Gem::Installer.at @gem, install_dir: "#{@gemhome}2"
 
     installer.build_args = %w[
       --with-libyaml-dir /usr/local/Cellar/libyaml/0.1.4
@@ -2324,10 +2423,10 @@ end
     installer = Gem::Installer.for_spec @spec
     installer.gem_home = @gemhome
 
-    File.class_eval do
-      alias_method :original_write, :write
+    File.singleton_class.class_eval do
+      alias_method :original_binwrite, :binwrite
 
-      def write(data)
+      def binwrite(path, data)
         raise Errno::ENOSPC
       end
     end
@@ -2338,10 +2437,10 @@ end
 
     assert_path_not_exist @spec.spec_file
   ensure
-    File.class_eval do
-      remove_method :write
-      alias_method :write, :original_write
-      remove_method :original_write
+    File.singleton_class.class_eval do
+      remove_method :binwrite
+      alias_method :binwrite, :original_binwrite
+      remove_method :original_binwrite
     end
   end
 
@@ -2353,7 +2452,7 @@ end
 
   def test_default_gem_loaded_from
     spec = util_spec "a"
-    installer = Gem::Installer.for_spec spec, :install_as_default => true
+    installer = Gem::Installer.for_spec spec, install_as_default: true
     installer.install
     assert_predicate spec, :default_gem?
   end
@@ -2515,6 +2614,7 @@ end
 
     yield
   ensure
-    RbConfig::CONFIG["LIBRUBY_RELATIVE"] = orig_libruby_relative
+    # RbConfig::CONFIG values are strings only, there should not be a nil.
+    RbConfig::CONFIG["LIBRUBY_RELATIVE"] = orig_libruby_relative if orig_libruby_relative
   end
 end

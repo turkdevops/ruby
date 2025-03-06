@@ -26,12 +26,14 @@ module Bundler
     def run
       check_for_deployment_mode!
 
-      gems.each do |gem_name|
-        Bundler::CLI::Common.select_spec(gem_name)
-      end
-
       Bundler.definition.validate_runtime!
       current_specs = Bundler.ui.silence { Bundler.definition.resolve }
+
+      gems.each do |gem_name|
+        if current_specs[gem_name].empty?
+          raise GemNotFound, "Could not find gem '#{gem_name}'."
+        end
+      end
 
       current_dependencies = Bundler.ui.silence do
         Bundler.load.dependencies.map {|dep| [dep.name, dep] }.to_h
@@ -41,12 +43,12 @@ module Bundler
         # We're doing a full update
         Bundler.definition(true)
       else
-        Bundler.definition(:gems => gems, :sources => sources)
+        Bundler.definition(gems: gems, sources: sources)
       end
 
       Bundler::CLI::Common.configure_gem_version_promoter(
         Bundler.definition,
-        options.merge(:strict => @strict)
+        options.merge(strict: @strict)
       )
 
       definition_resolution = proc do
@@ -54,7 +56,7 @@ module Bundler
       end
 
       if options[:parseable]
-        Bundler.ui.silence(&definition_resolution)
+        Bundler.ui.progress(&definition_resolution)
       else
         definition_resolution.call
       end
@@ -90,35 +92,33 @@ module Bundler
         end
 
         outdated_gems << {
-          :active_spec => active_spec,
-          :current_spec => current_spec,
-          :dependency => dependency,
-          :groups => groups,
+          active_spec: active_spec,
+          current_spec: current_spec,
+          dependency: dependency,
+          groups: groups,
         }
       end
 
-      if outdated_gems.empty?
+      relevant_outdated_gems = if options_include_groups
+        outdated_gems.group_by {|g| g[:groups] }.sort.flat_map do |groups, gems|
+          contains_group = groups.split(", ").include?(options[:group])
+          next unless options[:groups] || contains_group
+
+          gems
+        end.compact
+      else
+        outdated_gems
+      end
+
+      if relevant_outdated_gems.empty?
         unless options[:parseable]
           Bundler.ui.info(nothing_outdated_message)
         end
       else
-        if options_include_groups
-          relevant_outdated_gems = outdated_gems.group_by {|g| g[:groups] }.sort.flat_map do |groups, gems|
-            contains_group = groups.split(", ").include?(options[:group])
-            next unless options[:groups] || contains_group
-
-            gems
-          end.compact
-
-          if options[:parseable]
-            print_gems(relevant_outdated_gems)
-          else
-            print_gems_table(relevant_outdated_gems)
-          end
-        elsif options[:parseable]
-          print_gems(outdated_gems)
+        if options[:parseable]
+          print_gems(relevant_outdated_gems)
         else
-          print_gems_table(outdated_gems)
+          print_gems_table(relevant_outdated_gems)
         end
 
         exit 1

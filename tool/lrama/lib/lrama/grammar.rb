@@ -1,90 +1,85 @@
-require "lrama/grammar/auxiliary"
-require "lrama/grammar/code"
-require "lrama/grammar/error_token"
-require "lrama/grammar/precedence"
-require "lrama/grammar/printer"
-require "lrama/grammar/reference"
-require "lrama/grammar/rule"
-require "lrama/grammar/symbol"
-require "lrama/grammar/union"
-require "lrama/lexer"
-require "lrama/type"
+# frozen_string_literal: true
+
+require "forwardable"
+require_relative "grammar/auxiliary"
+require_relative "grammar/binding"
+require_relative "grammar/code"
+require_relative "grammar/counter"
+require_relative "grammar/destructor"
+require_relative "grammar/error_token"
+require_relative "grammar/parameterizing_rule"
+require_relative "grammar/percent_code"
+require_relative "grammar/precedence"
+require_relative "grammar/printer"
+require_relative "grammar/reference"
+require_relative "grammar/rule"
+require_relative "grammar/rule_builder"
+require_relative "grammar/symbol"
+require_relative "grammar/symbols"
+require_relative "grammar/type"
+require_relative "grammar/union"
+require_relative "lexer"
 
 module Lrama
-  Token = Lrama::Lexer::Token
-
   # Grammar is the result of parsing an input grammar file
   class Grammar
-    attr_reader :eof_symbol, :error_symbol, :undef_symbol, :accept_symbol, :aux
-    attr_accessor :union, :expect,
-                  :printers, :error_tokens,
-                  :lex_param, :parse_param, :initial_action,
-                  :symbols, :types,
-                  :rules, :_rules,
-                  :sym_to_rules
+    extend Forwardable
 
-    def initialize
+    attr_reader :percent_codes, :eof_symbol, :error_symbol, :undef_symbol, :accept_symbol, :aux, :parameterizing_rule_resolver
+    attr_accessor :union, :expect, :printers, :error_tokens, :lex_param, :parse_param, :initial_action,
+                  :after_shift, :before_reduce, :after_reduce, :after_shift_error_token, :after_pop_stack,
+                  :symbols_resolver, :types, :rules, :rule_builders, :sym_to_rules, :no_stdlib, :locations, :define
+
+    def_delegators "@symbols_resolver", :symbols, :nterms, :terms, :add_nterm, :add_term, :find_term_by_s_value,
+                                        :find_symbol_by_number!, :find_symbol_by_id!, :token_to_symbol,
+                                        :find_symbol_by_s_value!, :fill_symbol_number, :fill_nterm_type,
+                                        :fill_printer, :fill_destructor, :fill_error_token, :sort_by_number!
+
+    def initialize(rule_counter, define = {})
+      @rule_counter = rule_counter
+
+      # Code defined by "%code"
+      @percent_codes = []
       @printers = []
+      @destructors = []
       @error_tokens = []
-      @symbols = []
+      @symbols_resolver = Grammar::Symbols::Resolver.new
       @types = []
-      @_rules = []
+      @rule_builders = []
       @rules = []
       @sym_to_rules = {}
+      @parameterizing_rule_resolver = ParameterizingRule::Resolver.new
       @empty_symbol = nil
       @eof_symbol = nil
       @error_symbol = nil
       @undef_symbol = nil
       @accept_symbol = nil
       @aux = Auxiliary.new
+      @no_stdlib = false
+      @locations = false
+      @define = define.map {|d| d.split('=') }.to_h
 
       append_special_symbols
     end
 
-    def add_printer(ident_or_tags:, code:, lineno:)
-      @printers << Printer.new(ident_or_tags: ident_or_tags, code: code, lineno: lineno)
+    def create_rule_builder(rule_counter, midrule_action_counter)
+      RuleBuilder.new(rule_counter, midrule_action_counter, @parameterizing_rule_resolver)
     end
 
-    def add_error_token(ident_or_tags:, code:, lineno:)
-      @error_tokens << ErrorToken.new(ident_or_tags: ident_or_tags, code: code, lineno: lineno)
+    def add_percent_code(id:, code:)
+      @percent_codes << PercentCode.new(id.s_value, code.s_value)
     end
 
-    def add_term(id:, alias_name: nil, tag: nil, token_id: nil, replace: false)
-      if token_id && (sym = @symbols.find {|s| s.token_id == token_id })
-        if replace
-          sym.id = id
-          sym.alias_name = alias_name
-          sym.tag = tag
-        end
-
-        return sym
-      end
-
-      if sym = @symbols.find {|s| s.id == id }
-        return sym
-      end
-
-      sym = Symbol.new(
-        id: id, alias_name: alias_name, number: nil, tag: tag,
-        term: true, token_id: token_id, nullable: false
-      )
-      @symbols << sym
-      @terms = nil
-
-      return sym
+    def add_destructor(ident_or_tags:, token_code:, lineno:)
+      @destructors << Destructor.new(ident_or_tags: ident_or_tags, token_code: token_code, lineno: lineno)
     end
 
-    def add_nterm(id:, alias_name: nil, tag: nil)
-      return if @symbols.find {|s| s.id == id }
+    def add_printer(ident_or_tags:, token_code:, lineno:)
+      @printers << Printer.new(ident_or_tags: ident_or_tags, token_code: token_code, lineno: lineno)
+    end
 
-      sym = Symbol.new(
-        id: id, alias_name: alias_name, number: nil, tag: tag,
-        term: false, token_id: nil, nullable: nil,
-      )
-      @symbols << sym
-      @nterms = nil
-
-      return sym
+    def add_error_token(ident_or_tags:, token_code:, lineno:)
+      @error_tokens << ErrorToken.new(ident_or_tags: ident_or_tags, token_code: token_code, lineno: lineno)
     end
 
     def add_type(id:, tag:)
@@ -116,21 +111,20 @@ module Lrama
       @union = Union.new(code: code, lineno: lineno)
     end
 
-    def add_rule(lhs:, rhs:, lineno:)
-      @_rules << [lhs, rhs, lineno]
+    def add_rule_builder(builder)
+      @rule_builders << builder
     end
 
-    def build_references(token_code)
-      token_code.references.map! do |type, value, tag, first_column, last_column|
-        Reference.new(type: type, value: value, ex_tag: tag, first_column: first_column, last_column: last_column)
-      end
-
-      token_code
+    def add_parameterizing_rule(rule)
+      @parameterizing_rule_resolver.add_parameterizing_rule(rule)
     end
 
-    def build_code(type, token_code)
-      build_references(token_code)
-      Code.new(type: type, token_code: token_code)
+    def parameterizing_rules
+      @parameterizing_rule_resolver.rules
+    end
+
+    def insert_before_parameterizing_rules(rules)
+      @parameterizing_rule_resolver.rules = rules + @parameterizing_rule_resolver.rules
     end
 
     def prologue_first_lineno=(prologue_first_lineno)
@@ -150,28 +144,44 @@ module Lrama
     end
 
     def prepare
+      resolve_inline_rules
       normalize_rules
       collect_symbols
-      replace_token_with_symbol
-      fill_symbol_number
+      set_lhs_and_rhs
       fill_default_precedence
+      fill_symbols
       fill_sym_to_rules
-      fill_nterm_type
-      fill_symbol_printer
-      fill_symbol_error_token
-      @symbols.sort_by!(&:number)
+      compute_nullable
+      compute_first_set
+      set_locations
     end
 
     # TODO: More validation methods
+    #
+    # * Validation for no_declared_type_reference
     def validate!
-      validate_symbol_number_uniqueness!
-      validate_no_declared_type_reference!
+      @symbols_resolver.validate!
+      validate_rule_lhs_is_nterm!
     end
+
+    def find_rules_by_symbol!(sym)
+      find_rules_by_symbol(sym) || (raise "Rules for #{sym} not found")
+    end
+
+    def find_rules_by_symbol(sym)
+      @sym_to_rules[sym.number]
+    end
+
+    def ielr_defined?
+      @define.key?('lr.type') && @define['lr.type'] == 'ielr'
+    end
+
+    private
 
     def compute_nullable
       @rules.each do |rule|
         case
-        when rule.rhs.empty?
+        when rule.empty_rule?
           rule.nullable = true
         when rule.rhs.any?(&:term)
           rule.nullable = false
@@ -212,7 +222,7 @@ module Lrama
         rule.nullable = false
       end
 
-      nterms.select {|r| r.nullable.nil? }.each do |nterm|
+      nterms.select {|e| e.nullable.nil? }.each do |nterm|
         nterm.nullable = false
       end
     end
@@ -252,66 +262,10 @@ module Lrama
       end
     end
 
-    def find_symbol_by_s_value(s_value)
-      @symbols.find do |sym|
-        sym.id.s_value == s_value
+    def setup_rules
+      @rule_builders.each do |builder|
+        builder.setup_rules
       end
-    end
-
-    def find_symbol_by_s_value!(s_value)
-      find_symbol_by_s_value(s_value) || (raise "Symbol not found: #{s_value}")
-    end
-
-    def find_symbol_by_id(id)
-      @symbols.find do |sym|
-        # TODO: validate uniqueness of Token#s_value and Symbol#alias_name
-        sym.id == id || sym.alias_name == id.s_value
-      end
-    end
-
-    def find_symbol_by_id!(id)
-      find_symbol_by_id(id) || (raise "Symbol not found: #{id}")
-    end
-
-    def find_symbol_by_number!(number)
-      sym = @symbols[number]
-
-      raise "Symbol not found: #{number}" unless sym
-      raise "[BUG] Symbol number mismatch. #{number}, #{sym}" if sym.number != number
-
-      sym
-    end
-
-    def find_rules_by_symbol!(sym)
-      find_rules_by_symbol(sym) || (raise "Rules for #{sym} not found")
-    end
-
-    def find_rules_by_symbol(sym)
-      @sym_to_rules[sym.number]
-    end
-
-    def terms_count
-      terms.count
-    end
-
-    def terms
-      @terms ||= @symbols.select(&:term?)
-    end
-
-    def nterms_count
-      nterms.count
-    end
-
-    def nterms
-      @nterms ||= @symbols.select(&:nterm?)
-    end
-
-    private
-
-    def find_nterm_by_id!(id)
-      nterms.find do |nterm|
-        nterm.id == id
-      end || (raise "Nterm not found: #{id}")
     end
 
     def append_special_symbols
@@ -321,146 +275,66 @@ module Lrama
       # @empty_symbol = term
 
       # YYEOF
-      term = add_term(id: Token.new(type: Token::Ident, s_value: "YYEOF"), alias_name: "\"end of file\"", token_id: 0)
+      term = add_term(id: Lrama::Lexer::Token::Ident.new(s_value: "YYEOF"), alias_name: "\"end of file\"", token_id: 0)
       term.number = 0
       term.eof_symbol = true
       @eof_symbol = term
 
       # YYerror
-      term = add_term(id: Token.new(type: Token::Ident, s_value: "YYerror"), alias_name: "error")
+      term = add_term(id: Lrama::Lexer::Token::Ident.new(s_value: "YYerror"), alias_name: "error")
       term.number = 1
       term.error_symbol = true
       @error_symbol = term
 
       # YYUNDEF
-      term = add_term(id: Token.new(type: Token::Ident, s_value: "YYUNDEF"), alias_name: "\"invalid token\"")
+      term = add_term(id: Lrama::Lexer::Token::Ident.new(s_value: "YYUNDEF"), alias_name: "\"invalid token\"")
       term.number = 2
       term.undef_symbol = true
       @undef_symbol = term
 
       # $accept
-      term = add_nterm(id: Token.new(type: Token::Ident, s_value: "$accept"))
+      term = add_nterm(id: Lrama::Lexer::Token::Ident.new(s_value: "$accept"))
       term.accept_symbol = true
       @accept_symbol = term
     end
 
-    # 1. Add $accept rule to the top of rules
-    # 2. Extract precedence and last action
-    # 3. Extract action in the middle of RHS into new Empty rule
-    # 4. Append id and extract action then create Rule
-    #
-    # Bison 3.8.2 uses different orders for symbol number and rule number
-    # when a rule has actions in the middle of a rule.
-    #
-    # For example,
-    #
-    # `program: $@1 top_compstmt`
-    #
-    # Rules are ordered like below,
-    #
-    # 1 $@1: ε
-    # 2 program: $@1 top_compstmt
-    #
-    # Symbols are ordered like below,
-    #
-    # 164 program
-    # 165 $@1
-    #
-    def normalize_rules
-      # 1. Add $accept rule to the top of rules
-      accept = find_symbol_by_s_value!("$accept")
-      eof = find_symbol_by_number!(0)
-      lineno = @_rules.first ? @_rules.first[2] : 0
-      @rules << Rule.new(id: @rules.count, lhs: accept, rhs: [@_rules.first[0], eof], code: nil, lineno: lineno)
-
-      extracted_action_number = 1 # @n as nterm
-
-      @_rules.each do |lhs, rhs, lineno|
-        a = []
-        rhs1 = []
-        code = nil
-        precedence_sym = nil
-
-        # 2. Extract precedence and last action
-        rhs.reverse.each do |r|
-          case
-          when r.is_a?(Symbol) # precedence_sym
-            precedence_sym = r
-          when (r.type == Token::User_code) && precedence_sym.nil? && code.nil? && rhs1.empty?
-            code = r
+    def resolve_inline_rules
+      while @rule_builders.any?(&:has_inline_rules?) do
+        @rule_builders = @rule_builders.flat_map do |builder|
+          if builder.has_inline_rules?
+            builder.resolve_inline_rules
           else
-            rhs1 << r
+            builder
           end
-        end
-        rhs1.reverse!
-
-        # Bison n'th component is 1-origin
-        (rhs1 + [code]).compact.each.with_index(1) do |token, i|
-          if token.type == Token::User_code
-            token.references.each do |ref|
-              # Need to keep position_in_rhs for actions in the middle of RHS
-              ref.position_in_rhs = i - 1
-              next if ref.type == :at
-              # $$, $n, @$, @n can be used in any actions
-
-              if ref.value == "$"
-                # TODO: Should be postponed after middle actions are extracted?
-                ref.referring_symbol = lhs
-              elsif ref.value.is_a?(Integer)
-                raise "Can not refer following component. #{ref.value} >= #{i}. #{token}" if ref.value >= i
-                rhs1[ref.value - 1].referred = true
-                ref.referring_symbol = rhs1[ref.value - 1]
-              elsif ref.value.is_a?(String)
-                target_tokens = ([lhs] + rhs1 + [code]).compact.first(i)
-                referring_symbol_candidate = target_tokens.filter {|token| token.referred_by?(ref.value) }
-                raise "Referring symbol `#{ref.value}` is duplicated. #{token}" if referring_symbol_candidate.size >= 2
-                raise "Referring symbol `#{ref.value}` is not found. #{token}" if referring_symbol_candidate.count == 0
-
-                referring_symbol = referring_symbol_candidate.first
-                referring_symbol.referred = true
-                ref.referring_symbol = referring_symbol
-              end
-            end
-          end
-        end
-
-        rhs2 = rhs1.map do |token|
-          if token.type == Token::User_code
-            prefix = token.referred ? "@" : "$@"
-            new_token = Token.new(type: Token::Ident, s_value: prefix + extracted_action_number.to_s)
-            extracted_action_number += 1
-            a << [new_token, token]
-            new_token
-          else
-            token
-          end
-        end
-
-        # Extract actions in the middle of RHS
-        # into new rules.
-        a.each do |new_token, code|
-          @rules << Rule.new(id: @rules.count, lhs: new_token, rhs: [], code: Code.new(type: :user_code, token_code: code), lineno: code.line)
-        end
-
-        c = code ? Code.new(type: :user_code, token_code: code) : nil
-        @rules << Rule.new(id: @rules.count, lhs: lhs, rhs: rhs2, code: c, precedence_sym: precedence_sym, lineno: lineno)
-
-        add_nterm(id: lhs)
-        a.each do |new_token, _|
-          add_nterm(id: new_token)
         end
       end
     end
 
+    def normalize_rules
+      # Add $accept rule to the top of rules
+      rule_builder = @rule_builders.first # : RuleBuilder
+      lineno = rule_builder ? rule_builder.line : 0
+      @rules << Rule.new(id: @rule_counter.increment, _lhs: @accept_symbol.id, _rhs: [rule_builder.lhs, @eof_symbol.id], token_code: nil, lineno: lineno)
+
+      setup_rules
+
+      @rule_builders.each do |builder|
+        builder.rules.each do |rule|
+          add_nterm(id: rule._lhs, tag: rule.lhs_tag)
+          @rules << rule
+        end
+      end
+
+      @rules.sort_by!(&:id)
+    end
+
     # Collect symbols from rules
     def collect_symbols
-      @rules.flat_map(&:rhs).each do |s|
+      @rules.flat_map(&:_rhs).each do |s|
         case s
-        when Token
-          if s.type == Token::Char
-            add_term(id: s)
-          end
-        when Symbol
+        when Lrama::Lexer::Token::Char
+          add_term(id: s)
+        when Lrama::Lexer::Token
           # skip
         else
           raise "Unknown class: #{s}"
@@ -468,105 +342,13 @@ module Lrama
       end
     end
 
-    # Fill #number and #token_id
-    def fill_symbol_number
-      # TODO: why start from 256
-      token_id = 256
-
-      # YYEMPTY = -2
-      # YYEOF   =  0
-      # YYerror =  1
-      # YYUNDEF =  2
-      number = 3
-
-      nterm_token_id = 0
-      used_numbers = {}
-
-      @symbols.map(&:number).each do |n|
-        used_numbers[n] = true
-      end
-
-      (@symbols.select(&:term?) + @symbols.select(&:nterm?)).each do |sym|
-        while used_numbers[number] do
-          number += 1
-        end
-
-        if sym.number.nil?
-          sym.number = number
-          number += 1
-        end
-
-        # If id is Token::Char, it uses ASCII code
-        if sym.term? && sym.token_id.nil?
-          if sym.id.type == Token::Char
-            # Ignore ' on the both sides
-            case sym.id.s_value[1..-2]
-            when "\\b"
-              sym.token_id = 8
-            when "\\f"
-              sym.token_id = 12
-            when "\\n"
-              sym.token_id = 10
-            when "\\r"
-              sym.token_id = 13
-            when "\\t"
-              sym.token_id = 9
-            when "\\v"
-              sym.token_id = 11
-            when "\""
-              sym.token_id = 34
-            when "'"
-              sym.token_id = 39
-            when "\\\\"
-              sym.token_id = 92
-            when /\A\\(\d+)\z/
-              sym.token_id = Integer($1, 8)
-            when /\A(.)\z/
-              sym.token_id = $1.bytes.first
-            else
-              raise "Unknown Char s_value #{sym}"
-            end
-          else
-            sym.token_id = token_id
-            token_id += 1
-          end
-        end
-
-        if sym.nterm? && sym.token_id.nil?
-          sym.token_id = nterm_token_id
-          nterm_token_id += 1
-        end
-      end
-    end
-
-    def replace_token_with_symbol
+    def set_lhs_and_rhs
       @rules.each do |rule|
-        rule.lhs = token_to_symbol(rule.lhs)
+        rule.lhs = token_to_symbol(rule._lhs) if rule._lhs
 
-        rule.rhs.map! do |t|
+        rule.rhs = rule._rhs.map do |t|
           token_to_symbol(t)
         end
-
-        if rule.code
-          rule.code.references.each do |ref|
-            next if ref.type == :at
-
-            if ref.referring_symbol.type != Token::User_code
-              ref.referring_symbol = token_to_symbol(ref.referring_symbol)
-            end
-          end
-        end
-      end
-    end
-
-    def token_to_symbol(token)
-      case token
-      when Token
-        find_symbol_by_id!(token)
-      when Symbol
-        token
-      else
-        raise "Unknown class: #{token}"
       end
     end
 
@@ -587,6 +369,15 @@ module Lrama
       end
     end
 
+    def fill_symbols
+      fill_symbol_number
+      fill_nterm_type(@types)
+      fill_printer(@printers)
+      fill_destructor(@destructors)
+      fill_error_token(@error_tokens)
+      sort_by_number!
+    end
+
     def fill_sym_to_rules
       @rules.each do |rule|
         key = rule.lhs.number
@@ -595,74 +386,22 @@ module Lrama
       end
     end
 
-    # Fill nterm's tag defined by %type decl
-    def fill_nterm_type
-      @types.each do |type|
-        nterm = find_nterm_by_id!(type.id)
-        nterm.tag = type.tag
-      end
-    end
-
-    def fill_symbol_printer
-      @symbols.each do |sym|
-        @printers.each do |printer|
-          printer.ident_or_tags.each do |ident_or_tag|
-            case ident_or_tag.type
-            when Token::Ident
-              sym.printer = printer if sym.id == ident_or_tag
-            when Token::Tag
-              sym.printer = printer if sym.tag == ident_or_tag
-            else
-              raise "Unknown token type. #{printer}"
-            end
-          end
-        end
-      end
-    end
-
-    def fill_symbol_error_token
-      @symbols.each do |sym|
-        @error_tokens.each do |error_token|
-          error_token.ident_or_tags.each do |ident_or_tag|
-            case ident_or_tag.type
-            when Token::Ident
-              sym.error_token = error_token if sym.id == ident_or_tag
-            when Token::Tag
-              sym.error_token = error_token if sym.tag == ident_or_tag
-            else
-              raise "Unknown token type. #{error_token}"
-            end
-          end
-        end
-      end
-    end
-
-    def validate_symbol_number_uniqueness!
-      invalid = @symbols.group_by(&:number).select do |number, syms|
-        syms.count > 1
-      end
-
-      return if invalid.empty?
-
-      raise "Symbol number is duplicated. #{invalid}"
-    end
-
-    def validate_no_declared_type_reference!
-      errors = []
+    def validate_rule_lhs_is_nterm!
+      errors = [] #: Array[String]
 
       rules.each do |rule|
-        next unless rule.code
+        next if rule.lhs.nterm?
 
-        rule.code.references.select do |ref|
-          ref.type == :dollar && !ref.tag
-        end.each do |ref|
-          errors << "$#{ref.value} of '#{rule.lhs.id.s_value}' has no declared type"
-        end
+        errors << "[BUG] LHS of #{rule.display_name} (line: #{rule.lineno}) is term. It should be nterm."
       end
 
       return if errors.empty?
 
       raise errors.join("\n")
+    end
+
+    def set_locations
+      @locations = @locations || @rules.any? {|rule| rule.contains_at_reference? }
     end
   end
 end

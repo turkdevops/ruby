@@ -9,14 +9,21 @@ if File.expand_path(__FILE__) =~ %r{([^\w/\.:\-])}
   abort "The bundler specs cannot be run from a path that contains special characters (particularly #{$1.inspect})"
 end
 
+# Bundler CLI will have different help text depending on whether this variable
+# is set, since the `-e` flag `bundle gem` with require an explicit value if
+# `EDITOR` is not set, but will use `EDITOR` by default is set. So make sure
+# it's `nil` before loading bundler to get a consistent help text, since some
+# tests rely on that.
+ENV["EDITOR"] = nil
 require "bundler"
+
 require "rspec/core"
 require "rspec/expectations"
 require "rspec/mocks"
 require "rspec/support/differ"
 
 require_relative "support/builders"
-require_relative "support/build_metadata"
+require_relative "support/checksums"
 require_relative "support/filters"
 require_relative "support/helpers"
 require_relative "support/indexes"
@@ -34,6 +41,7 @@ end
 
 RSpec.configure do |config|
   config.include Spec::Builders
+  config.include Spec::Checksums
   config.include Spec::Helpers
   config.include Spec::Indexes
   config.include Spec::Matchers
@@ -45,6 +53,9 @@ RSpec.configure do |config|
   config.example_status_persistence_file_path = ".rspec_status"
 
   config.silence_filter_announcements = !ENV["TEST_ENV_NUMBER"].nil?
+
+  config.backtrace_exclusion_patterns <<
+    %r{./spec/(spec_helper\.rb|support/.+)}
 
   config.disable_monkey_patching!
 
@@ -72,7 +83,6 @@ RSpec.configure do |config|
     require_relative "support/rubygems_ext"
     Spec::Rubygems.test_setup
     ENV["BUNDLER_SPEC_RUN"] = "true"
-    ENV["BUNDLER_NO_OLD_RUBYGEMS_WARNING"] = "true"
     ENV["BUNDLE_USER_CONFIG"] = ENV["BUNDLE_USER_CACHE"] = ENV["BUNDLE_USER_PLUGIN"] = nil
     ENV["BUNDLE_APP_CONFIG"] = nil
     ENV["BUNDLE_SILENCE_ROOT_WARNING"] = nil
@@ -83,11 +93,8 @@ RSpec.configure do |config|
     # Don't wrap output in tests
     ENV["THOR_COLUMNS"] = "10000"
 
-    extend(Spec::Helpers)
-    system_gems :bundler, :path => pristine_system_gem_path
-  end
+    extend(Spec::Builders)
 
-  config.before :all do
     check_test_gems!
 
     build_repo1
@@ -114,6 +121,6 @@ RSpec.configure do |config|
   end
 
   config.after :suite do
-    FileUtils.rm_r Spec::Path.pristine_system_gem_path
+    FileUtils.rm_rf Spec::Path.pristine_system_gem_path
   end
 end

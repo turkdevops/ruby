@@ -68,14 +68,13 @@
 #define YYPULL 1
 
 
-
-
 <%# b4_user_pre_prologue -%>
+<%- if output.aux.prologue -%>
 /* First part of user prologue.  */
 #line <%= output.aux.prologue_first_lineno %> "<%= output.grammar_file_path %>"
-
 <%= output.aux.prologue %>
 #line [@oline@] [@ofile@]
+<%- end -%>
 
 <%# b4_cast_define -%>
 # ifndef YY_CAST
@@ -101,79 +100,13 @@
 # endif
 
 <%# b4_header_include_if -%>
+<%- if output.include_header -%>
+#include "<%= output.include_header %>"
+<%- else -%>
 /* Use api.header.include to #include this header
    instead of duplicating it here.  */
-<%# b4_shared_declarations -%>
-  <%-# b4_cpp_guard_open([b4_spec_mapped_header_file]) -%>
-    <%- if output.spec_mapped_header_file -%>
-#ifndef <%= output.b4_cpp_guard__b4_spec_mapped_header_file %>
-# define <%= output.b4_cpp_guard__b4_spec_mapped_header_file %>
-    <%- end -%>
-  <%-# b4_declare_yydebug & b4_YYDEBUG_define -%>
-/* Debug traces.  */
-#ifndef YYDEBUG
-# define YYDEBUG 0
-#endif
-#if YYDEBUG && !defined(yydebug)
-extern int yydebug;
-#endif
-  <%-# b4_percent_code_get([[requires]]). %code is not supported -%>
-
-  <%-# b4_token_enums_defines -%>
-/* Token kinds.  */
-#ifndef YYTOKENTYPE
-# define YYTOKENTYPE
-  enum yytokentype
-  {
-<%= output.token_enums -%>
-  };
-  typedef enum yytokentype yytoken_kind_t;
-#endif
-
-  <%-# b4_declare_yylstype -%>
-    <%-# b4_value_type_define -%>
-/* Value type.  */
-#if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
-union YYSTYPE
-{
-#line <%= output.grammar.union.lineno %> "<%= output.grammar_file_path %>"
-<%= output.grammar.union.braces_less_code %>
-#line [@oline@] [@ofile@]
-
-};
-typedef union YYSTYPE YYSTYPE;
-# define YYSTYPE_IS_TRIVIAL 1
-# define YYSTYPE_IS_DECLARED 1
-#endif
-
-    <%-# b4_location_type_define -%>
-/* Location type.  */
-#if ! defined YYLTYPE && ! defined YYLTYPE_IS_DECLARED
-typedef struct YYLTYPE YYLTYPE;
-struct YYLTYPE
-{
-  int first_line;
-  int first_column;
-  int last_line;
-  int last_column;
-};
-# define YYLTYPE_IS_DECLARED 1
-# define YYLTYPE_IS_TRIVIAL 1
-#endif
-
-
-
-
-  <%-# b4_declare_yyerror_and_yylex. Not supported -%>
-  <%-# b4_declare_yyparse -%>
-int yyparse (<%= output.parse_param %>);
-
-
-  <%-# b4_percent_code_get([[provides]]). %code is not supported -%>
-  <%-# b4_cpp_guard_close([b4_spec_mapped_header_file]) -%>
-    <%- if output.spec_mapped_header_file -%>
-#endif /* !<%= output.b4_cpp_guard__b4_spec_mapped_header_file %>  */
-    <%- end -%>
+<%= output.render_partial("bison/_yacc.h") %>
+<%- end -%>
 <%# b4_declare_symbol_enum -%>
 /* Symbol kind.  */
 enum yysymbol_kind_t
@@ -1212,7 +1145,12 @@ yydestruct (const char *yymsg,
   YY_SYMBOL_PRINT (yymsg, yykind, yyvaluep, yylocationp<%= output.user_args %>);
 
   YY_IGNORE_MAYBE_UNINITIALIZED_BEGIN
-  YY_USE (yykind);
+  switch (yykind)
+    {
+<%= output.symbol_actions_for_destructor -%>
+      default:
+        break;
+    }
   YY_IGNORE_MAYBE_UNINITIALIZED_END
 }
 
@@ -1228,9 +1166,9 @@ yydestruct (const char *yymsg,
 #endif
 
 enum yy_repair_type {
-  insert,
-  delete,
-  shift,
+  inserting,
+  deleting,
+  shifting,
 };
 
 struct yy_repair {
@@ -1463,27 +1401,27 @@ yyrecover(yy_state_t *yyss, yy_state_t *yyssp, int yychar<%= output.user_formals
                   if (current->repair_length + 1 > YYMAXREPAIR(<%= output.parse_param_name %>))
                     continue;
 
-                  yy_repairs *new = (yy_repairs *) YYMALLOC (sizeof (yy_repairs));
-                  new->id = count;
-                  new->next = 0;
-                  new->stack_length = stack_length;
-                  new->states = (yy_state_t *) YYMALLOC (sizeof (yy_state_t) * (stack_length));
-                  new->state = new->states + (current->state - current->states);
-                  YYCOPY (new->states, current->states, current->state - current->states + 1);
-                  new->repair_length = current->repair_length + 1;
-                  new->prev_repair = current;
-                  new->repair.type = insert;
-                  new->repair.term = (yysymbol_kind_t) yyx;
+                  yy_repairs *reps = (yy_repairs *) YYMALLOC (sizeof (yy_repairs));
+                  reps->id = count;
+                  reps->next = 0;
+                  reps->stack_length = stack_length;
+                  reps->states = (yy_state_t *) YYMALLOC (sizeof (yy_state_t) * (stack_length));
+                  reps->state = reps->states + (current->state - current->states);
+                  YYCOPY (reps->states, current->states, current->state - current->states + 1);
+                  reps->repair_length = current->repair_length + 1;
+                  reps->prev_repair = current;
+                  reps->repair.type = inserting;
+                  reps->repair.term = (yysymbol_kind_t) yyx;
 
                   /* Process PDA assuming next token is yyx */
-                  if (! yy_process_repairs (new, yyx))
+                  if (! yy_process_repairs (reps, (yysymbol_kind_t)yyx))
                     {
-                      YYFREE (new);
+                      YYFREE (reps);
                       continue;
                     }
 
-                  tail->next = new;
-                  tail = new;
+                  tail->next = reps;
+                  tail = reps;
                   count++;
 
                   if (yyx == yytoken)
@@ -1499,7 +1437,7 @@ yyrecover(yy_state_t *yyss, yy_state_t *yyssp, int yychar<%= output.user_formals
                   YYDPRINTF ((stderr,
                         "New repairs is enqueued. count: %d, yystate: %d, yyx: %d\n",
                         count, yystate, yyx));
-                  yy_print_repairs (new<%= output.user_args %>);
+                  yy_print_repairs (reps<%= output.user_args %>);
                 }
             }
         }
@@ -1537,7 +1475,12 @@ int yychar;
 /* The semantic value of the lookahead symbol.  */
 /* Default value used for initialization, for pacifying older GCCs
    or non-GCC compilers.  */
+#ifdef __cplusplus
+static const YYSTYPE yyval_default = {};
+(void) yyval_default;
+#else
 YY_INITIAL_VALUE (static const YYSTYPE yyval_default;)
+#endif
 YYSTYPE yylval YY_INITIAL_VALUE (= yyval_default);
 
 /* Location data for the lookahead symbol.  */
@@ -1551,6 +1494,7 @@ YYLTYPE yylloc = yyloc_default;
 <%# b4_declare_parser_state_variables -%>
     /* Number of syntax errors so far.  */
     int yynerrs = 0;
+    YY_USE (yynerrs); /* Silence compiler warning.  */
 
     yy_state_fast_t yystate = 0;
     /* Number of tokens to shift before error messages enabled.  */
@@ -1818,6 +1762,7 @@ yybackup:
   *++yyvsp = yylval;
   YY_IGNORE_MAYBE_UNINITIALIZED_END
   *++yylsp = yylloc;
+<%= output.after_shift_function("/* %after-shift code. */") %>
 
   /* Discard the shifted token.  */
   yychar = YYEMPTY;
@@ -1850,6 +1795,7 @@ yyreduce:
      unconditionally makes the parser a bit smaller, and it avoids a
      GCC warning that YYVAL may be used uninitialized.  */
   yyval = yyvsp[1-yylen];
+<%= output.before_reduce_function("/* %before-reduce function. */") %>
 
   /* Default location. */
   YYLLOC_DEFAULT (yyloc, (yylsp - yylen), yylen);
@@ -1875,6 +1821,7 @@ yyreduce:
   YY_SYMBOL_PRINT ("-> $$ =", YY_CAST (yysymbol_kind_t, yyr1[yyn]), &yyval, &yyloc<%= output.user_args %>);
 
   YYPOPSTACK (yylen);
+<%= output.after_reduce_function("/* %after-reduce function. */") %>
   yylen = 0;
 
   *++yyvsp = yyval;
@@ -1976,6 +1923,7 @@ yyerrorlab:
   /* Do not reclaim the symbols of the rule whose action triggered
      this YYERROR.  */
   YYPOPSTACK (yylen);
+<%= output.after_pop_stack_function("yylen", "/* %after-pop-stack function. */") %>
   yylen = 0;
   YY_STACK_PRINT (yyss, yyssp<%= output.user_args %>);
   yystate = *yyssp;
@@ -2035,6 +1983,7 @@ yyerrlab1:
       yydestruct ("Error: popping",
                   YY_ACCESSING_SYMBOL (yystate), yyvsp, yylsp<%= output.user_args %>);
       YYPOPSTACK (1);
+<%= output.after_pop_stack_function(1, "/* %after-pop-stack function. */") %>
       yystate = *yyssp;
       YY_STACK_PRINT (yyss, yyssp<%= output.user_args %>);
     }
@@ -2049,6 +1998,7 @@ yyerrlab1:
 
   /* Shift the error token.  */
   YY_SYMBOL_PRINT ("Shifting", YY_ACCESSING_SYMBOL (yyn), yyvsp, yylsp<%= output.user_args %>);
+<%= output.after_shift_error_token_function("/* %after-shift-error-token code. */") %>
 
   yystate = yyn;
   goto yynewstate;
@@ -2111,6 +2061,8 @@ yyreturnlab:
 }
 
 <%# b4_percent_code_get([[epilogue]]) -%>
+<%- if output.aux.epilogue -%>
 #line <%= output.aux.epilogue_first_lineno - 1 %> "<%= output.grammar_file_path %>"
-
 <%= output.aux.epilogue -%>
+<%- end -%>
+

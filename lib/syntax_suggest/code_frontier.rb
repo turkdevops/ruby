@@ -8,7 +8,7 @@ module SyntaxSuggest
   #
   # 1. Sanitize/format input source
   # 2. Search for invalid blocks
-  # 3. Format invalid blocks into something meaninful
+  # 3. Format invalid blocks into something meaningful
   #
   # The Code frontier is a critical part of the second step
   #
@@ -117,7 +117,7 @@ module SyntaxSuggest
 
       if ENV["SYNTAX_SUGGEST_DEBUG"]
         puts "```"
-        puts @queue.peek.to_s
+        puts @queue.peek
         puts "```"
         puts "  @frontier indent:  #{frontier_indent}"
         puts "  @unvisited indent: #{unvisited_indent}"

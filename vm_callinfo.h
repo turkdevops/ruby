@@ -17,7 +17,7 @@ enum vm_call_flag_bits {
     VM_CALL_ARGS_BLOCKARG_bit,  // m(&block)
     VM_CALL_FCALL_bit,          // m(args)   # receiver is self
     VM_CALL_VCALL_bit,          // m         # method call that looks like a local variable
-    VM_CALL_ARGS_SIMPLE_bit,    // (ci->flag & (SPLAT|BLOCKARG)) && blockiseq == NULL && ci->kw_arg == NULL
+    VM_CALL_ARGS_SIMPLE_bit,    // !(ci->flag & (SPLAT|BLOCKARG|KWARG|KW_SPLAT|FORWARDING)) && !has_block_iseq
     VM_CALL_KWARG_bit,          // has kwarg
     VM_CALL_KW_SPLAT_bit,       // m(**opts)
     VM_CALL_TAILCALL_bit,       // located at tail position
@@ -25,6 +25,8 @@ enum vm_call_flag_bits {
     VM_CALL_ZSUPER_bit,         // zsuper
     VM_CALL_OPT_SEND_bit,       // internal flag
     VM_CALL_KW_SPLAT_MUT_bit,   // kw splat hash can be modified (to avoid allocating a new one)
+    VM_CALL_ARGS_SPLAT_MUT_bit, // args splat can be modified (to avoid allocating a new one)
+    VM_CALL_FORWARDING_bit,     // m(...)
     VM_CALL__END
 };
 
@@ -40,9 +42,12 @@ enum vm_call_flag_bits {
 #define VM_CALL_ZSUPER          (0x01 << VM_CALL_ZSUPER_bit)
 #define VM_CALL_OPT_SEND        (0x01 << VM_CALL_OPT_SEND_bit)
 #define VM_CALL_KW_SPLAT_MUT    (0x01 << VM_CALL_KW_SPLAT_MUT_bit)
+#define VM_CALL_ARGS_SPLAT_MUT  (0x01 << VM_CALL_ARGS_SPLAT_MUT_bit)
+#define VM_CALL_FORWARDING      (0x01 << VM_CALL_FORWARDING_bit)
 
 struct rb_callinfo_kwarg {
     int keyword_len;
+    int references;
     VALUE keywords[];
 };
 
@@ -196,6 +201,10 @@ vm_ci_dump(const struct rb_callinfo *ci)
       (((VALUE)(argc)) << CI_EMBED_ARGC_SHFT) |  \
       RUBY_FIXNUM_FLAG))
 
+// vm_method.c
+const struct rb_callinfo *rb_vm_ci_lookup(ID mid, unsigned int flag, unsigned int argc, const struct rb_callinfo_kwarg *kwarg);
+void rb_vm_ci_free(const struct rb_callinfo *);
+
 static inline const struct rb_callinfo *
 vm_ci_new_(ID mid, unsigned int flag, unsigned int argc, const struct rb_callinfo_kwarg *kwarg, const char *file, int line)
 {
@@ -207,13 +216,8 @@ vm_ci_new_(ID mid, unsigned int flag, unsigned int argc, const struct rb_callinf
     const bool debug = 0;
     if (debug) ruby_debug_printf("%s:%d ", file, line);
 
-    // TODO: dedup
-    const struct rb_callinfo *ci = (const struct rb_callinfo *)
-      rb_imemo_new(imemo_callinfo,
-                   (VALUE)mid,
-                   (VALUE)flag,
-                   (VALUE)argc,
-                   (VALUE)kwarg);
+    const struct rb_callinfo *ci = rb_vm_ci_lookup(mid, flag, argc, kwarg);
+
     if (debug) rp(ci);
     if (kwarg) {
         RB_DEBUG_COUNTER_INC(ci_kw);
@@ -296,6 +300,7 @@ struct rb_callcache {
 #define VM_CALLCACHE_UNMARKABLE FL_FREEZE
 #define VM_CALLCACHE_ON_STACK   FL_EXIVAR
 
+/* VM_CALLCACHE_IVAR used for IVAR/ATTRSET/STRUCT_AREF/STRUCT_ASET methods */
 #define VM_CALLCACHE_IVAR       IMEMO_FL_USER0
 #define VM_CALLCACHE_BF         IMEMO_FL_USER1
 #define VM_CALLCACHE_SUPER      IMEMO_FL_USER2
@@ -326,7 +331,11 @@ vm_cc_new(VALUE klass,
           vm_call_handler call,
           enum vm_cc_type type)
 {
-    const struct rb_callcache *cc = (const struct rb_callcache *)rb_imemo_new(imemo_callcache, (VALUE)cme, (VALUE)call, 0, klass);
+    struct rb_callcache *cc = IMEMO_NEW(struct rb_callcache, imemo_callcache, klass);
+    *((struct rb_callable_method_entry_struct **)&cc->cme_) = (struct rb_callable_method_entry_struct *)cme;
+    *((vm_call_handler *)&cc->call_) = call;
+
+    VM_ASSERT(RB_TYPE_P(klass, T_CLASS) || RB_TYPE_P(klass, T_ICLASS));
 
     switch (type) {
       case cc_type_normal:
@@ -339,7 +348,10 @@ vm_cc_new(VALUE klass,
         break;
     }
 
-    vm_cc_attr_index_initialize(cc, INVALID_SHAPE_ID);
+    if (cme->def->type == VM_METHOD_TYPE_ATTRSET || cme->def->type == VM_METHOD_TYPE_IVAR) {
+        vm_cc_attr_index_initialize(cc, INVALID_SHAPE_ID);
+    }
+
     RB_DEBUG_COUNTER_INC(cc_new);
     return cc;
 }
@@ -460,19 +472,6 @@ vm_cc_invalidated_p(const struct rb_callcache *cc)
     }
 }
 
-// For RJIT. cc_cme is supposed to have inlined `vm_cc_cme(cc)`.
-static inline bool
-vm_cc_valid_p(const struct rb_callcache *cc, const rb_callable_method_entry_t *cc_cme, VALUE klass)
-{
-    VM_ASSERT(IMEMO_TYPE_P(cc, imemo_callcache));
-    if (cc->klass == klass && !METHOD_ENTRY_INVALIDATED(cc_cme)) {
-        return 1;
-    }
-    else {
-        return 0;
-    }
-}
-
 /* callcache: mutate */
 
 static inline void
@@ -481,6 +480,12 @@ vm_cc_call_set(const struct rb_callcache *cc, vm_call_handler call)
     VM_ASSERT(IMEMO_TYPE_P(cc, imemo_callcache));
     VM_ASSERT(cc != vm_cc_empty());
     *(vm_call_handler *)&cc->call_ = call;
+}
+
+static inline void
+set_vm_cc_ivar(const struct rb_callcache *cc)
+{
+    *(VALUE *)&cc->flags |= VM_CALLCACHE_IVAR;
 }
 
 static inline void
@@ -494,7 +499,7 @@ vm_cc_attr_index_set(const struct rb_callcache *cc, attr_index_t index, shape_id
     VM_ASSERT(IMEMO_TYPE_P(cc, imemo_callcache));
     VM_ASSERT(cc != vm_cc_empty());
     *attr_value = (attr_index_t)(index + 1) | ((uintptr_t)(dest_shape_id) << SHAPE_FLAG_SHIFT);
-    *(VALUE *)&cc->flags |= VM_CALLCACHE_IVAR;
+    set_vm_cc_ivar(cc);
 }
 
 static inline bool
@@ -564,7 +569,8 @@ struct rb_class_cc_entries {
     int len;
     const struct rb_callable_method_entry_struct *cme;
     struct rb_class_cc_entries_entry {
-        const struct rb_callinfo *ci;
+        unsigned int argc;
+        unsigned int flag;
         const struct rb_callcache *cc;
     } *entries;
 };

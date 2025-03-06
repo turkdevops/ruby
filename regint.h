@@ -154,12 +154,14 @@
 #ifdef RUBY
 
 # define CHECK_INTERRUPT_IN_MATCH_AT do { \
-  msa->counter++;                         \
-  if (msa->counter >= 128) {              \
-    msa->counter = 0;                     \
-    rb_reg_check_timeout(reg, &msa->end_time);  \
-    rb_thread_check_ints();               \
-  }                                       \
+  msa->counter++; \
+  if (msa->counter >= 128) { \
+    msa->counter = 0; \
+    if (rb_reg_timeout_p(reg, &msa->end_time)) { \
+      goto timeout; \
+    } \
+    rb_thread_check_ints(); \
+  } \
 } while(0)
 # define onig_st_init_table                  st_init_table
 # define onig_st_init_table_with_size        st_init_table_with_size
@@ -873,6 +875,12 @@ typedef struct _OnigStackType {
       UChar *abs_pstr;        /* absent start position */
       const UChar *end_pstr;  /* end position */
     } absent_pos;
+#ifdef USE_MATCH_CACHE
+    struct {
+      long    index;      /* index of the match cache buffer */
+      uint8_t mask;       /* bit-mask for the match cache buffer */
+    } match_cache_point;
+#endif
   } u;
 } OnigStackType;
 
@@ -883,6 +891,8 @@ typedef struct {
   int outer_repeat_mem;
   long num_cache_points_at_outer_repeat;
   long num_cache_points_in_outer_repeat;
+  int lookaround_nesting;
+  UChar *match_addr;
 } OnigCacheOpcode;
 #endif
 
@@ -988,7 +998,7 @@ extern int onig_st_insert_strend(hash_table_type* table, const UChar* str_key, c
 #ifdef RUBY
 extern size_t onig_memsize(const regex_t *reg);
 extern size_t onig_region_memsize(const struct re_registers *regs);
-void rb_reg_check_timeout(regex_t *reg, void *end_time);
+bool rb_reg_timeout_p(regex_t *reg, void *end_time);
 #endif
 
 RUBY_SYMBOL_EXPORT_END

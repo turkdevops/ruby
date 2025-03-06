@@ -47,7 +47,7 @@ module URI
     #       :path => '/ruby/src'})
     #     uri2.to_s  # => "file://host.example.com/ruby/src"
     #
-    #     uri3 = URI::File.build({:path => URI::escape('/path/my file.txt')})
+    #     uri3 = URI::File.build({:path => URI::RFC2396_PARSER.escape('/path/my file.txt')})
     #     uri3.to_s  # => "file:///path/my%20file.txt"
     #
     def self.build(args)
@@ -70,17 +70,17 @@ module URI
 
     # raise InvalidURIError
     def check_userinfo(user)
-      raise URI::InvalidURIError, "can not set userinfo for file URI"
+      raise URI::InvalidURIError, "cannot set userinfo for file URI"
     end
 
     # raise InvalidURIError
     def check_user(user)
-      raise URI::InvalidURIError, "can not set user for file URI"
+      raise URI::InvalidURIError, "cannot set user for file URI"
     end
 
     # raise InvalidURIError
     def check_password(user)
-      raise URI::InvalidURIError, "can not set password for file URI"
+      raise URI::InvalidURIError, "cannot set password for file URI"
     end
 
     # do nothing

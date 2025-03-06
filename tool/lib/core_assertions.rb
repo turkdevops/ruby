@@ -74,6 +74,11 @@ module Test
     module CoreAssertions
       require_relative 'envutil'
       require 'pp'
+      begin
+        require '-test-/asan'
+      rescue LoadError
+      end
+
       nil.pretty_inspect
 
       def mu_pp(obj) #:nodoc:
@@ -152,6 +157,9 @@ module Test
         pend 'assert_no_memory_leak may consider RJIT memory usage as leak' if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled?
         # For previous versions which implemented MJIT
         pend 'assert_no_memory_leak may consider MJIT memory usage as leak' if defined?(RubyVM::MJIT) && RubyVM::MJIT.enabled?
+        # ASAN has the same problem - its shadow memory greatly increases memory usage
+        # (plus asan has better ways to detect memory leaks than this assertion)
+        pend 'assert_no_memory_leak may consider ASAN memory usage as leak' if defined?(Test::ASAN) && Test::ASAN.enabled?
 
         require_relative 'memory_status'
         raise Test::Unit::PendedError, "unsupported platform" unless defined?(Memory::Status)
@@ -506,6 +514,43 @@ eom
         ex
       end
 
+      # :call-seq:
+      #   assert_raise_kind_of(*args, &block)
+      #
+      #Tests if the given block raises one of the given exceptions or
+      #sub exceptions of the given exceptions.  If the last argument
+      #is a String, it will be used as the error message.
+      #
+      #    assert_raise do #Fails, no Exceptions are raised
+      #    end
+      #
+      #    assert_raise SystemCallErr do
+      #      Dir.chdir(__FILE__) #Raises Errno::ENOTDIR, so assertion succeeds
+      #    end
+      def assert_raise_kind_of(*exp, &b)
+        case exp.last
+        when String, Proc
+          msg = exp.pop
+        end
+
+        begin
+          yield
+        rescue Test::Unit::PendedError => e
+          raise e unless exp.include? Test::Unit::PendedError
+        rescue *exp => e
+          pass
+        rescue Exception => e
+          flunk(message(msg) {"#{mu_pp(exp)} family exception expected, not #{mu_pp(e)}"})
+        ensure
+          unless e
+            exp = exp.first if exp.size == 1
+
+            flunk(message(msg) {"#{mu_pp(exp)} family expected but nothing was raised"})
+          end
+        end
+        e
+      end
+
       TEST_DIR = File.join(__dir__, "test/unit") #:nodoc:
 
       # :call-seq:
@@ -778,14 +823,16 @@ eom
       %w[
         CLOCK_THREAD_CPUTIME_ID CLOCK_PROCESS_CPUTIME_ID
         CLOCK_MONOTONIC
-      ].find do |clk|
-        if Process.const_defined?(clk)
-          [clk.to_sym, Process.const_get(clk)].find do |clk|
-            Process.clock_gettime(clk)
-          rescue
-            # Constants may be defined but not implemented, e.g., mingw.
-          else
-            PERFORMANCE_CLOCK = clk
+      ].find do |c|
+        if Process.const_defined?(c)
+          [c.to_sym, Process.const_get(c)].find do |clk|
+            begin
+              Process.clock_gettime(clk)
+            rescue
+              # Constants may be defined but not implemented, e.g., mingw.
+            else
+              PERFORMANCE_CLOCK = clk
+            end
           end
         end
       end
@@ -815,7 +862,9 @@ eom
         end
         times.compact!
         tmin, tmax = times.minmax
-        tbase = 10 ** Math.log10(tmax * ([(tmax / tmin), 2].max ** 2)).ceil
+
+        # safe_factor * tmax * rehearsal_time_variance_factor(equals to 1 when variance is small)
+        tbase = 10 * tmax * [(tmax / tmin) ** 2 / 4, 1].max
         info = "(tmin: #{tmin}, tmax: #{tmax}, tbase: #{tbase})"
 
         seq.each do |i|
@@ -848,6 +897,82 @@ eom
       def new_test_token
         token = "\e[7;1m#{$$.to_s}:#{Time.now.strftime('%s.%L')}:#{rand(0x10000).to_s(16)}:\e[m"
         return token.dump, Regexp.quote(token)
+      end
+
+      # Platform predicates
+
+      def self.mswin?
+        defined?(@mswin) ? @mswin : @mswin = RUBY_PLATFORM.include?('mswin')
+      end
+      private def mswin?
+        CoreAssertions.mswin?
+      end
+
+      def self.mingw?
+        defined?(@mingw) ? @mingw : @mingw = RUBY_PLATFORM.include?('mingw')
+      end
+      private def mingw?
+        CoreAssertions.mingw?
+      end
+
+      module_function def windows?
+        mswin? or mingw?
+      end
+
+      def self.version_compare(expected, actual)
+        expected.zip(actual).each {|e, a| z = (e <=> a); return z if z.nonzero?}
+        0
+      end
+
+      def self.version_match?(expected, actual)
+        if !actual
+          false
+        elsif expected.empty?
+          true
+        elsif expected.size == 1 and Range === (range = expected.first)
+          b, e = range.begin, range.end
+          return false if b and (c = version_compare(Array(b), actual)) > 0
+          return false if e and (c = version_compare(Array(e), actual)) < 0
+          return false if e and range.exclude_end? and c == 0
+          true
+        else
+          version_compare(expected, actual).zero?
+        end
+      end
+
+      def self.linux?(*ver)
+        unless defined?(@linux)
+          @linux = RUBY_PLATFORM.include?('linux') && `uname -r`.scan(/\d+/).map(&:to_i)
+        end
+        version_match? ver, @linux
+      end
+      private def linux?(*ver)
+        CoreAssertions.linux?(*ver)
+      end
+
+      def self.glibc?(*ver)
+        unless defined?(@glibc)
+          libc = `/usr/bin/ldd /bin/sh`[/^\s*libc.*=> *\K\S*/]
+          if libc and /version (\d+)\.(\d+)\.$/ =~ IO.popen([libc], &:read)[]
+            @glibc = [$1.to_i, $2.to_i]
+          else
+            @glibc = false
+          end
+        end
+        version_match? ver, @glibc
+      end
+      private def glibc?(*ver)
+        CoreAssertions.glibc?(*ver)
+      end
+
+      def self.macos?(*ver)
+        unless defined?(@macos)
+          @macos = RUBY_PLATFORM.include?('darwin') && `sw_vers -productVersion`.scan(/\d+/).map(&:to_i)
+        end
+        version_match? ver, @macos
+      end
+      private def macos?(*ver)
+        CoreAssertions.macos?(*ver)
       end
     end
   end

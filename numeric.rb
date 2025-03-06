@@ -1,4 +1,14 @@
 class Numeric
+  #  call-seq:
+  #    dup -> self
+  #
+  #  Returns +self+.
+  #
+  #  Related: Numeric#clone.
+  #
+  def dup
+    self
+  end
 
   #  call-seq:
   #    real? -> true or false
@@ -70,6 +80,15 @@ class Numeric
   end
 
   alias conj conjugate
+
+  #  call-seq:
+  #    +self -> self
+  #
+  #  Returns +self+.
+  #
+  def +@
+    self
+  end
 end
 
 class Integer
@@ -217,6 +236,30 @@ class Integer
     Primitive.cexpr! 'rb_int_size(self)'
   end
 
+  # call-seq:
+  #   times {|i| ... } -> self
+  #   times            -> enumerator
+  #
+  # Calls the given block +self+ times with each integer in <tt>(0..self-1)</tt>:
+  #
+  #   a = []
+  #   5.times {|i| a.push(i) } # => 5
+  #   a                        # => [0, 1, 2, 3, 4]
+  #
+  # With no block given, returns an Enumerator.
+  def times
+    Primitive.attr! :inline_block
+    unless defined?(yield)
+      return Primitive.cexpr! 'SIZED_ENUMERATOR(self, 0, 0, int_dotimes_size)'
+    end
+    i = 0
+    while i < self
+      yield i
+      i = i.succ
+    end
+    self
+  end
+
   #  call-seq:
   #    to_i -> self
   #
@@ -278,6 +321,29 @@ class Integer
   def denominator
     1
   end
+
+  with_yjit do
+    if Primitive.rb_builtin_basic_definition_p(:downto)
+      undef :downto
+
+      def downto(to) # :nodoc:
+        Primitive.attr! :inline_block, :c_trace
+
+        # When no block is given, return an Enumerator that enumerates from `self` to `to`.
+        # Not using `block_given?` and `to_enum` to keep them unaffected by redefinitions.
+        unless defined?(yield)
+          return Primitive.cexpr! 'SIZED_ENUMERATOR(self, 1, &to, int_downto_size)'
+        end
+
+        from = self
+        while from >= to
+          yield from
+          from = from.pred
+        end
+        self
+      end
+    end
+  end
 end
 
 class Float
@@ -304,10 +370,7 @@ class Float
     Primitive.cexpr! 'rb_float_abs(self)'
   end
 
-  def magnitude
-    Primitive.attr! :leaf
-    Primitive.cexpr! 'rb_float_abs(self)'
-  end
+  alias magnitude abs
 
   # call-seq:
   #   -float -> float

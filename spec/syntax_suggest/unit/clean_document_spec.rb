@@ -8,7 +8,7 @@ module SyntaxSuggest
       source = fixtures_dir.join("this_project_extra_def.rb.txt").read
       code_lines = CleanDocument.new(source: source).call.lines
 
-      expect(code_lines[18 - 1].to_s).to eq(<<-'EOL')
+      expect(code_lines[18 - 1].to_s).to eq(<<-EOL)
       @io.puts <<~EOM
 
         SyntaxSuggest: A syntax error was detected
@@ -54,7 +54,7 @@ module SyntaxSuggest
         DisplayCodeWithLineNumbers.new(
           lines: lines
         ).call
-      ).to eq(<<~'EOM'.indent(2))
+      ).to eq(<<~EOM.indent(2))
         1  User
         2    .where(name: 'schneems')
         3    .first
@@ -65,7 +65,7 @@ module SyntaxSuggest
           lines: lines,
           highlight_lines: lines[0]
         ).call
-      ).to eq(<<~'EOM')
+      ).to eq(<<~EOM)
         > 1  User
         > 2    .where(name: 'schneems')
         > 3    .first
@@ -85,7 +85,7 @@ module SyntaxSuggest
       code_lines = doc.lines
 
       expect(code_lines[0].to_s.count($/)).to eq(5)
-      code_lines[1..-1].each do |line|
+      code_lines[1..].each do |line|
         expect(line.to_s.strip.length).to eq(0)
       end
     end
@@ -139,7 +139,7 @@ module SyntaxSuggest
       source = <<~'EOM'
         context "timezones workaround" do
           it "should receive a time in UTC format and return the time with the"\
-            "office's UTC offset substracted from it" do
+            "office's UTC offset subtracted from it" do
             travel_to DateTime.new(2020, 10, 1, 10, 0, 0) do
               office = build(:office)
             end
@@ -155,7 +155,7 @@ module SyntaxSuggest
       ).to eq(<<~'EOM'.indent(2))
         1  context "timezones workaround" do
         2    it "should receive a time in UTC format and return the time with the"\
-        3      "office's UTC offset substracted from it" do
+        3      "office's UTC offset subtracted from it" do
         4      travel_to DateTime.new(2020, 10, 1, 10, 0, 0) do
         5        office = build(:office)
         6      end
@@ -171,7 +171,7 @@ module SyntaxSuggest
       ).to eq(<<~'EOM')
           1  context "timezones workaround" do
         > 2    it "should receive a time in UTC format and return the time with the"\
-        > 3      "office's UTC offset substracted from it" do
+        > 3      "office's UTC offset subtracted from it" do
           4      travel_to DateTime.new(2020, 10, 1, 10, 0, 0) do
           5        office = build(:office)
           6      end

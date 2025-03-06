@@ -3,7 +3,24 @@ require 'test/unit'
 require '-test-/iter'
 
 class TestCall < Test::Unit::TestCase
-  def aaa(a, b=100, *rest)
+  # These dummy method definitions prevent warnings "the block passed to 'a'..."
+  def a(&) = nil
+  def b(&) = nil
+  def c(&) = nil
+  def d(&) = nil
+  def e(&) = nil
+  def f(&) = nil
+  def g(&) = nil
+  def h(&) = nil
+  def i(&) = nil
+  def j(&) = nil
+  def k(&) = nil
+  def l(&) = nil
+  def m(&) = nil
+  def n(&) = nil
+  def o(&) = nil
+
+  def aaa(a, b=100, *rest, &)
     res = [a, b]
     res += rest if rest
     return res
@@ -100,6 +117,12 @@ class TestCall < Test::Unit::TestCase
     }
   end
 
+  def test_frozen_splat_and_keywords
+   a = [1, 2].freeze
+   def self.f(*a); a end
+   assert_equal([1, 2, {kw: 3}], f(*a, kw: 3))
+  end
+
   def test_call_bmethod_proc
     pr = proc{|sym| sym}
     define_singleton_method(:a, &pr)
@@ -115,7 +138,189 @@ class TestCall < Test::Unit::TestCase
     assert_equal([10], a(10))
   end
 
-  def test_call_splat_order
+  def test_call_op_asgn_keywords
+    h = Class.new do
+      attr_reader :get, :set
+      def v; yield; [*@get, *@set] end
+      def [](*a, **b, &c) @get = [a, b, c]; @set = []; 3 end
+      def []=(*a, **b, &c) @set = [a, b, c] end
+    end.new
+
+    a = []
+    kw = {}
+    b = lambda{}
+
+    # Prevent "assigned but unused variable" warnings
+    _ = [h, a, kw, b]
+
+    message = /keyword arg given in index assignment/
+
+    # +=, without block, non-popped
+    assert_syntax_error(%q{h[**kw] += 1}, message)
+    assert_syntax_error(%q{h[0, **kw] += 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] += 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] += 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] += 1}, message)
+
+    # +=, with block, non-popped
+    assert_syntax_error(%q{h[**kw, &b] += 1}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] += 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] += 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] += 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] += 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] += 1}, message)
+
+    # +=, without block, popped
+    assert_syntax_error(%q{h[**kw] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] += 1; nil}, message)
+
+    # +=, with block, popped
+    assert_syntax_error(%q{h[**kw, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] += 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] += 1; nil}, message)
+
+    # &&=, without block, non-popped
+    assert_syntax_error(%q{h[**kw] &&= 1}, message)
+    assert_syntax_error(%q{h[0, **kw] &&= 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] &&= 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] &&= 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] &&= 1}, message)
+
+    # &&=, with block, non-popped
+    assert_syntax_error(%q{h[**kw, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] &&= 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] &&= 1}, message)
+
+    # &&=, without block, popped
+    assert_syntax_error(%q{h[**kw] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] &&= 1; nil}, message)
+
+    # &&=, with block, popped
+    assert_syntax_error(%q{h[**kw, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] &&= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] &&= 1; nil}, message)
+
+    # ||=, without block, non-popped
+    assert_syntax_error(%q{h[**kw] ||= 1}, message)
+    assert_syntax_error(%q{h[0, **kw] ||= 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] ||= 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] ||= 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] ||= 1}, message)
+
+    # ||=, with block, non-popped
+    assert_syntax_error(%q{h[**kw, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] ||= 1}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] ||= 1}, message)
+
+    # ||=, without block, popped
+    assert_syntax_error(%q{h[**kw] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, nil: 3] ||= 1; nil}, message)
+
+    # ||=, with block, popped
+    assert_syntax_error(%q{h[**kw, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, **kw, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, **kw, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[kw: 5, a: 2, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, kw: 5, a: 2, &b] ||= 1; nil}, message)
+    assert_syntax_error(%q{h[0, *a, kw: 5, a: 2, b: 3, &b] ||= 1; nil}, message)
+
+  end
+
+  def test_kwsplat_block_order_op_asgn
+    o = Object.new
+    ary = []
+    o.define_singleton_method(:to_a) {ary << :to_a; []}
+    o.define_singleton_method(:to_hash) {ary << :to_hash; {}}
+    o.define_singleton_method(:to_proc) {ary << :to_proc; lambda{}}
+
+    def o.[](...) 2 end
+    def o.[]=(...) end
+
+    message = /keyword arg given in index assignment/
+
+    assert_syntax_error(%q{o[kw: 1] += 1}, message)
+    assert_syntax_error(%q{o[**o] += 1}, message)
+    assert_syntax_error(%q{o[**o, &o] += 1}, message)
+    assert_syntax_error(%q{o[*o, **o, &o] += 1}, message)
+  end
+
+  def test_call_op_asgn_keywords_mutable
+    h = Class.new do
+      attr_reader :get, :set
+      def v; yield; [*@get, *@set] end
+      def [](*a, **b)
+        @get = [a.dup, b.dup]
+        a << :splat_modified
+        b[:kw_splat_modified] = true
+        @set = []
+        3
+      end
+      def []=(*a, **b) @set = [a, b] end
+    end.new
+
+    message = /keyword arg given in index assignment/
+
+    a = []
+    kw = {}
+
+    # Prevent "assigned but unused variable" warnings
+    _ = [h, a, kw]
+
+    assert_syntax_error(%q{h[*a, 2, b: 5, **kw] += 1}, message)
+  end
+
+  def test_call_splat_post_order
     bug12860 = '[ruby-core:77701] [Bug# 12860]'
     ary = [1, 2]
     assert_equal([1, 2, 1], aaa(*ary, ary.shift), bug12860)
@@ -123,13 +328,102 @@ class TestCall < Test::Unit::TestCase
     assert_equal([0, 1, 2, 1], aaa(0, *ary, ary.shift), bug12860)
   end
 
-  def test_call_block_order
+  def test_call_splat_block_order
     bug16504 = '[ruby-core:96769] [Bug# 16504]'
     b = proc{}
     ary = [1, 2, b]
     assert_equal([1, 2, b], aaa(*ary, &ary.pop), bug16504)
     ary = [1, 2, b]
     assert_equal([0, 1, 2, b], aaa(0, *ary, &ary.pop), bug16504)
+  end
+
+  def test_call_splat_kw_order
+    b = {}
+    ary = [1, 2, b]
+    assert_equal([1, 2, b, {a: b}], aaa(*ary, a: ary.pop))
+    ary = [1, 2, b]
+    assert_equal([0, 1, 2, b, {a: b}], aaa(0, *ary, a: ary.pop))
+  end
+
+  def test_call_splat_kw_splat_order
+    b = {}
+    ary = [1, 2, b]
+    assert_equal([1, 2, b], aaa(*ary, **ary.pop))
+    ary = [1, 2, b]
+    assert_equal([0, 1, 2, b], aaa(0, *ary, **ary.pop))
+  end
+
+  def test_call_args_splat_with_nonhash_keyword_splat
+    o = Object.new
+    def o.to_hash; {a: 1} end
+    def self.f(*a, **kw)
+      kw
+    end
+    assert_equal Hash, f(*[], **o).class
+  end
+
+  def test_call_args_splat_with_pos_arg_kw_splat_is_not_mutable
+    o = Object.new
+    def o.foo(a, **h)= h[:splat_modified] = true
+
+    a = []
+    b = {splat_modified: false}
+
+    o.foo(*a, :x, **b)
+
+    assert_equal({splat_modified: false}, b)
+  end
+
+  def test_kwsplat_block_eval_order
+    def self.t(**kw, &b) [kw, b] end
+
+    pr = ->{}
+    h = {a: pr}
+    a = []
+
+    ary = t(**h, &h.delete(:a))
+    assert_equal([{a: pr}, pr], ary)
+
+    h = {a: pr}
+    ary = t(*a, **h, &h.delete(:a))
+    assert_equal([{a: pr}, pr], ary)
+  end
+
+  def test_kwsplat_block_order
+    o = Object.new
+    ary = []
+    o.define_singleton_method(:to_a) {ary << :to_a; []}
+    o.define_singleton_method(:to_hash) {ary << :to_hash; {}}
+    o.define_singleton_method(:to_proc) {ary << :to_proc; lambda{}}
+
+    def self.t(...) end
+
+    t(**o, &o)
+    assert_equal([:to_hash, :to_proc], ary)
+
+    ary.clear
+    t(*o, **o, &o)
+    assert_equal([:to_a, :to_hash, :to_proc], ary)
+  end
+
+  def test_kwsplat_block_order_super
+    def self.t(splat)
+      o = Object.new
+      ary = []
+      o.define_singleton_method(:to_a) {ary << :to_a; []}
+      o.define_singleton_method(:to_hash) {ary << :to_hash; {}}
+      o.define_singleton_method(:to_proc) {ary << :to_proc; lambda{}}
+      if splat
+        super(*o, **o, &o)
+      else
+        super(**o, &o)
+      end
+      ary
+    end
+    extend Module.new{def t(...) end}
+
+    assert_equal([:to_hash, :to_proc], t(false))
+    assert_equal([:to_a, :to_hash, :to_proc], t(true))
   end
 
   OVER_STACK_LEN = (ENV['RUBY_OVER_STACK_LEN'] || 150).to_i # Greater than VM_ARGC_STACK_MAX

@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
-require "pathname"
-
-require "rubygems/specification"
+require "rubygems" unless defined?(Gem)
 
 # We can't let `Gem::Source` be autoloaded in the `Gem::Specification#source`
 # redefinition below, so we need to load it upfront. The reason is that if
@@ -15,10 +13,6 @@ require "rubygems/specification"
 # `Gem::Source` from the redefined `Gem::Specification#source`.
 require "rubygems/source"
 
-require_relative "match_metadata"
-require_relative "force_platform"
-require_relative "match_platform"
-
 # Cherry-pick fixes to `Gem.ruby_version` to be useful for modern Bundler
 # versions and ignore patchlevels
 # (https://github.com/rubygems/rubygems/pull/5472,
@@ -29,227 +23,38 @@ unless Gem.ruby_version.to_s == RUBY_VERSION || RUBY_PATCHLEVEL == -1
 end
 
 module Gem
-  class Specification
-    include ::Bundler::MatchMetadata
-    include ::Bundler::MatchPlatform
-
-    attr_accessor :remote, :location, :relative_loaded_from
-
-    remove_method :source
-    attr_writer :source
-    def source
-      (defined?(@source) && @source) || Gem::Source::Installed.new
-    end
-
-    alias_method :rg_full_gem_path, :full_gem_path
-    alias_method :rg_loaded_from,   :loaded_from
-
-    def full_gem_path
-      if source.respond_to?(:root)
-        Pathname.new(loaded_from).dirname.expand_path(source.root).to_s.tap {|x| x.untaint if RUBY_VERSION < "2.7" }
-      else
-        rg_full_gem_path
-      end
-    end
-
-    def loaded_from
-      if relative_loaded_from
-        source.path.join(relative_loaded_from).to_s
-      else
-        rg_loaded_from
-      end
-    end
-
-    def load_paths
-      full_require_paths
-    end
-
-    alias_method :rg_extension_dir, :extension_dir
-    def extension_dir
-      # following instance variable is already used in original method
-      # and that is the reason to prefix it with bundler_ and add rubocop exception
-      @bundler_extension_dir ||= if source.respond_to?(:extension_dir_name) # rubocop:disable Naming/MemoizedInstanceVariableName
-        unique_extension_dir = [source.extension_dir_name, File.basename(full_gem_path)].uniq.join("-")
-        File.expand_path(File.join(extensions_dir, unique_extension_dir))
-      else
-        rg_extension_dir
-      end
-    end
-
-    alias_method :rg_missing_extensions?, :missing_extensions?
-    def missing_extensions?
-      # When we use this methods with local gemspec, we don't handle
-      # build status of extension correctly. So We need to find extension
-      # files in require_paths.
-      # TODO: Gem::Specification couldn't access extension name from extconf.rb
-      #       so we find them with heuristic way. We should improve it.
-      if source.respond_to?(:root)
-        return false if raw_require_paths.any? do |path|
-          ext_dir = File.join(full_gem_path, path)
-          File.exist?(File.join(ext_dir, "#{name}.#{RbConfig::CONFIG["DLEXT"]}")) ||
-          !Dir.glob(File.join(ext_dir, name, "*.#{RbConfig::CONFIG["DLEXT"]}")).empty?
-        end
-      end
-
-      rg_missing_extensions?
-    end
-
-    remove_method :gem_dir if instance_methods(false).include?(:gem_dir)
-    def gem_dir
-      full_gem_path
-    end
-
-    unless const_defined?(:LATEST_RUBY_WITHOUT_PATCH_VERSIONS)
-      LATEST_RUBY_WITHOUT_PATCH_VERSIONS = Gem::Version.new("2.1")
-
-      alias_method :rg_required_ruby_version=, :required_ruby_version=
-      def required_ruby_version=(req)
-        self.rg_required_ruby_version = req
-
-        @required_ruby_version.requirements.map! do |op, v|
-          if v >= LATEST_RUBY_WITHOUT_PATCH_VERSIONS && v.release.segments.size == 4
-            [op == "~>" ? "=" : op, Gem::Version.new(v.segments.tap {|s| s.delete_at(3) }.join("."))]
-          else
-            [op, v]
-          end
-        end
-      end
-    end
-
-    def groups
-      @groups ||= []
-    end
-
-    def git_version
-      return unless loaded_from && source.is_a?(Bundler::Source::Git)
-      " #{source.revision[0..6]}"
-    end
-
-    def to_gemfile(path = nil)
-      gemfile = String.new("source 'https://rubygems.org'\n")
-      gemfile << dependencies_to_gemfile(nondevelopment_dependencies)
-      unless development_dependencies.empty?
-        gemfile << "\n"
-        gemfile << dependencies_to_gemfile(development_dependencies, :development)
-      end
-      gemfile
-    end
-
-    # Backfill missing YAML require when not defined. Fixed since 3.1.0.pre1.
-    module YamlBackfiller
-      def to_yaml(opts = {})
-        Gem.load_yaml unless defined?(::YAML)
-
-        super(opts)
-      end
-    end
-
-    prepend YamlBackfiller
-
-    def nondevelopment_dependencies
-      dependencies - development_dependencies
-    end
-
-    def deleted_gem?
-      !default_gem? && !File.directory?(full_gem_path)
-    end
-
-    private
-
-    def dependencies_to_gemfile(dependencies, group = nil)
-      gemfile = String.new
-      if dependencies.any?
-        gemfile << "group :#{group} do\n" if group
-        dependencies.each do |dependency|
-          gemfile << "  " if group
-          gemfile << %(gem "#{dependency.name}")
-          req = dependency.requirements_list.first
-          gemfile << %(, "#{req}") if req
-          gemfile << "\n"
-        end
-        gemfile << "end\n" if group
-      end
-      gemfile
+  # Can be removed once RubyGems 3.5.11 support is dropped
+  unless Gem.respond_to?(:freebsd_platform?)
+    def self.freebsd_platform?
+      RbConfig::CONFIG["host_os"].to_s.include?("bsd")
     end
   end
 
-  class Dependency
-    include ::Bundler::ForcePlatform
+  # Can be removed once RubyGems 3.5.18 support is dropped
+  unless Gem.respond_to?(:open_file_with_lock)
+    class << self
+      remove_method :open_file_with_flock if Gem.respond_to?(:open_file_with_flock)
 
-    attr_accessor :source, :groups
+      def open_file_with_flock(path, &block)
+        # read-write mode is used rather than read-only in order to support NFS
+        mode = IO::RDWR | IO::APPEND | IO::CREAT | IO::BINARY
+        mode |= IO::SHARE_DELETE if IO.const_defined?(:SHARE_DELETE)
 
-    alias_method :eql?, :==
-
-    def force_ruby_platform
-      return @force_ruby_platform if defined?(@force_ruby_platform) && !@force_ruby_platform.nil?
-
-      @force_ruby_platform = default_force_ruby_platform
-    end
-
-    def encode_with(coder)
-      to_yaml_properties.each do |ivar|
-        coder[ivar.to_s.sub(/^@/, "")] = instance_variable_get(ivar)
-      end
-    end
-
-    def to_yaml_properties
-      instance_variables.reject {|p| ["@source", "@groups"].include?(p.to_s) }
-    end
-
-    def to_lock
-      out = String.new("  #{name}")
-      unless requirement.none?
-        reqs = requirement.requirements.map {|o, v| "#{o} #{v}" }.sort.reverse
-        out << " (#{reqs.join(", ")})"
-      end
-      out
-    end
-  end
-
-  # comparison is done order independently since rubygems 3.2.0.rc.2
-  unless Gem::Requirement.new("> 1", "< 2") == Gem::Requirement.new("< 2", "> 1")
-    class Requirement
-      module OrderIndependentComparison
-        def ==(other)
-          return unless Gem::Requirement === other
-
-          if _requirements_sorted? && other._requirements_sorted?
-            super
-          else
-            _with_sorted_requirements == other._with_sorted_requirements
+        File.open(path, mode) do |io|
+          begin
+            io.flock(File::LOCK_EX)
+          rescue Errno::ENOSYS, Errno::ENOTSUP
           end
-        end
-
-        protected
-
-        def _requirements_sorted?
-          return @_requirements_sorted if defined?(@_requirements_sorted)
-          strings = as_list
-          @_requirements_sorted = strings == strings.sort
-        end
-
-        def _with_sorted_requirements
-          @_with_sorted_requirements ||= _requirements_sorted? ? self : self.class.new(as_list.sort)
+          yield io
         end
       end
 
-      prepend OrderIndependentComparison
-    end
-  end
-
-  if Gem::Requirement.new("~> 2.0").hash == Gem::Requirement.new("~> 2.0.0").hash
-    class Requirement
-      module CorrectHashForLambdaOperator
-        def hash
-          if requirements.any? {|r| r.first == "~>" }
-            requirements.map {|r| r.first == "~>" ? [r[0], r[1].to_s] : r }.sort.hash
-          else
-            super
-          end
-        end
+      def open_file_with_lock(path, &block)
+        file_lock = "#{path}.lock"
+        open_file_with_flock(file_lock, &block)
+      ensure
+        FileUtils.rm_f file_lock
       end
-
-      prepend CorrectHashForLambdaOperator
     end
   end
 
@@ -262,7 +67,8 @@ module Gem
     MINGW = Gem::Platform.new("x86-mingw32")
     X64_MINGW = [Gem::Platform.new("x64-mingw32"),
                  Gem::Platform.new("x64-mingw-ucrt")].freeze
-    WINDOWS = [MSWIN, MSWIN64, MINGW, X64_MINGW].flatten.freeze
+    UNIVERSAL_MINGW = Gem::Platform.new("universal-mingw")
+    WINDOWS = [MSWIN, MSWIN64, UNIVERSAL_MINGW].flatten.freeze
     X64_LINUX = Gem::Platform.new("x86_64-linux")
     X64_LINUX_MUSL = Gem::Platform.new("x86_64-linux-musl")
 
@@ -278,7 +84,7 @@ module Gem
 
         # cpu
         ([nil,"universal"].include?(@cpu) || [nil, "universal"].include?(other.cpu) || @cpu == other.cpu ||
-        (@cpu == "arm" && other.cpu.start_with?("arm"))) &&
+        (@cpu == "arm" && other.cpu.start_with?("armv"))) &&
 
           # os
           @os == other.os &&
@@ -301,10 +107,6 @@ module Gem
 
         without_gnu_nor_abi_modifiers
       end
-    end
-
-    if RUBY_ENGINE == "truffleruby" && !defined?(REUSE_AS_BINARY_ON_TRUFFLERUBY)
-      REUSE_AS_BINARY_ON_TRUFFLERUBY = %w[libv8 libv8-node sorbet-static].freeze
     end
   end
 
@@ -337,8 +139,238 @@ module Gem
     end
   end
 
-  # On universal Rubies, resolve the "universal" arch to the real CPU arch, without changing the extension directory.
+  require "rubygems/specification"
+
+  # Can be removed once RubyGems 3.5.14 support is dropped
+  VALIDATES_FOR_RESOLUTION = Specification.new.respond_to?(:validate_for_resolution).freeze
+
+  # Can be removed once RubyGems 3.3.15 support is dropped
+  FLATTENS_REQUIRED_PATHS = Specification.new.respond_to?(:flatten_require_paths).freeze
+
   class Specification
+    # Can be removed once RubyGems 3.5.15 support is dropped
+    correct_array_attributes = @@default_value.select {|_k,v| v.is_a?(Array) }.keys
+    unless @@array_attributes == correct_array_attributes
+      @@array_attributes = correct_array_attributes # rubocop:disable Style/ClassVars
+    end
+
+    require_relative "match_metadata"
+    require_relative "match_platform"
+
+    include ::Bundler::MatchMetadata
+    include ::Bundler::MatchPlatform
+
+    attr_accessor :remote, :relative_loaded_from
+
+    module AllowSettingSource
+      attr_writer :source
+
+      def source
+        (defined?(@source) && @source) || super
+      end
+    end
+
+    prepend AllowSettingSource
+
+    alias_method :rg_full_gem_path, :full_gem_path
+    alias_method :rg_loaded_from,   :loaded_from
+
+    def full_gem_path
+      if source.respond_to?(:root)
+        File.expand_path(File.dirname(loaded_from), source.root)
+      else
+        rg_full_gem_path
+      end
+    end
+
+    def loaded_from
+      if relative_loaded_from
+        source.path.join(relative_loaded_from).to_s
+      else
+        rg_loaded_from
+      end
+    end
+
+    def load_paths
+      full_require_paths
+    end
+
+    alias_method :rg_extension_dir, :extension_dir
+    def extension_dir
+      # following instance variable is already used in original method
+      # and that is the reason to prefix it with bundler_ and add rubocop exception
+      @bundler_extension_dir ||= if source.respond_to?(:extension_dir_name) # rubocop:disable Naming/MemoizedInstanceVariableName
+        unique_extension_dir = [source.extension_dir_name, File.basename(full_gem_path)].uniq.join("-")
+        File.expand_path(File.join(extensions_dir, unique_extension_dir))
+      else
+        rg_extension_dir
+      end
+    end
+
+    # Can be removed once RubyGems 3.5.21 support is dropped
+    remove_method :gem_dir if method_defined?(:gem_dir, false)
+
+    def gem_dir
+      full_gem_path
+    end
+
+    unless const_defined?(:LATEST_RUBY_WITHOUT_PATCH_VERSIONS)
+      LATEST_RUBY_WITHOUT_PATCH_VERSIONS = Gem::Version.new("2.1")
+
+      alias_method :rg_required_ruby_version=, :required_ruby_version=
+      def required_ruby_version=(req)
+        self.rg_required_ruby_version = req
+
+        @required_ruby_version.requirements.map! do |op, v|
+          if v >= LATEST_RUBY_WITHOUT_PATCH_VERSIONS && v.release.segments.size == 4
+            [op == "~>" ? "=" : op, Gem::Version.new(v.segments.tap {|s| s.delete_at(3) }.join("."))]
+          else
+            [op, v]
+          end
+        end
+      end
+    end
+
+    def insecurely_materialized?
+      false
+    end
+
+    def groups
+      @groups ||= []
+    end
+
+    def git_version
+      return unless loaded_from && source.is_a?(Bundler::Source::Git)
+      " #{source.revision[0..6]}"
+    end
+
+    def to_gemfile(path = nil)
+      gemfile = String.new("source 'https://rubygems.org'\n")
+      gemfile << dependencies_to_gemfile(nondevelopment_dependencies)
+      unless development_dependencies.empty?
+        gemfile << "\n"
+        gemfile << dependencies_to_gemfile(development_dependencies, :development)
+      end
+      gemfile
+    end
+
+    def nondevelopment_dependencies
+      dependencies - development_dependencies
+    end
+
+    def installation_missing?
+      !default_gem? && !File.directory?(full_gem_path)
+    end
+
+    unless VALIDATES_FOR_RESOLUTION
+      def validate_for_resolution
+        SpecificationPolicy.new(self).validate_for_resolution
+      end
+    end
+
+    unless FLATTENS_REQUIRED_PATHS
+      def flatten_require_paths
+        return unless raw_require_paths.first.is_a?(Array)
+
+        warn "#{name} #{version} includes a gemspec with `require_paths` set to an array of arrays. Newer versions of this gem might've already fixed this"
+        raw_require_paths.flatten!
+      end
+
+      class << self
+        module RequirePathFlattener
+          def from_yaml(input)
+            spec = super(input)
+            spec.flatten_require_paths
+            spec
+          end
+        end
+
+        prepend RequirePathFlattener
+      end
+    end
+
+    private
+
+    def dependencies_to_gemfile(dependencies, group = nil)
+      gemfile = String.new
+      if dependencies.any?
+        gemfile << "group :#{group} do\n" if group
+        dependencies.each do |dependency|
+          gemfile << "  " if group
+          gemfile << %(gem "#{dependency.name}")
+          req = dependency.requirements_list.first
+          gemfile << %(, "#{req}") if req
+          gemfile << "\n"
+        end
+        gemfile << "end\n" if group
+      end
+      gemfile
+    end
+  end
+
+  unless VALIDATES_FOR_RESOLUTION
+    class SpecificationPolicy
+      def validate_for_resolution
+        validate_required!
+      end
+    end
+  end
+
+  module BetterPermissionError
+    def data
+      super
+    rescue Errno::EACCES
+      raise Bundler::PermissionError.new(loaded_from, :read)
+    end
+  end
+
+  require "rubygems/stub_specification"
+
+  class StubSpecification
+    prepend BetterPermissionError
+  end
+
+  class Dependency
+    require_relative "force_platform"
+
+    include ::Bundler::ForcePlatform
+
+    attr_reader :force_ruby_platform
+
+    attr_accessor :source, :groups
+
+    alias_method :eql?, :==
+
+    unless method_defined?(:encode_with, false)
+      def encode_with(coder)
+        [:@name, :@requirement, :@type, :@prerelease, :@version_requirements].each do |ivar|
+          coder[ivar.to_s.sub(/^@/, "")] = instance_variable_get(ivar)
+        end
+      end
+    end
+
+    def to_lock
+      out = String.new("  #{name}")
+      unless requirement.none?
+        reqs = requirement.requirements.map {|o, v| "#{o} #{v}" }.sort.reverse
+        out << " (#{reqs.join(", ")})"
+      end
+      out
+    end
+
+    if Gem.rubygems_version < Gem::Version.new("3.5.22")
+      module FilterIgnoredSpecs
+        def matching_specs(platform_only = false)
+          super.reject(&:ignored?)
+        end
+      end
+
+      prepend FilterIgnoredSpecs
+    end
+  end
+
+  # On universal Rubies, resolve the "universal" arch to the real CPU arch, without changing the extension directory.
+  class BasicSpecification
     if /^universal\.(?<arch>.*?)-/ =~ (CROSS_COMPILING || RUBY_PLATFORM)
       local_platform = Platform.local
       if local_platform.cpu == "universal"
@@ -351,23 +383,88 @@ module Gem
         end
 
         def extensions_dir
-          Gem.default_ext_dir_for(base_dir) ||
-            File.join(base_dir, "extensions", ORIGINAL_LOCAL_PLATFORM,
-                      Gem.extension_api_version)
+          @extensions_dir ||=
+            Gem.default_ext_dir_for(base_dir) || File.join(base_dir, "extensions", ORIGINAL_LOCAL_PLATFORM, Gem.extension_api_version)
+        end
+      end
+    end
+
+    # Can be removed once RubyGems 3.5.22 support is dropped
+    unless new.respond_to?(:ignored?)
+      def ignored?
+        return @ignored unless @ignored.nil?
+
+        @ignored = missing_extensions?
+      end
+    end
+  end
+
+  require "rubygems/name_tuple"
+
+  class NameTuple
+    # Versions of RubyGems before about 3.5.0 don't to_s the platform.
+    unless Gem::NameTuple.new("a", Gem::Version.new("1"), Gem::Platform.new("x86_64-linux")).platform.is_a?(String)
+      alias_method :initialize_with_platform, :initialize
+
+      def initialize(name, version, platform=Gem::Platform::RUBY)
+        if Gem::Platform === platform
+          initialize_with_platform(name, version, platform.to_s)
+        else
+          initialize_with_platform(name, version, platform)
+        end
+      end
+    end
+
+    def lock_name
+      if platform == Gem::Platform::RUBY
+        "#{name} (#{version})"
+      else
+        "#{name} (#{version}-#{platform})"
+      end
+    end
+  end
+
+  unless Gem.rubygems_version >= Gem::Version.new("3.5.19")
+    class Resolver::ActivationRequest
+      remove_method :installed?
+
+      def installed?
+        case @spec
+        when Gem::Resolver::VendorSpecification then
+          true
+        else
+          this_spec = full_spec
+
+          Gem::Specification.any? do |s|
+            s == this_spec && s.base_dir == this_spec.base_dir
+          end
         end
       end
     end
   end
 
-  require "rubygems/util"
+  if Gem.rubygems_version < Gem::Version.new("3.6.0")
+    class Package; end
+    require "rubygems/package/tar_reader"
+    require "rubygems/package/tar_reader/entry"
 
-  Util.singleton_class.module_eval do
-    if Util.singleton_methods.include?(:glob_files_in_dir) # since 3.0.0.beta.2
-      remove_method :glob_files_in_dir
+    module FixFullNameEncoding
+      def full_name
+        super.force_encoding(Encoding::UTF_8)
+      end
     end
 
-    def glob_files_in_dir(glob, base_path)
-      Dir.glob(glob, :base => base_path).map! {|f| File.expand_path(f, base_path) }
+    Package::TarReader::Entry.prepend(FixFullNameEncoding)
+  end
+
+  require "rubygems/uri"
+
+  # Can be removed once RubyGems 3.3.15 support is dropped
+  unless Gem::Uri.respond_to?(:redact)
+    class Uri
+      def self.redact(uri)
+        new(uri).redacted
+      end
     end
   end
 end

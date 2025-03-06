@@ -19,13 +19,14 @@ class Gem::Ext::Builder
     $1.downcase
   end
 
-  def self.make(dest_path, results, make_dir = Dir.pwd, sitedir = nil, targets = ["clean", "", "install"])
+  def self.make(dest_path, results, make_dir = Dir.pwd, sitedir = nil, targets = ["clean", "", "install"],
+    target_rbconfig: Gem.target_rbconfig)
     unless File.exist? File.join(make_dir, "Makefile")
       raise Gem::InstallError, "Makefile not found"
     end
 
     # try to find make program from Ruby configure arguments first
-    RbConfig::CONFIG["configure_args"] =~ /with-make-prog\=(\w+)/
+    target_rbconfig["configure_args"] =~ /with-make-prog\=(\w+)/
     make_program_name = ENV["MAKE"] || ENV["make"] || $1
     make_program_name ||= RUBY_PLATFORM.include?("mswin") ? "nmake" : "make"
     make_program = Shellwords.split(make_program_name)
@@ -88,13 +89,20 @@ class Gem::Ext::Builder
       # Set $SOURCE_DATE_EPOCH for the subprocess.
       build_env = { "SOURCE_DATE_EPOCH" => Gem.source_date_epoch_string }.merge(env)
       output, status = begin
-                         Open3.capture2e(build_env, *command, :chdir => dir)
+                         Open3.popen2e(build_env, *command, chdir: dir) do |_stdin, stdouterr, wait_thread|
+                           output = String.new
+                           while line = stdouterr.gets
+                             output << line
+                             if verbose
+                               print line
+                             end
+                           end
+                           [output, wait_thread.value]
+                         end
                        rescue StandardError => error
                          raise Gem::InstallError, "#{command_name || class_name} failed#{error.message}"
                        end
-      if verbose
-        puts output
-      else
+      unless verbose
         results << output
       end
     ensure
@@ -124,10 +132,11 @@ class Gem::Ext::Builder
   # have build arguments, saved, set +build_args+ which is an ARGV-style
   # array.
 
-  def initialize(spec, build_args = spec.build_args)
+  def initialize(spec, build_args = spec.build_args, target_rbconfig = Gem.target_rbconfig)
     @spec       = spec
     @build_args = build_args
     @gem_dir    = spec.full_gem_path
+    @target_rbconfig = target_rbconfig
 
     @ran_rake = false
   end
@@ -184,7 +193,7 @@ EOF
       FileUtils.mkdir_p dest_path
 
       results = builder.build(extension, dest_path,
-                              results, @build_args, lib_dir, extension_dir)
+                              results, @build_args, lib_dir, extension_dir, @target_rbconfig)
 
       verbose { results.join("\n") }
 

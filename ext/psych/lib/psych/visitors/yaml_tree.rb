@@ -15,30 +15,25 @@ module Psych
     class YAMLTree < Psych::Visitors::Visitor
       class Registrar # :nodoc:
         def initialize
-          @obj_to_id   = {}
-          @obj_to_node = {}
-          @targets     = []
+          @obj_to_id   = {}.compare_by_identity
+          @obj_to_node = {}.compare_by_identity
           @counter     = 0
         end
 
         def register target, node
-          return unless target.respond_to? :object_id
-          @targets << target
-          @obj_to_node[target.object_id] = node
+          @obj_to_node[target] = node
         end
 
         def key? target
-          @obj_to_node.key? target.object_id
-        rescue NoMethodError
-          false
+          @obj_to_node.key? target
         end
 
         def id_for target
-          @obj_to_id[target.object_id] ||= (@counter += 1)
+          @obj_to_id[target] ||= (@counter += 1)
         end
 
         def node_for target
-          @obj_to_node[target.object_id]
+          @obj_to_node[target]
         end
       end
 
@@ -70,6 +65,7 @@ module Psych
             fail(ArgumentError, "Invalid line_width #{@line_width}, must be non-negative or -1 for unlimited.")
           end
         end
+        @stringify_names = options[:stringify_names]
         @coders     = []
 
         @dispatch_cache = Hash.new do |h,klass|
@@ -265,20 +261,20 @@ module Psych
           style = Nodes::Scalar::LITERAL
           plain = false
           quote = false
-        elsif o =~ /\n(?!\Z)/  # match \n except blank line at the end of string
+        elsif o.match?(/\n(?!\Z)/)  # match \n except blank line at the end of string
           style = Nodes::Scalar::LITERAL
         elsif o == '<<'
           style = Nodes::Scalar::SINGLE_QUOTED
           tag   = 'tag:yaml.org,2002:str'
           plain = false
           quote = false
-        elsif o == 'y' || o == 'n'
+        elsif o == 'y' || o == 'Y' || o == 'n' || o == 'N'
           style = Nodes::Scalar::DOUBLE_QUOTED
         elsif @line_width && o.length > @line_width
           style = Nodes::Scalar::FOLDED
-        elsif o =~ /^[^[:word:]][^"]*$/
+        elsif o.match?(/^[^[:word:]][^"]*$/)
           style = Nodes::Scalar::DOUBLE_QUOTED
-        elsif not String === @ss.tokenize(o) or /\A0[0-7]*[89]/ =~ o
+        elsif not String === @ss.tokenize(o) or /\A0[0-7]*[89]/.match?(o)
           style = Nodes::Scalar::SINGLE_QUOTED
         end
 
@@ -328,7 +324,7 @@ module Psych
         if o.class == ::Hash
           register(o, @emitter.start_mapping(nil, nil, true, Psych::Nodes::Mapping::BLOCK))
           o.each do |k,v|
-            accept k
+            accept(@stringify_names && Symbol === k ? k.to_s : k)
             accept v
           end
           @emitter.end_mapping
@@ -341,7 +337,7 @@ module Psych
         register(o, @emitter.start_mapping(nil, '!set', false, Psych::Nodes::Mapping::BLOCK))
 
         o.each do |k,v|
-          accept k
+          accept(@stringify_names && Symbol === k ? k.to_s : k)
           accept v
         end
 

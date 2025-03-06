@@ -10,6 +10,22 @@
 
 #include "rubysocket.h"
 
+// GETADDRINFO_IMPL == 0 : call getaddrinfo/getnameinfo directly
+// GETADDRINFO_IMPL == 1 : call getaddrinfo/getnameinfo without gvl (but uncancellable)
+// GETADDRINFO_IMPL == 2 : call getaddrinfo/getnameinfo in a dedicated pthread
+//                         (and if the call is interrupted, the pthread is detached)
+
+#ifndef GETADDRINFO_IMPL
+#  ifdef GETADDRINFO_EMU
+#    define GETADDRINFO_IMPL 0
+#  elif !defined(HAVE_PTHREAD_CREATE) || !defined(HAVE_PTHREAD_DETACH) || defined(__MINGW32__) || defined(__MINGW64__)
+#    define GETADDRINFO_IMPL 1
+#  else
+#    define GETADDRINFO_IMPL 2
+#    include "ruby/thread_native.h"
+#  endif
+#endif
+
 #if defined(INET6) && (defined(LOOKUP_ORDER_HACK_INET) || defined(LOOKUP_ORDER_HACK_INET6))
 #define LOOKUP_ORDERS (sizeof(lookup_order_table) / sizeof(lookup_order_table[0]))
 static const int lookup_order_table[] = {
@@ -173,32 +189,6 @@ parse_numeric_port(const char *service, int *portp)
 }
 #endif
 
-#ifndef GETADDRINFO_EMU
-struct getaddrinfo_arg
-{
-    const char *node;
-    const char *service;
-    const struct addrinfo *hints;
-    struct addrinfo **res;
-};
-
-static void *
-nogvl_getaddrinfo(void *arg)
-{
-    int ret;
-    struct getaddrinfo_arg *ptr = arg;
-    ret = getaddrinfo(ptr->node, ptr->service, ptr->hints, ptr->res);
-#ifdef __linux__
-    /* On Linux (mainly Ubuntu 13.04) /etc/nsswitch.conf has mdns4 and
-     * it cause getaddrinfo to return EAI_SYSTEM/ENOENT. [ruby-list:49420]
-     */
-    if (ret == EAI_SYSTEM && errno == ENOENT)
-        ret = EAI_NONAME;
-#endif
-    return (void *)(VALUE)ret;
-}
-#endif
-
 static int
 numeric_getaddrinfo(const char *node, const char *service,
         const struct addrinfo *hints,
@@ -287,8 +277,9 @@ numeric_getaddrinfo(const char *node, const char *service,
 void
 rb_freeaddrinfo(struct rb_addrinfo *ai)
 {
-    if (!ai->allocated_by_malloc)
-        freeaddrinfo(ai->ai);
+    if (!ai->allocated_by_malloc) {
+        if (ai->ai) freeaddrinfo(ai->ai);
+    }
     else {
         struct addrinfo *ai1, *ai2;
         ai1 = ai->ai;
@@ -302,7 +293,277 @@ rb_freeaddrinfo(struct rb_addrinfo *ai)
     xfree(ai);
 }
 
-#ifndef GETADDRINFO_EMU
+#if GETADDRINFO_IMPL == 0
+
+static int
+rb_getaddrinfo(const char *hostp, const char *portp, const struct addrinfo *hints, struct addrinfo **ai)
+{
+    return getaddrinfo(hostp, portp, hints, ai);
+}
+
+#elif GETADDRINFO_IMPL == 1
+
+struct getaddrinfo_arg
+{
+    const char *node;
+    const char *service;
+    const struct addrinfo *hints;
+    struct addrinfo **res;
+};
+
+static void *
+nogvl_getaddrinfo(void *arg)
+{
+    int ret;
+    struct getaddrinfo_arg *ptr = arg;
+    ret = getaddrinfo(ptr->node, ptr->service, ptr->hints, ptr->res);
+#ifdef __linux__
+    /* On Linux (mainly Ubuntu 13.04) /etc/nsswitch.conf has mdns4 and
+     * it cause getaddrinfo to return EAI_SYSTEM/ENOENT. [ruby-list:49420]
+     */
+    if (ret == EAI_SYSTEM && errno == ENOENT)
+        ret = EAI_NONAME;
+#endif
+    return (void *)(VALUE)ret;
+}
+
+static void *
+fork_safe_getaddrinfo(void *arg)
+{
+    return rb_thread_prevent_fork(nogvl_getaddrinfo, arg);
+}
+
+static int
+rb_getaddrinfo(const char *hostp, const char *portp, const struct addrinfo *hints, struct addrinfo **ai)
+{
+    struct getaddrinfo_arg arg;
+    MEMZERO(&arg, struct getaddrinfo_arg, 1);
+    arg.node = hostp;
+    arg.service = portp;
+    arg.hints = hints;
+    arg.res = ai;
+    return (int)(VALUE)rb_thread_call_without_gvl(fork_safe_getaddrinfo, &arg, RUBY_UBF_IO, 0);
+}
+
+#elif GETADDRINFO_IMPL == 2
+
+struct getaddrinfo_arg
+{
+    char *node, *service;
+    struct addrinfo hints;
+    struct addrinfo *ai;
+    int err, gai_errno, refcount, done, cancelled;
+    rb_nativethread_lock_t lock;
+    rb_nativethread_cond_t cond;
+};
+
+static struct getaddrinfo_arg *
+allocate_getaddrinfo_arg(const char *hostp, const char *portp, const struct addrinfo *hints)
+{
+    size_t hostp_offset = sizeof(struct getaddrinfo_arg);
+    size_t portp_offset = hostp_offset + (hostp ? strlen(hostp) + 1 : 0);
+    size_t bufsize = portp_offset + (portp ? strlen(portp) + 1 : 0);
+
+    char *buf = malloc(bufsize);
+    if (!buf) {
+        rb_gc();
+        buf = malloc(bufsize);
+        if (!buf) return NULL;
+    }
+    struct getaddrinfo_arg *arg = (struct getaddrinfo_arg *)buf;
+
+    if (hostp) {
+        arg->node = buf + hostp_offset;
+        strcpy(arg->node, hostp);
+    }
+    else {
+        arg->node = NULL;
+    }
+
+    if (portp) {
+        arg->service = buf + portp_offset;
+        strcpy(arg->service, portp);
+    }
+    else {
+        arg->service = NULL;
+    }
+
+    arg->hints = *hints;
+    arg->ai = NULL;
+
+    arg->refcount = 2;
+    arg->done = arg->cancelled = 0;
+
+    rb_nativethread_lock_initialize(&arg->lock);
+    rb_native_cond_initialize(&arg->cond);
+
+    return arg;
+}
+
+static void
+free_getaddrinfo_arg(struct getaddrinfo_arg *arg)
+{
+    rb_native_cond_destroy(&arg->cond);
+    rb_nativethread_lock_destroy(&arg->lock);
+    free(arg);
+}
+
+static void *
+do_getaddrinfo(void *ptr)
+{
+    struct getaddrinfo_arg *arg = (struct getaddrinfo_arg *)ptr;
+
+    int err, gai_errno;
+    err = getaddrinfo(arg->node, arg->service, &arg->hints, &arg->ai);
+    gai_errno = errno;
+#ifdef __linux__
+    /* On Linux (mainly Ubuntu 13.04) /etc/nsswitch.conf has mdns4 and
+     * it cause getaddrinfo to return EAI_SYSTEM/ENOENT. [ruby-list:49420]
+     */
+    if (err == EAI_SYSTEM && errno == ENOENT)
+        err = EAI_NONAME;
+#endif
+
+    int need_free = 0;
+    rb_nativethread_lock_lock(&arg->lock);
+    {
+        arg->err = err;
+        arg->gai_errno = gai_errno;
+        if (arg->cancelled) {
+            if (arg->ai) freeaddrinfo(arg->ai);
+        }
+        else {
+            arg->done = 1;
+            rb_native_cond_signal(&arg->cond);
+        }
+        if (--arg->refcount == 0) need_free = 1;
+    }
+    rb_nativethread_lock_unlock(&arg->lock);
+
+    if (need_free) free_getaddrinfo_arg(arg);
+
+    return 0;
+}
+
+static void *
+wait_getaddrinfo(void *ptr)
+{
+    struct getaddrinfo_arg *arg = (struct getaddrinfo_arg *)ptr;
+    rb_nativethread_lock_lock(&arg->lock);
+    while (!arg->done && !arg->cancelled) {
+        rb_native_cond_wait(&arg->cond, &arg->lock);
+    }
+    rb_nativethread_lock_unlock(&arg->lock);
+    return 0;
+}
+
+static void
+cancel_getaddrinfo(void *ptr)
+{
+    struct getaddrinfo_arg *arg = (struct getaddrinfo_arg *)ptr;
+    rb_nativethread_lock_lock(&arg->lock);
+    {
+        arg->cancelled = 1;
+        rb_native_cond_signal(&arg->cond);
+    }
+    rb_nativethread_lock_unlock(&arg->lock);
+}
+
+int
+raddrinfo_pthread_create(pthread_t *th, void *(*start_routine) (void *), void *arg)
+{
+    int limit = 3, ret;
+    do {
+        // It is said that pthread_create may fail spuriously, so we follow the JDK and retry several times.
+        //
+        // https://bugs.openjdk.org/browse/JDK-8268605
+        // https://github.com/openjdk/jdk/commit/e35005d5ce383ddd108096a3079b17cb0bcf76f1
+        ret = pthread_create(th, 0, start_routine, arg);
+    } while (ret == EAGAIN && limit-- > 0);
+    return ret;
+}
+
+static void *
+fork_safe_do_getaddrinfo(void *ptr)
+{
+    return rb_thread_prevent_fork(do_getaddrinfo, ptr);
+}
+
+static int
+rb_getaddrinfo(const char *hostp, const char *portp, const struct addrinfo *hints, struct addrinfo **ai)
+{
+    int retry;
+    struct getaddrinfo_arg *arg;
+    int err = 0, gai_errno = 0;
+
+start:
+    retry = 0;
+
+    arg = allocate_getaddrinfo_arg(hostp, portp, hints);
+    if (!arg) {
+        return EAI_MEMORY;
+    }
+
+    pthread_t th;
+    if (raddrinfo_pthread_create(&th, fork_safe_do_getaddrinfo, arg) != 0) {
+        int err = errno;
+        free_getaddrinfo_arg(arg);
+        errno = err;
+        return EAI_SYSTEM;
+    }
+    pthread_detach(th);
+
+    rb_thread_call_without_gvl2(wait_getaddrinfo, arg, cancel_getaddrinfo, arg);
+
+    int need_free = 0;
+    rb_nativethread_lock_lock(&arg->lock);
+    {
+        if (arg->done) {
+            err = arg->err;
+            gai_errno = arg->gai_errno;
+            if (err == 0) *ai = arg->ai;
+        }
+        else if (arg->cancelled) {
+            retry = 1;
+        }
+        else {
+            // If already interrupted, rb_thread_call_without_gvl2 may return without calling wait_getaddrinfo.
+            // In this case, it could be !arg->done && !arg->cancelled.
+            arg->cancelled = 1; // to make do_getaddrinfo call freeaddrinfo
+            retry = 1;
+        }
+        if (--arg->refcount == 0) need_free = 1;
+    }
+    rb_nativethread_lock_unlock(&arg->lock);
+
+    if (need_free) free_getaddrinfo_arg(arg);
+
+    // If the current thread is interrupted by asynchronous exception, the following raises the exception.
+    // But if the current thread is interrupted by timer thread, the following returns; we need to manually retry.
+    rb_thread_check_ints();
+    if (retry) goto start;
+
+    /* Because errno is threadlocal, the errno value we got from the call to getaddrinfo() in the thread
+     * (in case of EAI_SYSTEM return value) is not propagated to the caller of _this_ function. Set errno
+     * explicitly, as round-tripped through struct getaddrinfo_arg, to deal with that */
+    if (gai_errno) errno = gai_errno;
+    return err;
+}
+
+#endif
+
+#if GETADDRINFO_IMPL == 0
+
+int
+rb_getnameinfo(const struct sockaddr *sa, socklen_t salen,
+           char *host, size_t hostlen,
+           char *serv, size_t servlen, int flags)
+{
+    return getnameinfo(sa, salen, host, hostlen, serv, servlen, flags);
+}
+
+#elif GETADDRINFO_IMPL == 1
+
 struct getnameinfo_arg
 {
     const struct sockaddr *sa;
@@ -323,16 +584,11 @@ nogvl_getnameinfo(void *arg)
                                       ptr->serv, (socklen_t)ptr->servlen,
                                       ptr->flags);
 }
-#endif
-
 int
 rb_getnameinfo(const struct sockaddr *sa, socklen_t salen,
-           char *host, size_t hostlen,
-           char *serv, size_t servlen, int flags)
+               char *host, size_t hostlen,
+               char *serv, size_t servlen, int flags)
 {
-#ifdef GETADDRINFO_EMU
-    return getnameinfo(sa, salen, host, hostlen, serv, servlen, flags);
-#else
     struct getnameinfo_arg arg;
     int ret;
     arg.sa = sa;
@@ -344,8 +600,178 @@ rb_getnameinfo(const struct sockaddr *sa, socklen_t salen,
     arg.flags = flags;
     ret = (int)(VALUE)rb_thread_call_without_gvl(nogvl_getnameinfo, &arg, RUBY_UBF_IO, 0);
     return ret;
-#endif
 }
+
+#elif GETADDRINFO_IMPL == 2
+
+struct getnameinfo_arg
+{
+    struct sockaddr *sa;
+    socklen_t salen;
+    int flags;
+    char *host;
+    size_t hostlen;
+    char *serv;
+    size_t servlen;
+    int err, gni_errno, refcount, done, cancelled;
+    rb_nativethread_lock_t lock;
+    rb_nativethread_cond_t cond;
+};
+
+static struct getnameinfo_arg *
+allocate_getnameinfo_arg(const struct sockaddr *sa, socklen_t salen, size_t hostlen, size_t servlen, int flags)
+{
+    size_t sa_offset = sizeof(struct getnameinfo_arg);
+    size_t host_offset = sa_offset + salen;
+    size_t serv_offset = host_offset + hostlen;
+    size_t bufsize = serv_offset + servlen;
+
+    char *buf = malloc(bufsize);
+    if (!buf) {
+        rb_gc();
+        buf = malloc(bufsize);
+        if (!buf) return NULL;
+    }
+    struct getnameinfo_arg *arg = (struct getnameinfo_arg *)buf;
+
+    arg->sa = (struct sockaddr *)(buf + sa_offset);
+    memcpy(arg->sa, sa, salen);
+    arg->salen = salen;
+    arg->host = buf + host_offset;
+    arg->hostlen = hostlen;
+    arg->serv = buf + serv_offset;
+    arg->servlen = servlen;
+    arg->flags = flags;
+
+    arg->refcount = 2;
+    arg->done = arg->cancelled = 0;
+
+    rb_nativethread_lock_initialize(&arg->lock);
+    rb_native_cond_initialize(&arg->cond);
+
+    return arg;
+}
+
+static void
+free_getnameinfo_arg(struct getnameinfo_arg *arg)
+{
+    rb_native_cond_destroy(&arg->cond);
+    rb_nativethread_lock_destroy(&arg->lock);
+
+    free(arg);
+}
+
+static void *
+do_getnameinfo(void *ptr)
+{
+    struct getnameinfo_arg *arg = (struct getnameinfo_arg *)ptr;
+
+    int err, gni_errno;
+    err = getnameinfo(arg->sa, arg->salen, arg->host, (socklen_t)arg->hostlen, arg->serv, (socklen_t)arg->servlen, arg->flags);
+    gni_errno = errno;
+
+    int need_free = 0;
+    rb_nativethread_lock_lock(&arg->lock);
+    arg->err = err;
+    arg->gni_errno = gni_errno;
+    if (!arg->cancelled) {
+        arg->done = 1;
+        rb_native_cond_signal(&arg->cond);
+    }
+    if (--arg->refcount == 0) need_free = 1;
+    rb_nativethread_lock_unlock(&arg->lock);
+
+    if (need_free) free_getnameinfo_arg(arg);
+
+    return 0;
+}
+
+static void *
+wait_getnameinfo(void *ptr)
+{
+    struct getnameinfo_arg *arg = (struct getnameinfo_arg *)ptr;
+    rb_nativethread_lock_lock(&arg->lock);
+    while (!arg->done && !arg->cancelled) {
+        rb_native_cond_wait(&arg->cond, &arg->lock);
+    }
+    rb_nativethread_lock_unlock(&arg->lock);
+    return 0;
+}
+
+static void
+cancel_getnameinfo(void *ptr)
+{
+    struct getnameinfo_arg *arg = (struct getnameinfo_arg *)ptr;
+    rb_nativethread_lock_lock(&arg->lock);
+    arg->cancelled = 1;
+    rb_native_cond_signal(&arg->cond);
+    rb_nativethread_lock_unlock(&arg->lock);
+}
+
+int
+rb_getnameinfo(const struct sockaddr *sa, socklen_t salen,
+               char *host, size_t hostlen,
+               char *serv, size_t servlen, int flags)
+{
+    int retry;
+    struct getnameinfo_arg *arg;
+    int err, gni_errno = 0;
+
+start:
+    retry = 0;
+
+    arg = allocate_getnameinfo_arg(sa, salen, hostlen, servlen, flags);
+    if (!arg) {
+        return EAI_MEMORY;
+    }
+
+    pthread_t th;
+    if (raddrinfo_pthread_create(&th, do_getnameinfo, arg) != 0) {
+        int err = errno;
+        free_getnameinfo_arg(arg);
+        errno = err;
+        return EAI_SYSTEM;
+    }
+    pthread_detach(th);
+
+    rb_thread_call_without_gvl2(wait_getnameinfo, arg, cancel_getnameinfo, arg);
+
+    int need_free = 0;
+    rb_nativethread_lock_lock(&arg->lock);
+    if (arg->done) {
+        err = arg->err;
+        gni_errno = arg->gni_errno;
+        if (err == 0) {
+            if (host) memcpy(host, arg->host, hostlen);
+            if (serv) memcpy(serv, arg->serv, servlen);
+        }
+    }
+    else if (arg->cancelled) {
+        retry = 1;
+    }
+    else {
+        // If already interrupted, rb_thread_call_without_gvl2 may return without calling wait_getnameinfo.
+        // In this case, it could be !arg->done && !arg->cancelled.
+        arg->cancelled = 1;
+        retry = 1;
+    }
+    if (--arg->refcount == 0) need_free = 1;
+    rb_nativethread_lock_unlock(&arg->lock);
+
+    if (need_free) free_getnameinfo_arg(arg);
+
+    // If the current thread is interrupted by asynchronous exception, the following raises the exception.
+    // But if the current thread is interrupted by timer thread, the following returns; we need to manually retry.
+    rb_thread_check_ints();
+    if (retry) goto start;
+
+    /* Make sure we copy the thread-local errno value from the getnameinfo thread back to this thread, so
+     * calling code sees the correct errno */
+    if (gni_errno) errno = gni_errno;
+    return err;
+}
+
+#endif
 
 static void
 make_ipaddr0(struct sockaddr *addr, socklen_t addrlen, char *buf, size_t buflen)
@@ -354,7 +780,7 @@ make_ipaddr0(struct sockaddr *addr, socklen_t addrlen, char *buf, size_t buflen)
 
     error = rb_getnameinfo(addr, addrlen, buf, buflen, NULL, 0, NI_NUMERICHOST);
     if (error) {
-        rsock_raise_socket_error("getnameinfo", error);
+        rsock_raise_resolution_error("getnameinfo", error);
     }
 }
 
@@ -396,8 +822,8 @@ str_is_number(const char *p)
     ((ptr)[0] == name[0] && \
      rb_strlen_lit(name) == (len) && memcmp(ptr, name, len) == 0)
 
-static char*
-host_str(VALUE host, char *hbuf, size_t hbuflen, int *flags_ptr)
+char*
+raddrinfo_host_str(VALUE host, char *hbuf, size_t hbuflen, int *flags_ptr)
 {
     if (NIL_P(host)) {
         return NULL;
@@ -435,8 +861,8 @@ host_str(VALUE host, char *hbuf, size_t hbuflen, int *flags_ptr)
     }
 }
 
-static char*
-port_str(VALUE port, char *pbuf, size_t pbuflen, int *flags_ptr)
+char*
+raddrinfo_port_str(VALUE port, char *pbuf, size_t pbuflen, int *flags_ptr)
 {
     if (NIL_P(port)) {
         return 0;
@@ -488,7 +914,7 @@ rb_scheduler_getaddrinfo(VALUE scheduler, VALUE host, const char *service,
 
     for(i=0; i<len; i++) {
         ip_address = rb_ary_entry(ip_addresses_array, i);
-        hostp = host_str(ip_address, _hbuf, sizeof(_hbuf), &_additional_flags);
+        hostp = raddrinfo_host_str(ip_address, _hbuf, sizeof(_hbuf), &_additional_flags);
         error = numeric_getaddrinfo(hostp, service, hints, &ai);
         if (error == 0) {
             if (!res_allocated) {
@@ -524,8 +950,8 @@ rsock_getaddrinfo(VALUE host, VALUE port, struct addrinfo *hints, int socktype_h
     char hbuf[NI_MAXHOST], pbuf[NI_MAXSERV];
     int additional_flags = 0;
 
-    hostp = host_str(host, hbuf, sizeof(hbuf), &additional_flags);
-    portp = port_str(port, pbuf, sizeof(pbuf), &additional_flags);
+    hostp = raddrinfo_host_str(host, hbuf, sizeof(hbuf), &additional_flags);
+    portp = raddrinfo_port_str(port, pbuf, sizeof(pbuf), &additional_flags);
 
     if (socktype_hack && hints->ai_socktype == 0 && str_is_number(portp)) {
         hints->ai_socktype = SOCK_DGRAM;
@@ -550,17 +976,7 @@ rsock_getaddrinfo(VALUE host, VALUE port, struct addrinfo *hints, int socktype_h
         }
 
         if (!resolved) {
-#ifdef GETADDRINFO_EMU
-            error = getaddrinfo(hostp, portp, hints, &ai);
-#else
-            struct getaddrinfo_arg arg;
-            MEMZERO(&arg, struct getaddrinfo_arg, 1);
-            arg.node = hostp;
-            arg.service = portp;
-            arg.hints = hints;
-            arg.res = &ai;
-            error = (int)(VALUE)rb_thread_call_without_gvl(nogvl_getaddrinfo, &arg, RUBY_UBF_IO, 0);
-#endif
+            error = rb_getaddrinfo(hostp, portp, hints, &ai);
             if (error == 0) {
                 res = (struct rb_addrinfo *)xmalloc(sizeof(struct rb_addrinfo));
                 res->allocated_by_malloc = 0;
@@ -573,7 +989,7 @@ rsock_getaddrinfo(VALUE host, VALUE port, struct addrinfo *hints, int socktype_h
         if (hostp && hostp[strlen(hostp)-1] == '\n') {
             rb_raise(rb_eSocket, "newline at the end of hostname");
         }
-        rsock_raise_socket_error("getaddrinfo", error);
+        rsock_raise_resolution_error("getaddrinfo", error);
     }
 
     return res;
@@ -632,7 +1048,7 @@ rsock_ipaddr(struct sockaddr *sockaddr, socklen_t sockaddrlen, int norevlookup)
     error = rb_getnameinfo(sockaddr, sockaddrlen, hbuf, sizeof(hbuf),
                            pbuf, sizeof(pbuf), NI_NUMERICHOST | NI_NUMERICSERV);
     if (error) {
-        rsock_raise_socket_error("getnameinfo", error);
+        rsock_raise_resolution_error("getnameinfo", error);
     }
     addr2 = rb_str_new2(hbuf);
     if (addr1 == Qnil) {
@@ -721,7 +1137,7 @@ make_hostent_internal(VALUE v)
         hostp = addr->ai_canonname;
     }
     else {
-        hostp = host_str(host, hbuf, sizeof(hbuf), NULL);
+        hostp = raddrinfo_host_str(host, hbuf, sizeof(hbuf), NULL);
     }
     rb_ary_push(ary, rb_str_new2(hostp));
 
@@ -1266,11 +1682,11 @@ rsock_inspect_sockaddr(struct sockaddr *sockaddr_arg, socklen_t socklen, VALUE r
                  * RFC 4007: IPv6 Scoped Address Architecture
                  * draft-ietf-ipv6-scope-api-00.txt: Scoped Address Extensions to the IPv6 Basic Socket API
                  */
-                error = getnameinfo(&sockaddr->addr, socklen,
-                                    hbuf, (socklen_t)sizeof(hbuf), NULL, 0,
-                                    NI_NUMERICHOST|NI_NUMERICSERV);
+                error = rb_getnameinfo(&sockaddr->addr, socklen,
+                                       hbuf, (socklen_t)sizeof(hbuf), NULL, 0,
+                                       NI_NUMERICHOST|NI_NUMERICSERV);
                 if (error) {
-                    rsock_raise_socket_error("getnameinfo", error);
+                    rsock_raise_resolution_error("getnameinfo", error);
                 }
                 if (addr->sin6_port == 0) {
                     rb_str_cat2(ret, hbuf);
@@ -1634,11 +2050,11 @@ addrinfo_mdump(VALUE self)
       {
         char hbuf[NI_MAXHOST], pbuf[NI_MAXSERV];
         int error;
-        error = getnameinfo(&rai->addr.addr, rai->sockaddr_len,
-                            hbuf, (socklen_t)sizeof(hbuf), pbuf, (socklen_t)sizeof(pbuf),
-                            NI_NUMERICHOST|NI_NUMERICSERV);
+        error = rb_getnameinfo(&rai->addr.addr, rai->sockaddr_len,
+                               hbuf, (socklen_t)sizeof(hbuf), pbuf, (socklen_t)sizeof(pbuf),
+                               NI_NUMERICHOST|NI_NUMERICSERV);
         if (error) {
-            rsock_raise_socket_error("getnameinfo", error);
+            rsock_raise_resolution_error("getnameinfo", error);
         }
         sockaddr = rb_assoc_new(rb_str_new_cstr(hbuf), rb_str_new_cstr(pbuf));
         break;
@@ -1980,11 +2396,11 @@ addrinfo_getnameinfo(int argc, VALUE *argv, VALUE self)
     if (rai->socktype == SOCK_DGRAM)
         flags |= NI_DGRAM;
 
-    error = getnameinfo(&rai->addr.addr, rai->sockaddr_len,
-                        hbuf, (socklen_t)sizeof(hbuf), pbuf, (socklen_t)sizeof(pbuf),
-                        flags);
+    error = rb_getnameinfo(&rai->addr.addr, rai->sockaddr_len,
+                           hbuf, (socklen_t)sizeof(hbuf), pbuf, (socklen_t)sizeof(pbuf),
+                           flags);
     if (error) {
-        rsock_raise_socket_error("getnameinfo", error);
+        rsock_raise_resolution_error("getnameinfo", error);
     }
 
     return rb_assoc_new(rb_str_new2(hbuf), rb_str_new2(pbuf));
@@ -2608,18 +3024,119 @@ rsock_io_socket_addrinfo(VALUE io, struct sockaddr *addr, socklen_t len)
     UNREACHABLE_RETURN(Qnil);
 }
 
+#if FAST_FALLBACK_INIT_INETSOCK_IMPL == 1
+
+void
+free_fast_fallback_getaddrinfo_shared(struct fast_fallback_getaddrinfo_shared **shared)
+{
+    xfree((*shared)->node);
+    (*shared)->node = NULL;
+    xfree((*shared)->service);
+    (*shared)->service = NULL;
+    rb_nativethread_lock_destroy(&(*shared)->lock);
+    free(*shared);
+    *shared = NULL;
+}
+
+void
+free_fast_fallback_getaddrinfo_entry(struct fast_fallback_getaddrinfo_entry **entry)
+{
+    if ((*entry)->ai) {
+        freeaddrinfo((*entry)->ai);
+        (*entry)->ai = NULL;
+    }
+    *entry = NULL;
+}
+
+static void *
+do_fast_fallback_getaddrinfo(void *ptr)
+{
+    struct fast_fallback_getaddrinfo_entry *entry = (struct fast_fallback_getaddrinfo_entry *)ptr;
+    struct fast_fallback_getaddrinfo_shared *shared = entry->shared;
+    int err = 0, need_free = 0, shared_need_free = 0;
+
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+
+    err = numeric_getaddrinfo(shared->node, shared->service, &entry->hints, &entry->ai);
+
+    if (err != 0) {
+        err = getaddrinfo(shared->node, shared->service, &entry->hints, &entry->ai);
+       #ifdef __linux__
+       /* On Linux (mainly Ubuntu 13.04) /etc/nsswitch.conf has mdns4 and
+        * it cause getaddrinfo to return EAI_SYSTEM/ENOENT. [ruby-list:49420]
+        */
+       if (err == EAI_SYSTEM && errno == ENOENT)
+           err = EAI_NONAME;
+       #endif
+    }
+
+    /* for testing HEv2 */
+    if (entry->test_sleep_ms > 0) {
+        struct timespec sleep_ts;
+        sleep_ts.tv_sec = entry->test_sleep_ms / 1000;
+        sleep_ts.tv_nsec = (entry->test_sleep_ms % 1000) * 1000000L;
+        if (sleep_ts.tv_nsec >= 1000000000L) {
+            sleep_ts.tv_sec += sleep_ts.tv_nsec / 1000000000L;
+            sleep_ts.tv_nsec = sleep_ts.tv_nsec % 1000000000L;
+        }
+        nanosleep(&sleep_ts, NULL);
+    }
+    if (entry->test_ecode != 0) {
+        err = entry->test_ecode;
+        if (entry->ai) {
+            freeaddrinfo(entry->ai);
+            entry->ai = NULL;
+        }
+    }
+
+    rb_nativethread_lock_lock(&shared->lock);
+    {
+        entry->err = err;
+        const char notification = entry->family == AF_INET6 ?
+        IPV6_HOSTNAME_RESOLVED : IPV4_HOSTNAME_RESOLVED;
+
+        if (shared->notify != -1 && (write(shared->notify, &notification, 1)) < 0) {
+            entry->err = errno;
+            entry->has_syserr = true;
+        }
+        if (--(entry->refcount) == 0) need_free = 1;
+        if (--(shared->refcount) == 0) shared_need_free = 1;
+    }
+    rb_nativethread_lock_unlock(&shared->lock);
+
+    if (need_free && entry) {
+        free_fast_fallback_getaddrinfo_entry(&entry);
+    }
+    if (shared_need_free && shared) {
+        free_fast_fallback_getaddrinfo_shared(&shared);
+    }
+
+    return 0;
+}
+
+void *
+fork_safe_do_fast_fallback_getaddrinfo(void *ptr)
+{
+    return rb_thread_prevent_fork(do_fast_fallback_getaddrinfo, ptr);
+}
+
+#endif
+
 /*
  * Addrinfo class
  */
 void
 rsock_init_addrinfo(void)
 {
+    id_timeout = rb_intern("timeout");
+
     /*
      * The Addrinfo class maps <tt>struct addrinfo</tt> to ruby.  This
      * structure identifies an Internet host and a service.
      */
-    id_timeout = rb_intern("timeout");
-
     rb_cAddrinfo = rb_define_class("Addrinfo", rb_cObject);
     rb_define_alloc_func(rb_cAddrinfo, addrinfo_s_allocate);
     rb_define_method(rb_cAddrinfo, "initialize", addrinfo_initialize, -1);

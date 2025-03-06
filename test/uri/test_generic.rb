@@ -26,6 +26,17 @@ class URI::TestGeneric < Test::Unit::TestCase
     assert_equal "postgres:///foo", URI("postgres:///foo").to_s
     assert_equal "http:///foo", URI("http:///foo").to_s
     assert_equal "http:/foo", URI("http:/foo").to_s
+
+    uri = URI('rel_path')
+    assert_equal "rel_path", uri.to_s
+    uri.scheme = 'http'
+    assert_equal "http:rel_path", uri.to_s
+    uri.host = 'h'
+    assert_equal "http://h/rel_path", uri.to_s
+    uri.port = 8080
+    assert_equal "http://h:8080/rel_path", uri.to_s
+    uri.host = nil
+    assert_equal "http::8080/rel_path", uri.to_s
   end
 
   def test_parse
@@ -164,6 +175,17 @@ class URI::TestGeneric < Test::Unit::TestCase
     # must be empty string to identify as path-abempty, not path-absolute
     assert_equal('', url.host)
     assert_equal('http:////example.com', url.to_s)
+
+    # sec-2957667
+    url = URI.parse('http://user:pass@example.com').merge('//example.net')
+    assert_equal('http://example.net', url.to_s)
+    assert_nil(url.userinfo)
+    url = URI.join('http://user:pass@example.com', '//example.net')
+    assert_equal('http://example.net', url.to_s)
+    assert_nil(url.userinfo)
+    url = URI.parse('http://user:pass@example.com') + '//example.net'
+    assert_equal('http://example.net', url.to_s)
+    assert_nil(url.userinfo)
   end
 
   def test_parse_scheme_with_symbols
@@ -253,6 +275,13 @@ class URI::TestGeneric < Test::Unit::TestCase
     u = URI.parse('http://www.example.com/')
     u0 = u + './'
     u1 = u + './foo/bar/../..'
+    assert_equal(u0, u1)
+  end
+
+  def test_merge_authority
+    u = URI.parse('http://user:pass@example.com:8080')
+    u0 = URI.parse('http://new.example.org/path')
+    u1 = u.merge('//new.example.org/path')
     assert_equal(u0, u1)
   end
 

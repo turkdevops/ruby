@@ -7,7 +7,7 @@ RSpec.describe Bundler do
   describe "#load_marshal" do
     it "is a private method and raises an error" do
       data = Marshal.dump(Bundler)
-      expect { Bundler.load_marshal(data) }.to raise_error(NoMethodError, /private method `load_marshal' called/)
+      expect { Bundler.load_marshal(data) }.to raise_error(NoMethodError, /private method [`']load_marshal' called/)
     end
 
     it "loads any data" do
@@ -23,7 +23,7 @@ RSpec.describe Bundler do
     end
 
     it "loads simple structure" do
-      simple_structure = { "name" => [:abc] }
+      simple_structure = { "name" => [:development] }
       data = Marshal.dump(simple_structure)
       expect(Bundler.safe_load_marshal(data)).to eq(simple_structure)
     end
@@ -88,7 +88,7 @@ RSpec.describe Bundler do
       end
     end
 
-    context "with correct YAML file", :if => defined?(Encoding) do
+    context "with correct YAML file", if: defined?(Encoding) do
       it "can load a gemspec with unicode characters with default ruby encoding" do
         # spec_helper forces the external encoding to UTF-8 but that's not the
         # default until Ruby 2.0
@@ -139,7 +139,7 @@ RSpec.describe Bundler do
             end
           GEMSPEC
         end
-        expect(Bundler.rubygems).to receive(:validate).with have_attributes(:name => "validated")
+        expect(Bundler.rubygems).to receive(:validate).with have_attributes(name: "validated")
         subject
       end
     end
@@ -164,53 +164,36 @@ RSpec.describe Bundler do
   end
 
   describe "#which" do
-    let(:executable) { "executable" }
+    it "can detect relative path" do
+      script_path = bundled_app("tmp/test_command")
+      create_file(script_path, "#!/usr/bin/env ruby\n")
 
-    let(:path) do
-      if Gem.win_platform?
-        %w[C:/a C:/b C:/c C:/../d C:/e]
-      else
-        %w[/a /b c ../d /e]
+      result = Dir.chdir script_path.dirname.dirname do
+        Bundler.which("test_command")
       end
+      expect(result).to eq(nil)
+
+      result = Dir.chdir script_path.dirname do
+        Bundler.which("test_command")
+      end
+
+      expect(result).to eq("test_command") unless Gem.win_platform?
+      expect(result).to eq("test_command.bat") if Gem.win_platform?
     end
 
-    let(:expected) { "executable" }
+    it "can detect absolute path" do
+      create_file("test_command", "#!/usr/bin/env ruby\n")
 
-    before do
-      ENV["PATH"] = path.join(File::PATH_SEPARATOR)
+      ENV["PATH"] = bundled_app("test_command").parent.to_s
 
-      allow(File).to receive(:file?).and_return(false)
-      allow(File).to receive(:executable?).and_return(false)
-      if expected
-        expect(File).to receive(:file?).with(expected).and_return(true)
-        expect(File).to receive(:executable?).with(expected).and_return(true)
-      end
+      result = Bundler.which("test_command")
+      expect(result).to eq(bundled_app("test_command").to_s) unless Gem.win_platform?
+      expect(result).to eq(bundled_app("test_command.bat").to_s) if Gem.win_platform?
     end
 
-    subject { described_class.which(executable) }
-
-    shared_examples_for "it returns the correct executable" do
-      it "returns the expected file" do
-        expect(subject).to eq(expected)
-      end
-    end
-
-    it_behaves_like "it returns the correct executable"
-
-    context "when the executable in inside a quoted path" do
-      let(:expected) do
-        if Gem.win_platform?
-          "C:/e/executable"
-        else
-          "/e/executable"
-        end
-      end
-      it_behaves_like "it returns the correct executable"
-    end
-
-    context "when the executable is not found" do
-      let(:expected) { nil }
-      it_behaves_like "it returns the correct executable"
+    it "returns nil when not found" do
+      result = Bundler.which("test_command")
+      expect(result).to eq(nil)
     end
   end
 
@@ -224,35 +207,17 @@ RSpec.describe Bundler do
     end
   end
 
-  describe "#rm_rf" do
-    context "the directory is world writable" do
-      let(:bundler_ui) { Bundler.ui }
-      it "should raise a friendly error" do
-        allow(File).to receive(:exist?).and_return(true)
-        allow(::Bundler::FileUtils).to receive(:remove_entry_secure).and_raise(ArgumentError)
-        allow(File).to receive(:world_writable?).and_return(true)
-        message = <<EOF
-It is a security vulnerability to allow your home directory to be world-writable, and bundler cannot continue.
-You should probably consider fixing this issue by running `chmod o-w ~` on *nix.
-Please refer to https://ruby-doc.org/stdlib-3.1.2/libdoc/fileutils/rdoc/FileUtils.html#method-c-remove_entry_secure for details.
-EOF
-        expect(bundler_ui).to receive(:warn).with(message)
-        expect { Bundler.send(:rm_rf, bundled_app) }.to raise_error(Bundler::PathError)
-      end
-    end
-  end
-
   describe "#mkdir_p" do
     it "creates a folder at the given path" do
       install_gemfile <<-G
-        source "#{file_uri_for(gem_repo1)}"
-        gem "rack"
+        source "https://gem.repo1"
+        gem "myrack"
       G
 
       allow(Bundler).to receive(:root).and_return(bundled_app)
 
-      Bundler.mkdir_p(bundled_app.join("foo", "bar"))
-      expect(bundled_app.join("foo", "bar")).to exist
+      Bundler.mkdir_p(bundled_app("foo", "bar"))
+      expect(bundled_app("foo", "bar")).to exist
     end
   end
 
@@ -285,6 +250,7 @@ EOF
         it "should issue a warning and return a temporary user home" do
           allow(Bundler.rubygems).to receive(:user_home).and_return(path)
           allow(File).to receive(:directory?).with(path).and_return true
+          allow(File).to receive(:writable?).and_call_original
           allow(File).to receive(:writable?).with(path).and_return false
           allow(File).to receive(:directory?).with(dotbundle).and_return false
           allow(Bundler).to receive(:tmp).and_return(Pathname.new("/tmp/trulyrandom"))

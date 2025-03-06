@@ -56,7 +56,7 @@ PACKAGES = {
 DEFAULT_PACKAGES = PACKAGES.keys - ["tar"]
 if !$no7z and system("7z", out: IO::NULL)
   PACKAGES["gzip"] = %w".tar.gz 7z a dummy -tgzip -mx -so"
-  PACKAGES["zip"]  = %w".zip    7z a -tzip -l -mx -mtc=off" << {out: IO::NULL}
+  PACKAGES["zip"]  = %w".zip    7z a -tzip -mx -mtc=off" << {out: IO::NULL}
 elsif gzip = ENV.delete("GZIP")
   PACKAGES["gzip"].concat(gzip.shellsplit)
 end
@@ -71,16 +71,6 @@ ENV["LC_ALL"] = ENV["LANG"] = "C"
 GITURL = URI.parse("https://github.com/ruby/ruby.git")
 RUBY_VERSION_PATTERN = /^\#define\s+RUBY_VERSION\s+"([\d.]+)"/
 
-ENV["VPATH"] ||= "include/ruby"
-YACC = ENV["YACC"] ||= "#{$tooldir}/lrama/exe/lrama"
-ENV["BASERUBY"] ||= "ruby"
-ENV["RUBY"] ||= "ruby"
-ENV["MV"] ||= "mv"
-ENV["RM"] ||= "rm -f"
-ENV["MINIRUBY"] ||= "ruby"
-ENV["PROGRAM"] ||= "ruby"
-ENV["AUTOCONF"] ||= "autoconf"
-ENV["BUILTIN_TRANSOBJS"] ||= "newline.o"
 ENV["TZ"] = "UTC"
 
 class String
@@ -117,22 +107,32 @@ $digests &&= $digests.split(/[, ]+/).tap {|dig|
 $digests ||= DIGESTS
 
 $patch_file &&= File.expand_path($patch_file)
-path = ENV["PATH"].split(File::PATH_SEPARATOR)
-%w[YACC BASERUBY RUBY MV MINIRUBY].each do |var|
-  cmd, = ENV[var].shellsplit
-  unless path.any? {|dir|
+PATH = ENV["PATH"].split(File::PATH_SEPARATOR)
+def PATH.executable_env(var, command = nil)
+  command = ENV[var] ||= (command or return)
+  cmd, = command.shellsplit
+  unless any? {|dir|
       file = File.expand_path(cmd, dir)
       File.file?(file) and File.executable?(file)
     }
     abort "#{File.basename $0}: #{var} command not found - #{cmd}"
   end
+  command
 end
 
+PATH.executable_env("MV", "mv")
+PATH.executable_env("RM", "rm -f")
+PATH.executable_env("AUTOCONF", "autoconf")
+
 %w[BASERUBY RUBY MINIRUBY].each do |var|
-  %x[#{ENV[var]} --disable-gem -e1 2>&1]
-  if $?.success?
-    ENV[var] += ' --disable-gem'
+  cmd = PATH.executable_env(var, "ruby")
+  help = IO.popen("#{cmd} --help", err: %i[child out], &:read)
+  unless $?.success? and /ruby/ =~ help
+    abort "#{File.basename $0}: #{var} ruby not found - #{cmd}"
   end
+  IO.popen("#{cmd} --disable-gem -eexit", err: %i[child out], &:read)
+  cmd += ' --disable-gem' if $?.success?
+  ENV[var] = cmd
 end
 
 if defined?($help) or defined?($_help)
@@ -364,7 +364,7 @@ def package(vcs, rev, destdir, tmp = nil)
     end
   elsif prerelease
     versionhdr ||= IO.read("#{v}/version.h")
-    versionhdr.sub!(/^\#define\s+RUBY_PATCHLEVEL_STR\s+"\K.+?(?=")/, tag)
+    versionhdr.sub!(/^\#\s*define\s+RUBY_PATCHLEVEL_STR\s+"\K.+?(?=")/, tag) or raise "no match of RUBY_PATCHLEVEL_STR to replace"
     IO.write("#{v}/version.h", versionhdr)
   else
     tag ||= vcs.revision_name(revision)
@@ -384,8 +384,21 @@ def package(vcs, rev, destdir, tmp = nil)
     puts $colorize.fail("patching failed")
     return
   end
-  def (clean = []).add(n) push(n); n end
-  def clean.create(file, content = "") File.binwrite(add(file), content) end
+
+  class << (clean = [])
+    def add(n) push(n)
+      n
+    end
+    def create(file, content = "", &block)
+      add(file)
+      if block
+        File.open(file, "wb", &block)
+      else
+        File.binwrite(file, content)
+      end
+    end
+  end
+
   Dir.chdir(v) do
     unless File.exist?("ChangeLog")
       vcs.export_changelog(url, nil, revision, "ChangeLog")
@@ -406,7 +419,7 @@ def package(vcs, rev, destdir, tmp = nil)
       puts
     end
 
-    File.open(clean.add("cross.rb"), "w") do |f|
+    clean.create("cross.rb") do |f|
       f.puts "Object.__send__(:remove_const, :CROSS_COMPILING) if defined?(CROSS_COMPILING)"
       f.puts "CROSS_COMPILING=true"
       f.puts "Object.__send__(:remove_const, :RUBY_PLATFORM)"
@@ -456,6 +469,9 @@ def package(vcs, rev, destdir, tmp = nil)
         "MAJOR"=>api_major_version,
         "MINOR"=>api_minor_version,
         "TEENY"=>version_teeny,
+        "VPATH"=>(ENV["VPATH"] || "include/ruby"),
+        "PROGRAM"=>(ENV["PROGRAM"] || "ruby"),
+        "BUILTIN_TRANSOBJS"=>(ENV["BUILTIN_TRANSOBJS"] || "newline.o"),
       }
       status.scan(/^s([%,])@([A-Za-z_][A-Za-z_0-9]*)@\1(.*?)\1g$/) do
         vars[$2] ||= $3
@@ -501,12 +517,11 @@ touch-unicode-files:
       end
       print "prerequisites"
     else
-      system(*%W"#{YACC} -o parse.c parse.y")
+      system(*%W[#{PATH.executable_env("YACC", "bison")} -o parse.c parse.y])
     end
     vcs.after_export(".") if exported
     clean.concat(Dir.glob("ext/**/autom4te.cache"))
-    FileUtils.rm_rf(clean) unless $keep_temp
-    FileUtils.rm_rf(".downloaded-cache")
+    clean.add(".downloaded-cache")
     if File.exist?("gems/bundled_gems")
       gems = Dir.glob("gems/*.gem")
       gems -= File.readlines("gems/bundled_gems").map {|line|
@@ -514,10 +529,11 @@ touch-unicode-files:
         name, version, _ = line.split(' ')
         "gems/#{name}-#{version}.gem"
       }
-      FileUtils.rm_f(gems)
+      clean.concat(gems)
     else
-      FileUtils.rm_rf("gems")
+      clean.add("gems")
     end
+    FileUtils.rm_rf(clean)
     if modified
       touch_all(modified, "**/*/", 0) do |name, stat|
         stat.mtime > modified

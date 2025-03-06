@@ -8,19 +8,19 @@ class TestGemPackageTarHeader < Gem::Package::TarTestCase
     super
 
     header = {
-      :name => "x",
-      :mode => 0o644,
-      :uid => 1000,
-      :gid => 10_000,
-      :size => 100,
-      :mtime => 12_345,
-      :typeflag => "0",
-      :linkname => "link",
-      :uname => "user",
-      :gname => "group",
-      :devmajor => 1,
-      :devminor => 2,
-      :prefix => "y",
+      name: "x",
+      mode: 0o644,
+      uid: 1000,
+      gid: 10_000,
+      size: 100,
+      mtime: 12_345,
+      typeflag: "0",
+      linkname: "link",
+      uname: "user",
+      gname: "group",
+      devmajor: 1,
+      devminor: 2,
+      prefix: "y",
     }
 
     @tar_header = Gem::Package::TarHeader.new header
@@ -59,29 +59,29 @@ class TestGemPackageTarHeader < Gem::Package::TarTestCase
 
   def test_initialize_bad
     assert_raise ArgumentError do
-      Gem::Package::TarHeader.new :name => "", :size => "", :mode => ""
+      Gem::Package::TarHeader.new name: "", size: "", mode: ""
     end
 
     assert_raise ArgumentError do
-      Gem::Package::TarHeader.new :name => "", :size => "", :prefix => ""
+      Gem::Package::TarHeader.new name: "", size: "", prefix: ""
     end
 
     assert_raise ArgumentError do
-      Gem::Package::TarHeader.new :name => "", :prefix => "", :mode => ""
+      Gem::Package::TarHeader.new name: "", prefix: "", mode: ""
     end
 
     assert_raise ArgumentError do
-      Gem::Package::TarHeader.new :prefix => "", :size => "", :mode => ""
+      Gem::Package::TarHeader.new prefix: "", size: "", mode: ""
     end
   end
 
   def test_initialize_typeflag
     header = {
-      :mode => "",
-      :name => "",
-      :prefix => "",
-      :size => "",
-      :typeflag => "",
+      mode: "",
+      name: "",
+      prefix: "",
+      size: "",
+      typeflag: "",
     }
 
     tar_header = Gem::Package::TarHeader.new header
@@ -92,11 +92,36 @@ class TestGemPackageTarHeader < Gem::Package::TarTestCase
   def test_empty_eh
     refute_empty @tar_header
 
-    @tar_header = Gem::Package::TarHeader.new :name => "x", :prefix => "",
-                                              :mode => 0, :size => 0,
-                                              :empty => true
+    @tar_header = Gem::Package::TarHeader.new name: "x", prefix: "",
+                                              mode: 0, size: 0,
+                                              empty: true
 
     assert_empty @tar_header
+  end
+
+  def test_empty
+    @tar_header = Gem::Package::TarHeader.from(StringIO.new(Gem::Package::TarHeader::EMPTY_HEADER))
+
+    assert_empty @tar_header
+    assert_equal Gem::Package::TarHeader.new(
+      checksum: 0,
+      devmajor: 0,
+      devminor: 0,
+      empty: true,
+      gid: 0,
+      gname: "",
+      linkname: "",
+      magic: "",
+      mode: 0,
+      mtime: 0,
+      name: "",
+      prefix: "",
+      size: 0,
+      typeflag: "0",
+      uid: 0,
+      uname: "",
+      version: 0,
+    ), @tar_header
   end
 
   def test_equals2

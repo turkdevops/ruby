@@ -28,6 +28,7 @@
 #include "ruby/debug.h"
 #include "ruby/util.h"
 #include "ruby/io.h"
+#include "vm_callinfo.h"
 #include "vm_core.h"
 
 RUBY_EXTERN const char ruby_hexdigits[];
@@ -35,9 +36,10 @@ RUBY_EXTERN const char ruby_hexdigits[];
 #define BUFFER_CAPACITY 4096
 
 struct dump_config {
-    VALUE type;
-    VALUE stream;
+    VALUE given_output;
+    VALUE output_io;
     VALUE string;
+    FILE *stream;
     const char *root_category;
     VALUE cur_obj;
     VALUE cur_obj_klass;
@@ -57,7 +59,7 @@ dump_flush(struct dump_config *dc)
 {
     if (dc->buffer_len) {
         if (dc->stream) {
-            size_t written = rb_io_bufwrite(dc->stream, dc->buffer, dc->buffer_len);
+            size_t written = fwrite(dc->buffer, sizeof(dc->buffer[0]), dc->buffer_len, dc->stream);
             if (written < dc->buffer_len) {
                 MEMMOVE(dc->buffer, dc->buffer + written, char, dc->buffer_len - written);
                 dc->buffer_len -= written;
@@ -167,10 +169,8 @@ dump_append_c(struct dump_config *dc, unsigned char c)
 }
 
 static void
-dump_append_ref(struct dump_config *dc, VALUE ref)
+dump_append_ptr(struct dump_config *dc, VALUE ref)
 {
-    RUBY_ASSERT(ref > 0);
-
     char buffer[roomof(sizeof(VALUE) * CHAR_BIT, 4) + rb_strlen_lit("\"0x\"")];
     char *buffer_start, *buffer_end;
 
@@ -185,6 +185,14 @@ dump_append_ref(struct dump_config *dc, VALUE ref)
     *--buffer_start = '"';
     buffer_append(dc, buffer_start, buffer_end - buffer_start);
 }
+
+static void
+dump_append_ref(struct dump_config *dc, VALUE ref)
+{
+    RUBY_ASSERT(ref > 0);
+    dump_append_ptr(dc, ref);
+}
+
 
 static void
 dump_append_string_value(struct dump_config *dc, VALUE obj)
@@ -359,8 +367,9 @@ dump_append_string_content(struct dump_config *dc, VALUE obj)
 static inline void
 dump_append_id(struct dump_config *dc, ID id)
 {
-    if (is_instance_id(id)) {
-        dump_append_string_value(dc, rb_sym2str(ID2SYM(id)));
+    VALUE str = rb_sym2str(ID2SYM(id));
+    if (RTEST(str)) {
+        dump_append_string_value(dc, str);
     }
     else {
         dump_append(dc, "\"ID_INTERNAL(");
@@ -376,8 +385,7 @@ dump_object(VALUE obj, struct dump_config *dc)
     size_t memsize;
     struct allocation_info *ainfo = objspace_lookup_allocation_info(obj);
     rb_io_t *fptr;
-    ID flags[RB_OBJ_GC_FLAGS_MAX];
-    size_t n, i;
+    ID mid;
 
     if (SPECIAL_CONST_P(obj)) {
         dump_append_special_const(dc, obj);
@@ -429,6 +437,33 @@ dump_object(VALUE obj, struct dump_config *dc)
         dump_append(dc, ", \"imemo_type\":\"");
         dump_append(dc, rb_imemo_name(imemo_type(obj)));
         dump_append(dc, "\"");
+
+        switch (imemo_type(obj)) {
+          case imemo_callinfo:
+            mid = vm_ci_mid((const struct rb_callinfo *)obj);
+            if (mid != 0) {
+                dump_append(dc, ", \"mid\":");
+                dump_append_id(dc, mid);
+            }
+            break;
+
+          case imemo_callcache:
+            mid = vm_cc_cme((const struct rb_callcache *)obj)->called_id;
+            if (mid != 0) {
+                dump_append(dc, ", \"called_id\":");
+                dump_append_id(dc, mid);
+
+                VALUE klass = ((const struct rb_callcache *)obj)->klass;
+                if (klass != 0) {
+                    dump_append(dc, ", \"receiver_class\":");
+                    dump_append_ref(dc, klass);
+                }
+            }
+            break;
+
+          default:
+            break;
+        }
         break;
 
       case T_SYMBOL:
@@ -440,6 +475,8 @@ dump_object(VALUE obj, struct dump_config *dc)
             dump_append(dc, ", \"embedded\":true");
         if (FL_TEST(obj, RSTRING_FSTR))
             dump_append(dc, ", \"fstring\":true");
+        if (CHILLED_STRING_P(obj))
+            dump_append(dc, ", \"chilled\":true");
         if (STR_SHARED_P(obj))
             dump_append(dc, ", \"shared\":true");
         else
@@ -511,9 +548,8 @@ dump_object(VALUE obj, struct dump_config *dc)
         if (dc->cur_obj_klass) {
             VALUE mod_name = rb_mod_name(obj);
             if (!NIL_P(mod_name)) {
-                dump_append(dc, ", \"name\":\"");
-                dump_append(dc, RSTRING_PTR(mod_name));
-                dump_append(dc, "\"");
+                dump_append(dc, ", \"name\":");
+                dump_append_string_value(dc, mod_name);
             }
             else {
                 VALUE real_mod_name = rb_mod_name(rb_class_real(obj));
@@ -524,7 +560,7 @@ dump_object(VALUE obj, struct dump_config *dc)
                 }
             }
 
-            if (FL_TEST(obj, FL_SINGLETON)) {
+            if (RCLASS_SINGLETON_P(obj)) {
                 dump_append(dc, ", \"singleton\":true");
             }
         }
@@ -600,14 +636,29 @@ dump_object(VALUE obj, struct dump_config *dc)
         dump_append_sizet(dc, memsize);
     }
 
-    if ((n = rb_obj_gc_flags(obj, flags, sizeof(flags))) > 0) {
-        dump_append(dc, ", \"flags\":{");
-        for (i=0; i<n; i++) {
-            dump_append(dc, "\"");
-            dump_append(dc, rb_id2name(flags[i]));
-            dump_append(dc, "\":true");
-            if (i != n-1) dump_append(dc, ", ");
+    if (FL_TEST(obj, FL_SEEN_OBJ_ID)) {
+        dump_append(dc, ", \"object_id\":");
+        dump_append_lu(dc, RB_NUM2ULONG(rb_obj_id(obj)));
+    }
+
+    struct rb_gc_object_metadata_entry *gc_metadata = rb_gc_object_metadata(obj);
+    for (int i = 0; gc_metadata[i].name != 0; i++) {
+        if (i == 0) {
+            dump_append(dc, ", \"flags\":{");
         }
+        else {
+            dump_append(dc, ", ");
+        }
+
+        dump_append(dc, "\"");
+        dump_append(dc, rb_id2name(gc_metadata[i].name));
+        dump_append(dc, "\":");
+        dump_append_special_const(dc, gc_metadata[i].val);
+    }
+
+    /* If rb_gc_object_metadata had any entries, we need to close the opening
+     * `"flags":{`. */
+    if (gc_metadata[0].name != 0) {
         dump_append(dc, "}");
     }
 
@@ -620,15 +671,15 @@ heap_i(void *vstart, void *vend, size_t stride, void *data)
     struct dump_config *dc = (struct dump_config *)data;
     VALUE v = (VALUE)vstart;
     for (; v != (VALUE)vend; v += stride) {
-        void *ptr = asan_poisoned_object_p(v);
-        asan_unpoison_object(v, false);
+        void *ptr = rb_asan_poisoned_object_p(v);
+        rb_asan_unpoison_object(v, false);
         dc->cur_page_slot_size = stride;
 
         if (dc->full_heap || RBASIC(v)->flags)
             dump_object(v, dc);
 
         if (ptr) {
-            asan_poison_object(v);
+            rb_asan_poison_object(v);
         }
     }
     return 0;
@@ -659,16 +710,34 @@ root_obj_i(const char *category, VALUE obj, void *data)
 static void
 dump_output(struct dump_config *dc, VALUE output, VALUE full, VALUE since, VALUE shapes)
 {
-
+    dc->given_output = output;
     dc->full_heap = 0;
     dc->buffer_len = 0;
 
     if (TYPE(output) == T_STRING) {
-        dc->stream = Qfalse;
+        dc->stream = NULL;
         dc->string = output;
     }
     else {
-        dc->stream = output;
+        rb_io_t *fptr;
+        // Output should be an IO, typecheck and get a FILE* for writing.
+        // We cannot write with the usual IO code here because writes
+        // interleave with calls to rb_gc_mark(). The usual IO code can
+        // cause a thread switch, raise exceptions, and even run arbitrary
+        // ruby code through the fiber scheduler.
+        //
+        // Mark functions generally can't handle these possibilities so
+        // the usual IO code is unsafe in this context. (For example,
+        // there are many ways to crash when ruby code runs and mutates
+        // the execution context while rb_execution_context_mark() is in
+        // progress.)
+        //
+        // Using FILE* isn't perfect, but it avoids the most acute problems.
+        output = rb_io_get_io(output);
+        dc->output_io = rb_io_get_write_io(output);
+        rb_io_flush(dc->output_io);
+        GetOpenFile(dc->output_io, fptr);
+        dc->stream = rb_io_stdio_file(fptr);
         dc->string = Qfalse;
     }
 
@@ -692,13 +761,13 @@ dump_result(struct dump_config *dc)
 {
     dump_flush(dc);
 
+    if (dc->stream) {
+        fflush(dc->stream);
+    }
     if (dc->string) {
         return dc->string;
     }
-    else {
-        rb_io_flush(dc->stream);
-        return dc->stream;
-    }
+    return dc->given_output;
 }
 
 /* :nodoc: */
@@ -755,16 +824,6 @@ shape_i(rb_shape_t *shape, void *data)
         break;
       case SHAPE_FROZEN:
         dump_append(dc, "\"FROZEN\"");
-        break;
-      case SHAPE_CAPACITY_CHANGE:
-        dump_append(dc, "\"CAPACITY_CHANGE\"");
-        dump_append(dc, ", \"capacity\":");
-        dump_append_sizet(dc, shape->capacity);
-        break;
-      case SHAPE_INITIAL_CAPACITY:
-        dump_append(dc, "\"INITIAL_CAPACITY\"");
-        dump_append(dc, ", \"capacity\":");
-        dump_append_sizet(dc, shape->capacity);
         break;
       case SHAPE_T_OBJECT:
         dump_append(dc, "\"T_OBJECT\"");
@@ -832,7 +891,4 @@ Init_objspace_dump(VALUE rb_mObjSpace)
     rb_define_module_function(rb_mObjSpace, "_dump", objspace_dump, 2);
     rb_define_module_function(rb_mObjSpace, "_dump_all", objspace_dump_all, 4);
     rb_define_module_function(rb_mObjSpace, "_dump_shapes", objspace_dump_shapes, 2);
-
-    /* force create static IDs */
-    rb_obj_gc_flags(rb_mObjSpace, 0, 0);
 }

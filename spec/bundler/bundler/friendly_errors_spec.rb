@@ -18,11 +18,11 @@ RSpec.describe Bundler, "friendly errors" do
 
     it "reports a relevant friendly error message" do
       gemfile <<-G
-        source "#{file_uri_for(gem_repo1)}"
-        gem "rack"
+        source "https://gem.repo1"
+        gem "myrack"
       G
 
-      bundle :install, :env => { "DEBUG" => "true" }
+      bundle :install, env: { "DEBUG" => "true" }
 
       expect(err).to include("Failed to load #{home(".gemrc")}")
     end
@@ -101,7 +101,7 @@ RSpec.describe Bundler, "friendly errors" do
     context "BundlerError" do
       it "Bundler.ui receive error" do
         error = Bundler::BundlerError.new
-        expect(Bundler.ui).to receive(:error).with(error.message, :wrap => true)
+        expect(Bundler.ui).to receive(:error).with(error.message, wrap: true)
         Bundler::FriendlyErrors.log_error(error)
       end
     end
@@ -121,7 +121,7 @@ RSpec.describe Bundler, "friendly errors" do
     context "Gem::InvalidSpecificationException" do
       it "Bundler.ui receive error" do
         error = Gem::InvalidSpecificationException.new
-        expect(Bundler.ui).to receive(:error).with(error.message, :wrap => true)
+        expect(Bundler.ui).to receive(:error).with(error.message, wrap: true)
         Bundler::FriendlyErrors.log_error(error)
       end
     end

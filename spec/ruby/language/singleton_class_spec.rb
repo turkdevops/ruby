@@ -70,7 +70,7 @@ describe "A singleton class" do
   end
 
   it "has class String as the superclass of a String instance" do
-    "blah".singleton_class.superclass.should == String
+    "blah".dup.singleton_class.superclass.should == String
   end
 
   it "doesn't have singleton class" do
@@ -306,5 +306,12 @@ describe "Frozen properties" do
     klass.frozen?.should == false
     o.freeze
     klass.frozen?.should == true
+  end
+
+  it "will be unfrozen if the frozen object is cloned with freeze set to false" do
+    o = Object.new
+    o.freeze
+    o2 = o.clone(freeze: false)
+    o2.singleton_class.frozen?.should == false
   end
 end

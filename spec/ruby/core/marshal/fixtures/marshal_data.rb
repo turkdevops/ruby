@@ -1,4 +1,7 @@
 # -*- encoding: binary -*-
+
+require_relative 'marshal_multibyte_data'
+
 class UserDefined
   class Nested
     def ==(other)
@@ -38,7 +41,7 @@ class UserDefinedWithIvar
   attr_reader :a, :b, :c
 
   def initialize
-    @a = 'stuff'
+    @a = +'stuff'
     @a.instance_variable_set :@foo, :UserDefinedWithIvar
     @b = 'more'
     @c = @b
@@ -94,6 +97,25 @@ class UserDefinedString
   end
 end
 
+module MarshalSpec
+  class UserDefinedDumpWithIVars
+    attr_reader :string
+
+    def initialize(string, ivar_value)
+      @string = string
+      @string.instance_variable_set(:@foo, ivar_value)
+    end
+
+    def _dump(depth)
+      @string
+    end
+
+    def self._load(data)
+      new(data)
+    end
+  end
+end
+
 class UserPreviouslyDefinedWithInitializedIvar
   attr_accessor :field1, :field2
 end
@@ -133,6 +155,32 @@ class UserMarshalWithIvar
   def ==(other)
     self.class === other and
     @data = other.data
+  end
+end
+
+module MarshalSpec
+  class UserMarshalDumpWithIvar
+    attr_reader :data
+
+    def initialize(data, ivar_value)
+      @data = data
+      @ivar_value = ivar_value
+    end
+
+    def marshal_dump
+      obj = [data]
+      obj.instance_variable_set(:@foo, @ivar_value)
+      obj
+    end
+
+    def marshal_load(o)
+      @data = o[0]
+    end
+
+    def ==(other)
+      self.class === other and
+        @data = other.data
+    end
   end
 end
 
@@ -267,17 +315,6 @@ module MarshalSpec
     end
   end
 
-  module_eval(<<~ruby.force_encoding(Encoding::UTF_8))
-    class MultibyteぁあぃいClass
-    end
-
-    module MultibyteけげこごModule
-    end
-
-    class MultibyteぁあぃいTime < Time
-    end
-  ruby
-
   class ObjectWithFreezeRaisingException < Object
     def freeze
       raise
@@ -313,7 +350,7 @@ module MarshalSpec
                        "\004\b\"\012small"],
     "String big" => ['big' * 100,
                      "\004\b\"\002,\001#{'big' * 100}"],
-    "String extended" => [''.extend(Meths), # TODO: check for module on load
+    "String extended" => [''.dup.extend(Meths), # TODO: check for module on load
                           "\004\be:\nMeths\"\000"],
     "String subclass" => [UserString.new,
                           "\004\bC:\017UserString\"\000"],
@@ -420,7 +457,7 @@ module MarshalSpec
                     "\x04\bI\"\nsmall\x06:\x06EF"],
     "String big" => ['big' * 100,
                     "\x04\bI\"\x02,\x01bigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbigbig\x06:\x06EF"],
-    "String extended" => [''.extend(Meths), # TODO: check for module on load
+    "String extended" => [''.dup.extend(Meths), # TODO: check for module on load
                           "\x04\bIe:\nMeths\"\x00\x06:\x06EF"],
     "String subclass" => [UserString.new,
                           "\004\bC:\017UserString\"\000"],
@@ -494,6 +531,22 @@ module MarshalSpec
                  "\004\bS:\024Struct::Pyramid\000"],
     "Random" => random_data,
   }
+
+  if defined? Data # TODO: remove the condition when minimal supported version is 3.2
+    module DataSpec
+      Measure = Data.define(:amount, :unit)
+      Empty = Data.define
+
+      MeasureExtended = Class.new(Measure)
+      MeasureExtended.extend(Enumerable)
+
+      class MeasureWithOverriddenName < Measure
+        def self.name
+          "Foo"
+        end
+      end
+    end
+  end
 end
 
 class ArraySub < Array

@@ -17,7 +17,7 @@ require "delegate"
 #
 
 class WeakRef < Delegator
-  VERSION = "0.1.2"
+  VERSION = "0.1.3"
 
   ##
   # RefError is raised when a referenced object has been recycled by the
@@ -41,7 +41,7 @@ class WeakRef < Delegator
     super
   end
 
-  def __getobj__ # :nodoc:
+  def __getobj__(&_block) # :nodoc:
     @@__map[self] or defined?(@delegate_sd_obj) ? @delegate_sd_obj :
       Kernel::raise(RefError, "Invalid Reference - probably recycled", Kernel::caller(2))
   end
