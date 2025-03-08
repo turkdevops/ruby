@@ -15,23 +15,22 @@ end
 module EnvUtil
   def rubybin
     if ruby = ENV["RUBY"]
-      return ruby
-    end
-    ruby = "ruby"
-    exeext = RbConfig::CONFIG["EXEEXT"]
-    rubyexe = (ruby + exeext if exeext and !exeext.empty?)
-    3.times do
-      if File.exist? ruby and File.executable? ruby and !File.directory? ruby
-        return File.expand_path(ruby)
-      end
-      if rubyexe and File.exist? rubyexe and File.executable? rubyexe
-        return File.expand_path(rubyexe)
-      end
-      ruby = File.join("..", ruby)
-    end
-    if defined?(RbConfig.ruby)
+      ruby
+    elsif defined?(RbConfig.ruby)
       RbConfig.ruby
     else
+      ruby = "ruby"
+      exeext = RbConfig::CONFIG["EXEEXT"]
+      rubyexe = (ruby + exeext if exeext and !exeext.empty?)
+      3.times do
+        if File.exist? ruby and File.executable? ruby and !File.directory? ruby
+          return File.expand_path(ruby)
+        end
+        if rubyexe and File.exist? rubyexe and File.executable? rubyexe
+          return File.expand_path(rubyexe)
+        end
+        ruby = File.join("..", ruby)
+      end
       "ruby"
     end
   end
@@ -53,7 +52,14 @@ module EnvUtil
       @original_internal_encoding = Encoding.default_internal
       @original_external_encoding = Encoding.default_external
       @original_verbose = $VERBOSE
-      @original_warning = defined?(Warning.[]) ? %i[deprecated experimental].to_h {|i| [i, Warning[i]]} : nil
+      @original_warning =
+        if defined?(Warning.categories)
+          Warning.categories.to_h {|i| [i, Warning[i]]}
+        elsif defined?(Warning.[]) # 2.7+
+          %i[deprecated experimental performance].to_h do |i|
+            [i, begin Warning[i]; rescue ArgumentError; end]
+          end.compact
+        end
     end
   end
 
@@ -159,6 +165,11 @@ module EnvUtil
     }
 
     args = [args] if args.kind_of?(String)
+    # use the same parser as current ruby
+    if args.none? { |arg| arg.start_with?("--parser=") }
+      current_parser = RUBY_DESCRIPTION =~ /prism/i ? "prism" : "parse.y"
+      args = ["--parser=#{current_parser}"] + args
+    end
     pid = spawn(child_env, *precommand, rubybin, *args, opt)
     in_c.close
     out_c&.close
@@ -245,6 +256,28 @@ module EnvUtil
     GC.stress = stress
   end
   module_function :under_gc_stress
+
+  def under_gc_compact_stress(val = :empty, &block)
+    raise "compaction doesn't work well on s390x. Omit the test in the caller." if RUBY_PLATFORM =~ /s390x/ # https://github.com/ruby/ruby/pull/5077
+
+    if GC.respond_to?(:auto_compact)
+      auto_compact = GC.auto_compact
+      GC.auto_compact = val
+    end
+
+    under_gc_stress(&block)
+  ensure
+    GC.auto_compact = auto_compact if GC.respond_to?(:auto_compact)
+  end
+  module_function :under_gc_compact_stress
+
+  def without_gc
+    prev_disabled = GC.disable
+    yield
+  ensure
+    GC.enable unless prev_disabled
+  end
+  module_function :without_gc
 
   def with_default_external(enc)
     suppress_warning { Encoding.default_external = enc }

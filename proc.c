@@ -15,6 +15,7 @@
 #include "internal/error.h"
 #include "internal/eval.h"
 #include "internal/gc.h"
+#include "internal/hash.h"
 #include "internal/object.h"
 #include "internal/proc.h"
 #include "internal/symbol.h"
@@ -22,15 +23,6 @@
 #include "iseq.h"
 #include "vm_core.h"
 #include "yjit.h"
-
-#if !defined(__GNUC__) || __GNUC__ < 5 || defined(__MINGW32__)
-# define NO_CLOBBERED(v) (*(volatile VALUE *)&(v))
-#else
-# define NO_CLOBBERED(v) (v)
-#endif
-
-#define UPDATE_TYPED_REFERENCE(_type, _ref) *(_type*)&_ref = (_type)rb_gc_location((VALUE)_ref)
-#define UPDATE_REFERENCE(_ref) UPDATE_TYPED_REFERENCE(VALUE, _ref)
 
 const rb_cref_t *rb_vm_cref_in_context(VALUE self, VALUE cbase);
 
@@ -59,23 +51,6 @@ static VALUE proc_binding(VALUE self);
 /* Proc */
 
 #define IS_METHOD_PROC_IFUNC(ifunc) ((ifunc)->func == bmcall)
-
-/* :FIXME: The way procs are cloned has been historically different from the
- * way everything else are.  @shyouhei is not sure for the intention though.
- */
-#undef CLONESETUP
-static inline void
-CLONESETUP(VALUE clone, VALUE obj)
-{
-    RBIMPL_ASSERT_OR_ASSUME(! RB_SPECIAL_CONST_P(obj));
-    RBIMPL_ASSERT_OR_ASSUME(! RB_SPECIAL_CONST_P(clone));
-
-    const VALUE flags = RUBY_FL_PROMOTED | RUBY_FL_FINALIZE;
-    rb_obj_setup(clone, rb_singleton_class_clone(obj),
-                 RB_FL_TEST_RAW(obj, ~flags));
-    rb_singleton_class_attached(RBASIC_CLASS(clone), clone);
-    if (RB_FL_TEST(obj, RUBY_FL_EXIVAR)) rb_copy_generic_ivar(clone, obj);
-}
 
 static void
 block_mark_and_move(struct rb_block *block)
@@ -151,8 +126,15 @@ static VALUE
 proc_clone(VALUE self)
 {
     VALUE procval = rb_proc_dup(self);
-    CLONESETUP(procval, self);
-    return procval;
+    return rb_obj_clone_setup(self, procval, Qnil);
+}
+
+/* :nodoc: */
+static VALUE
+proc_dup(VALUE self)
+{
+    VALUE procval = rb_proc_dup(self);
+    return rb_obj_dup_setup(self, procval);
 }
 
 /*
@@ -327,7 +309,7 @@ binding_dup(VALUE self)
     rb_vm_block_copy(bindval, &dst->block, &src->block);
     RB_OBJ_WRITE(bindval, &dst->pathobj, src->pathobj);
     dst->first_lineno = src->first_lineno;
-    return bindval;
+    return rb_obj_dup_setup(self, bindval);
 }
 
 /* :nodoc: */
@@ -335,8 +317,7 @@ static VALUE
 binding_clone(VALUE self)
 {
     VALUE bindval = binding_dup(self);
-    CLONESETUP(bindval, self);
-    return bindval;
+    return rb_obj_clone_setup(self, bindval, Qnil);
 }
 
 VALUE
@@ -433,11 +414,11 @@ get_local_variable_ptr(const rb_env_t **envp, ID lid)
             }
 
             const rb_iseq_t *iseq = env->iseq;
-            unsigned int i;
 
             VM_ASSERT(rb_obj_is_iseq((VALUE)iseq));
 
-            for (i=0; i<ISEQ_BODY(iseq)->local_table_size; i++) {
+            const unsigned int local_table_size = ISEQ_BODY(iseq)->local_table_size;
+            for (unsigned int i=0; i<local_table_size; i++) {
                 if (ISEQ_BODY(iseq)->local_table[i] == lid) {
                     if (ISEQ_BODY(iseq)->local_iseq == iseq &&
                             ISEQ_BODY(iseq)->param.flags.has_block &&
@@ -450,7 +431,9 @@ get_local_variable_ptr(const rb_env_t **envp, ID lid)
                     }
 
                     *envp = env;
-                    return &env->env[i];
+                    unsigned int last_lvar = env->env_size+VM_ENV_INDEX_LAST_LVAR
+                        - 1 /* errinfo */;
+                    return &env->env[last_lvar - (local_table_size - i)];
                 }
             }
         }
@@ -477,13 +460,13 @@ check_local_id(VALUE bindval, volatile VALUE *pname)
 
     if (lid) {
         if (!rb_is_local_id(lid)) {
-            rb_name_err_raise("wrong local variable name `%1$s' for %2$s",
+            rb_name_err_raise("wrong local variable name '%1$s' for %2$s",
                               bindval, ID2SYM(lid));
         }
     }
     else {
         if (!rb_is_local_name(name)) {
-            rb_name_err_raise("wrong local variable name `%1$s' for %2$s",
+            rb_name_err_raise("wrong local variable name '%1$s' for %2$s",
                               bindval, name);
         }
         return 0;
@@ -520,6 +503,12 @@ bind_local_variables(VALUE bindval)
     return rb_vm_env_local_variables(env);
 }
 
+int
+rb_numparam_id_p(ID id)
+{
+    return (tNUMPARAM_1 << ID_SCOPE_SHIFT) <= id && id < ((tNUMPARAM_1 + 10) << ID_SCOPE_SHIFT);
+}
+
 /*
  *  call-seq:
  *     binding.local_variable_get(symbol) -> obj
@@ -546,6 +535,10 @@ bind_local_variable_get(VALUE bindval, VALUE sym)
     const rb_env_t *env;
 
     if (!lid) goto undefined;
+    if (rb_numparam_id_p(lid)) {
+        rb_name_err_raise("numbered parameter '%1$s' is not a local variable",
+                          bindval, ID2SYM(lid));
+    }
 
     GetBindingPtr(bindval, bind);
 
@@ -556,7 +549,7 @@ bind_local_variable_get(VALUE bindval, VALUE sym)
 
     sym = ID2SYM(lid);
   undefined:
-    rb_name_err_raise("local variable `%1$s' is not defined for %2$s",
+    rb_name_err_raise("local variable '%1$s' is not defined for %2$s",
                       bindval, sym);
     UNREACHABLE_RETURN(Qundef);
 }
@@ -595,6 +588,10 @@ bind_local_variable_set(VALUE bindval, VALUE sym, VALUE val)
     const rb_env_t *env;
 
     if (!lid) lid = rb_intern_str(sym);
+    if (rb_numparam_id_p(lid)) {
+        rb_name_err_raise("numbered parameter '%1$s' is not a local variable",
+                          bindval, ID2SYM(lid));
+    }
 
     GetBindingPtr(bindval, bind);
     env = VM_ENV_ENVVAL_PTR(vm_block_ep(&bind->block));
@@ -699,6 +696,29 @@ cfunc_proc_new(VALUE klass, VALUE ifunc)
     return procval;
 }
 
+VALUE
+rb_func_proc_dup(VALUE src_obj)
+{
+    RUBY_ASSERT(rb_typeddata_is_instance_of(src_obj, &proc_data_type));
+
+    rb_proc_t *src_proc;
+    GetProcPtr(src_obj, src_proc);
+    RUBY_ASSERT(vm_block_type(&src_proc->block) == block_type_ifunc);
+
+    cfunc_proc_t *proc;
+    VALUE proc_obj = TypedData_Make_Struct(rb_obj_class(src_obj), cfunc_proc_t, &proc_data_type, proc);
+
+    memcpy(&proc->basic, src_proc, sizeof(rb_proc_t));
+
+    VALUE *ep = *(VALUE **)&proc->basic.block.as.captured.ep = proc->env + VM_ENV_DATA_SIZE - 1;
+    ep[VM_ENV_DATA_INDEX_FLAGS]   = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_FLAGS];
+    ep[VM_ENV_DATA_INDEX_ME_CREF] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ME_CREF];
+    ep[VM_ENV_DATA_INDEX_SPECVAL] = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_SPECVAL];
+    ep[VM_ENV_DATA_INDEX_ENV]     = src_proc->block.as.captured.ep[VM_ENV_DATA_INDEX_ENV];
+
+    return proc_obj;
+}
+
 static VALUE
 sym_proc_new(VALUE klass, VALUE sym)
 {
@@ -739,15 +759,13 @@ rb_vm_ifunc_new(rb_block_call_func_t func, const void *data, int min_argc, int m
     arity.argc.min = min_argc;
     arity.argc.max = max_argc;
     rb_execution_context_t *ec = GET_EC();
-    VALUE ret = rb_imemo_new(imemo_ifunc, (VALUE)func, (VALUE)data, arity.packed, (VALUE)rb_vm_svar_lep(ec, ec->cfp));
-    return (struct vm_ifunc *)ret;
-}
 
-VALUE
-rb_func_proc_new(rb_block_call_func_t func, VALUE val)
-{
-    struct vm_ifunc *ifunc = rb_vm_ifunc_proc_new(func, (void *)val);
-    return cfunc_proc_new(rb_cProc, (VALUE)ifunc);
+    struct vm_ifunc *ifunc = IMEMO_NEW(struct vm_ifunc, imemo_ifunc, (VALUE)rb_vm_svar_lep(ec, ec->cfp));
+    ifunc->func = func;
+    ifunc->data = data;
+    ifunc->argc = arity.argc;
+
+    return ifunc;
 }
 
 VALUE
@@ -793,16 +811,8 @@ proc_new(VALUE klass, int8_t is_lambda)
         break;
 
       case block_handler_type_ifunc:
-        return rb_vm_make_proc_lambda(ec, VM_BH_TO_CAPT_BLOCK(block_handler), klass, is_lambda);
       case block_handler_type_iseq:
-        {
-            const struct rb_captured_block *captured = VM_BH_TO_CAPT_BLOCK(block_handler);
-            rb_control_frame_t *last_ruby_cfp = rb_vm_get_ruby_level_next_cfp(ec, cfp);
-            if (is_lambda && last_ruby_cfp && vm_cfp_forwarded_bh_p(last_ruby_cfp, block_handler)) {
-                is_lambda = false;
-            }
-            return rb_vm_make_proc_lambda(ec, captured, klass, is_lambda);
-        }
+        return rb_vm_make_proc_lambda(ec, VM_BH_TO_CAPT_BLOCK(block_handler), klass, is_lambda);
     }
     VM_UNREACHABLE(proc_new);
     return Qnil;
@@ -857,31 +867,34 @@ rb_block_lambda(void)
 }
 
 static void
-f_lambda_warn(void)
+f_lambda_filter_non_literal(void)
 {
     rb_control_frame_t *cfp = GET_EC()->cfp;
     VALUE block_handler = rb_vm_frame_block_handler(cfp);
 
-    if (block_handler != VM_BLOCK_HANDLER_NONE) {
-        switch (vm_block_handler_type(block_handler)) {
-          case block_handler_type_iseq:
-            if (RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp)->ep == VM_BH_TO_ISEQ_BLOCK(block_handler)->ep) {
-                return;
-            }
-            break;
-          case block_handler_type_symbol:
-            return;
-          case block_handler_type_proc:
-            if (rb_proc_lambda_p(VM_BH_TO_PROC(block_handler))) {
-                return;
-            }
-            break;
-          case block_handler_type_ifunc:
-            break;
-        }
+    if (block_handler == VM_BLOCK_HANDLER_NONE) {
+        // no block error raised else where
+        return;
     }
 
-    rb_warn_deprecated("lambda without a literal block", "the proc without lambda");
+    switch (vm_block_handler_type(block_handler)) {
+      case block_handler_type_iseq:
+        if (RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp)->ep == VM_BH_TO_ISEQ_BLOCK(block_handler)->ep) {
+            return;
+        }
+        break;
+      case block_handler_type_symbol:
+        return;
+      case block_handler_type_proc:
+        if (rb_proc_lambda_p(VM_BH_TO_PROC(block_handler))) {
+            return;
+        }
+        break;
+      case block_handler_type_ifunc:
+        break;
+    }
+
+    rb_raise(rb_eArgError, "the lambda method requires a literal block");
 }
 
 /*
@@ -895,7 +908,7 @@ f_lambda_warn(void)
 static VALUE
 f_lambda(VALUE _)
 {
-    f_lambda_warn();
+    f_lambda_filter_non_literal();
     return rb_block_lambda();
 }
 
@@ -1070,7 +1083,7 @@ rb_iseq_min_max_arity(const rb_iseq_t *iseq, int *max)
 {
     *max = ISEQ_BODY(iseq)->param.flags.has_rest == FALSE ?
       ISEQ_BODY(iseq)->param.lead_num + ISEQ_BODY(iseq)->param.opt_num + ISEQ_BODY(iseq)->param.post_num +
-      (ISEQ_BODY(iseq)->param.flags.has_kw == TRUE || ISEQ_BODY(iseq)->param.flags.has_kwrest == TRUE)
+      (ISEQ_BODY(iseq)->param.flags.has_kw == TRUE || ISEQ_BODY(iseq)->param.flags.has_kwrest == TRUE || ISEQ_BODY(iseq)->param.flags.forwardable == TRUE)
       : UNLIMITED_ARGUMENTS;
     return ISEQ_BODY(iseq)->param.lead_num + ISEQ_BODY(iseq)->param.post_num + (ISEQ_BODY(iseq)->param.flags.has_kw && ISEQ_BODY(iseq)->param.keyword->required_num > 0);
 }
@@ -1177,6 +1190,12 @@ rb_block_pair_yield_optimizable(void)
             if (proc->is_lambda) return 0;
             if (min != max) return 0;
             return min > 1;
+        }
+
+      case block_handler_type_ifunc:
+        {
+            const struct vm_ifunc *ifunc = block.as.captured.code.ifunc;
+            if (ifunc->flags & IFUNC_YIELD_OPTIMIZABLE) return 1;
         }
 
       default:
@@ -1324,10 +1343,15 @@ proc_eq(VALUE self, VALUE other)
         }
         break;
       case block_type_ifunc:
-        if (self_block->as.captured.ep != \
-                other_block->as.captured.ep ||
-                self_block->as.captured.code.ifunc != \
+        if (self_block->as.captured.code.ifunc != \
                 other_block->as.captured.code.ifunc) {
+            return Qfalse;
+        }
+
+        if (memcmp(
+                ((cfunc_proc_t *)self_proc)->env,
+                ((cfunc_proc_t *)other_proc)->env,
+                sizeof(((cfunc_proc_t *)self_proc)->env))) {
             return Qfalse;
         }
         break;
@@ -1349,14 +1373,20 @@ proc_eq(VALUE self, VALUE other)
 static VALUE
 iseq_location(const rb_iseq_t *iseq)
 {
-    VALUE loc[2];
+    VALUE loc[5];
+    int i = 0;
 
     if (!iseq) return Qnil;
     rb_iseq_check(iseq);
-    loc[0] = rb_iseq_path(iseq);
-    loc[1] = RB_INT2NUM(ISEQ_BODY(iseq)->location.first_lineno);
+    loc[i++] = rb_iseq_path(iseq);
+    const rb_code_location_t *cl = &ISEQ_BODY(iseq)->location.code_location;
+    loc[i++] = RB_INT2NUM(cl->beg_pos.lineno);
+    loc[i++] = RB_INT2NUM(cl->beg_pos.column);
+    loc[i++] = RB_INT2NUM(cl->end_pos.lineno);
+    loc[i++] = RB_INT2NUM(cl->end_pos.column);
+    RUBY_ASSERT_ALWAYS(i == numberof(loc));
 
-    return rb_ary_new4(2, loc);
+    return rb_ary_new_from_values(i, loc);
 }
 
 VALUE
@@ -1451,9 +1481,33 @@ rb_hash_proc(st_index_t hash, VALUE prc)
 {
     rb_proc_t *proc;
     GetProcPtr(prc, proc);
-    hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.code.val);
-    hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.self);
-    return rb_hash_uint(hash, (st_index_t)proc->block.as.captured.ep);
+
+    switch (vm_block_type(&proc->block)) {
+      case block_type_iseq:
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.iseq->body);
+        break;
+      case block_type_ifunc:
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.ifunc->func);
+        hash = rb_st_hash_uint(hash, (st_index_t)proc->block.as.captured.code.ifunc->data);
+        break;
+      case block_type_symbol:
+        hash = rb_st_hash_uint(hash, rb_any_hash(proc->block.as.symbol));
+        break;
+      case block_type_proc:
+        hash = rb_st_hash_uint(hash, rb_any_hash(proc->block.as.proc));
+        break;
+      default:
+        rb_bug("rb_hash_proc: unknown block type %d", vm_block_type(&proc->block));
+    }
+
+    /* ifunc procs have their own allocated ep. If an ifunc is duplicated, they
+     * will point to different ep but they should return the same hash code, so
+     * we cannot include the ep in the hash. */
+    if (vm_block_type(&proc->block) != block_type_ifunc) {
+        hash = rb_hash_uint(hash, (st_index_t)proc->block.as.captured.ep);
+    }
+
+    return hash;
 }
 
 
@@ -1482,7 +1536,7 @@ rb_sym_to_proc(VALUE sym)
 
     if (!sym_proc_cache) {
         sym_proc_cache = rb_ary_hidden_new(SYM_PROC_CACHE_SIZE * 2);
-        rb_gc_register_mark_object(sym_proc_cache);
+        rb_vm_register_global_object(sym_proc_cache);
         rb_ary_store(sym_proc_cache, SYM_PROC_CACHE_SIZE*2 - 1, Qnil);
     }
 
@@ -1592,21 +1646,15 @@ bm_mark_and_move(void *ptr)
     rb_gc_mark_and_move_ptr((rb_method_entry_t **)&data->me);
 }
 
-static size_t
-bm_memsize(const void *ptr)
-{
-    return sizeof(struct METHOD);
-}
-
 static const rb_data_type_t method_data_type = {
     "method",
     {
         bm_mark_and_move,
         RUBY_TYPED_DEFAULT_FREE,
-        bm_memsize,
+        NULL, // No external memory to report,
         bm_mark_and_move,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_EMBEDDABLE
 };
 
 VALUE
@@ -1700,7 +1748,7 @@ mnew_internal(const rb_method_entry_t *me, VALUE klass, VALUE iclass,
 
     method = TypedData_Make_Struct(mclass, struct METHOD, &method_data_type, data);
 
-    if (obj == Qundef) {
+    if (UNDEF_P(obj)) {
         RB_OBJ_WRITE(method, &data->recv, Qundef);
         RB_OBJ_WRITE(method, &data->klass, Qundef);
     }
@@ -1754,7 +1802,7 @@ method_entry_defined_class(const rb_method_entry_t *me)
  *
  * Document-class: Method
  *
- *  Method objects are created by Object#method, and are associated
+ *  +Method+ objects are created by Object#method, and are associated
  *  with a particular object (not just with a class).  They may be
  *  used to invoke the method within the object, and as a block
  *  associated with an iterator.  They may also be unbound from one
@@ -1800,8 +1848,8 @@ method_eq(VALUE method, VALUE other)
         return Qfalse;
 
     Check_TypedStruct(method, &method_data_type);
-    m1 = (struct METHOD *)DATA_PTR(method);
-    m2 = (struct METHOD *)DATA_PTR(other);
+    m1 = (struct METHOD *)RTYPEDDATA_GET_DATA(method);
+    m2 = (struct METHOD *)RTYPEDDATA_GET_DATA(other);
 
     klass1 = method_entry_defined_class(m1->me);
     klass2 = method_entry_defined_class(m2->me);
@@ -1967,11 +2015,11 @@ method_owner(VALUE obj)
 void
 rb_method_name_error(VALUE klass, VALUE str)
 {
-#define MSG(s) rb_fstring_lit("undefined method `%1$s' for"s" `%2$s'")
+#define MSG(s) rb_fstring_lit("undefined method '%1$s' for"s" '%2$s'")
     VALUE c = klass;
     VALUE s = Qundef;
 
-    if (FL_TEST(c, FL_SINGLETON)) {
+    if (RCLASS_SINGLETON_P(c)) {
         VALUE obj = RCLASS_ATTACHED_OBJECT(klass);
 
         switch (BUILTIN_TYPE(obj)) {
@@ -2013,7 +2061,7 @@ obj_method(VALUE obj, VALUE vid, int scope)
  *     obj.method(sym)    -> method
  *
  *  Looks up the named method as a receiver in <i>obj</i>, returning a
- *  Method object (or raising NameError). The Method object acts as a
+ *  +Method+ object (or raising NameError). The +Method+ object acts as a
  *  closure in <i>obj</i>'s object instance, so instance variables and
  *  the value of <code>self</code> remain available.
  *
@@ -2034,7 +2082,7 @@ obj_method(VALUE obj, VALUE vid, int scope)
  *     m = l.method("hello")
  *     m.call   #=> "Hello, @iv = Fred"
  *
- *  Note that Method implements <code>to_proc</code> method, which
+ *  Note that +Method+ implements <code>to_proc</code> method, which
  *  means it can be used with iterators.
  *
  *     [ 1, 2, 3 ].each(&method(:puts)) # => prints 3 lines to stdout
@@ -2066,6 +2114,19 @@ rb_obj_public_method(VALUE obj, VALUE vid)
     return obj_method(obj, vid, TRUE);
 }
 
+static VALUE
+rb_obj_singleton_method_lookup(VALUE arg)
+{
+    VALUE *args = (VALUE *)arg;
+    return rb_obj_method(args[0], args[1]);
+}
+
+static VALUE
+rb_obj_singleton_method_lookup_fail(VALUE arg1, VALUE arg2)
+{
+    return Qfalse;
+}
+
 /*
  *  call-seq:
  *     obj.singleton_method(sym)    -> method
@@ -2093,11 +2154,12 @@ rb_obj_public_method(VALUE obj, VALUE vid)
 VALUE
 rb_obj_singleton_method(VALUE obj, VALUE vid)
 {
-    VALUE klass = rb_singleton_class_get(obj);
+    VALUE sc = rb_singleton_class_get(obj);
+    VALUE klass;
     ID id = rb_check_id(&vid);
 
-    if (NIL_P(klass) ||
-        NIL_P(klass = RCLASS_ORIGIN(klass)) ||
+    if (NIL_P(sc) ||
+        NIL_P(klass = RCLASS_ORIGIN(sc)) ||
         !NIL_P(rb_special_singleton_class(obj))) {
         /* goto undef; */
     }
@@ -2107,22 +2169,27 @@ rb_obj_singleton_method(VALUE obj, VALUE vid)
         /* else goto undef; */
     }
     else {
-        const rb_method_entry_t *me = rb_method_entry_at(klass, id);
-        vid = ID2SYM(id);
+        VALUE args[2] = {obj, vid};
+        VALUE ruby_method = rb_rescue(rb_obj_singleton_method_lookup, (VALUE)args, rb_obj_singleton_method_lookup_fail, Qfalse);
+        if (ruby_method) {
+            struct METHOD *method = (struct METHOD *)RTYPEDDATA_GET_DATA(ruby_method);
+            VALUE lookup_class = RBASIC_CLASS(obj);
+            VALUE stop_class = rb_class_superclass(sc);
+            VALUE method_class = method->iclass;
 
-        if (UNDEFINED_METHOD_ENTRY_P(me)) {
-            /* goto undef; */
-        }
-        else if (UNDEFINED_REFINED_METHOD_P(me->def)) {
-            /* goto undef; */
-        }
-        else {
-            return mnew_from_me(me, klass, klass, obj, id, rb_cMethod, FALSE);
+            /* Determine if method is in singleton class, or module included in or prepended to it */
+            do {
+                if (lookup_class == method_class) {
+                    return ruby_method;
+                }
+                lookup_class = RCLASS_SUPER(lookup_class);
+            } while (lookup_class && lookup_class != stop_class);
         }
     }
 
   /* undef: */
-    rb_name_err_raise("undefined singleton method `%1$s' for `%2$s'",
+    vid = ID2SYM(id);
+    rb_name_err_raise("undefined singleton method '%1$s' for '%2$s'",
                       obj, vid);
     UNREACHABLE_RETURN(Qundef);
 }
@@ -2217,10 +2284,10 @@ rb_mod_define_method_with_visibility(int argc, VALUE *argv, VALUE mod, const str
     if (!id) id = rb_to_id(name);
 
     if (is_method) {
-        struct METHOD *method = (struct METHOD *)DATA_PTR(body);
+        struct METHOD *method = (struct METHOD *)RTYPEDDATA_GET_DATA(body);
         if (method->me->owner != mod && !RB_TYPE_P(method->me->owner, T_MODULE) &&
             !RTEST(rb_class_inherited_p(mod, method->me->owner))) {
-            if (FL_TEST(method->me->owner, FL_SINGLETON)) {
+            if (RCLASS_SINGLETON_P(method->me->owner)) {
                 rb_raise(rb_eTypeError,
                          "can't bind singleton method to a different class");
             }
@@ -2357,17 +2424,7 @@ rb_obj_define_method(int argc, VALUE *argv, VALUE obj)
 static VALUE
 top_define_method(int argc, VALUE *argv, VALUE obj)
 {
-    rb_thread_t *th = GET_THREAD();
-    VALUE klass;
-
-    klass = th->top_wrapper;
-    if (klass) {
-        rb_warning("main.define_method in the wrapped load is effective only in wrapper module");
-    }
-    else {
-        klass = rb_cObject;
-    }
-    return rb_mod_define_method(argc, argv, klass);
+    return rb_mod_define_method(argc, argv, rb_top_main_class("define_method"));
 }
 
 /*
@@ -2395,7 +2452,25 @@ method_clone(VALUE self)
 
     TypedData_Get_Struct(self, struct METHOD, &method_data_type, orig);
     clone = TypedData_Make_Struct(CLASS_OF(self), struct METHOD, &method_data_type, data);
-    CLONESETUP(clone, self);
+    rb_obj_clone_setup(self, clone, Qnil);
+    RB_OBJ_WRITE(clone, &data->recv, orig->recv);
+    RB_OBJ_WRITE(clone, &data->klass, orig->klass);
+    RB_OBJ_WRITE(clone, &data->iclass, orig->iclass);
+    RB_OBJ_WRITE(clone, &data->owner, orig->owner);
+    RB_OBJ_WRITE(clone, &data->me, rb_method_entry_clone(orig->me));
+    return clone;
+}
+
+/* :nodoc: */
+static VALUE
+method_dup(VALUE self)
+{
+    VALUE clone;
+    struct METHOD *orig, *data;
+
+    TypedData_Get_Struct(self, struct METHOD, &method_data_type, orig);
+    clone = TypedData_Make_Struct(CLASS_OF(self), struct METHOD, &method_data_type, data);
+    rb_obj_dup_setup(self, clone);
     RB_OBJ_WRITE(clone, &data->recv, orig->recv);
     RB_OBJ_WRITE(clone, &data->klass, orig->klass);
     RB_OBJ_WRITE(clone, &data->iclass, orig->iclass);
@@ -2506,7 +2581,7 @@ rb_method_call_with_block(int argc, const VALUE *argv, VALUE method, VALUE passe
  *
  * Document-class: UnboundMethod
  *
- *  Ruby supports two forms of objectified methods. Class Method is
+ *  Ruby supports two forms of objectified methods. Class +Method+ is
  *  used to represent methods that are associated with a particular
  *  object: these method objects are bound to that object. Bound
  *  method objects for an object can be created using Object#method.
@@ -2569,7 +2644,7 @@ convert_umethod_to_method_components(const struct METHOD *data, VALUE recv, VALU
         if (!NIL_P(refined_class)) methclass = refined_class;
     }
     if (!RB_TYPE_P(methclass, T_MODULE) && !RTEST(rb_obj_is_kind_of(recv, methclass))) {
-        if (FL_TEST(methclass, FL_SINGLETON)) {
+        if (RCLASS_SINGLETON_P(methclass)) {
             rb_raise(rb_eTypeError,
                      "singleton method called for a different object");
         }
@@ -3136,11 +3211,11 @@ method_inspect(VALUE method)
         defined_class = RBASIC_CLASS(defined_class);
     }
 
-    if (data->recv == Qundef) {
+    if (UNDEF_P(data->recv)) {
         // UnboundMethod
         rb_str_buf_append(str, rb_inspect(defined_class));
     }
-    else if (FL_TEST(mklass, FL_SINGLETON)) {
+    else if (RCLASS_SINGLETON_P(mklass)) {
         VALUE v = RCLASS_ATTACHED_OBJECT(mklass);
 
         if (UNDEF_P(data->recv)) {
@@ -3160,7 +3235,7 @@ method_inspect(VALUE method)
     }
     else {
         mklass = data->klass;
-        if (FL_TEST(mklass, FL_SINGLETON)) {
+        if (RCLASS_SINGLETON_P(mklass)) {
             VALUE v = RCLASS_ATTACHED_OBJECT(mklass);
             if (!(RB_TYPE_P(v, T_CLASS) || RB_TYPE_P(v, T_MODULE))) {
                 do {
@@ -3347,7 +3422,7 @@ extern VALUE rb_find_defined_class_by_owner(VALUE current_class, VALUE target_ow
  * call-seq:
  *   meth.super_method  -> method
  *
- * Returns a Method of superclass which would be called when super is used
+ * Returns a +Method+ of superclass which would be called when super is used
  * or nil if there is no method on superclass.
  */
 
@@ -3420,9 +3495,15 @@ env_clone(const rb_env_t *env, const rb_cref_t *cref)
     }
 
     new_body = ALLOC_N(VALUE, env->env_size);
-    MEMCPY(new_body, env->env, VALUE, env->env_size);
     new_ep = &new_body[env->ep - env->env];
     new_env = vm_env_new(new_ep, new_body, env->env_size, env->iseq);
+
+    /* The memcpy has to happen after the vm_env_new because it can trigger a
+     * GC compaction which can move the objects in the env. */
+    MEMCPY(new_body, env->env, VALUE, env->env_size);
+    /* VM_ENV_DATA_INDEX_ENV is set in vm_env_new but will get overwritten
+     * by the memcpy above. */
+    new_ep[VM_ENV_DATA_INDEX_ENV] = (VALUE)new_env;
     RB_OBJ_WRITE(new_env, &new_ep[VM_ENV_DATA_INDEX_ME_CREF], (VALUE)cref);
     VM_ASSERT(VM_ENV_ESCAPED_P(new_ep));
     return new_env;
@@ -3479,7 +3560,7 @@ proc_binding(VALUE self)
                 env = VM_ENV_ENVVAL_PTR(block->as.captured.ep);
                 env = env_clone(env, method_cref(method));
                 /* set empty iseq */
-                empty = rb_iseq_new(NULL, name, name, Qnil, 0, ISEQ_TYPE_TOP);
+                empty = rb_iseq_new(Qnil, name, name, Qnil, 0, ISEQ_TYPE_TOP);
                 RB_OBJ_WRITE(env, &env->iseq, empty);
                 break;
             }
@@ -4135,7 +4216,6 @@ proc_ruby2_keywords(VALUE procval)
  * a proc by the <code>&</code> operator, and therefore can be
  * consumed by iterators.
  *
-
  *      class Greeter
  *        def initialize(greeting)
  *          @greeting = greeting
@@ -4151,8 +4231,8 @@ proc_ruby2_keywords(VALUE procval)
  *      ["Bob", "Jane"].map(&hi)    #=> ["Hi, Bob!", "Hi, Jane!"]
  *      ["Bob", "Jane"].map(&hey)   #=> ["Hey, Bob!", "Hey, Jane!"]
  *
- * Of the Ruby core classes, this method is implemented by Symbol,
- * Method, and Hash.
+ * Of the Ruby core classes, this method is implemented by +Symbol+,
+ * +Method+, and +Hash+.
  *
  *      :to_s.to_proc.call(1)           #=> "1"
  *      [1, 2].map(&:to_s)              #=> ["1", "2"]
@@ -4186,18 +4266,85 @@ proc_ruby2_keywords(VALUE procval)
  * Since +return+ and +break+ exits the block itself in lambdas,
  * lambdas cannot be orphaned.
  *
- * == Numbered parameters
+ * == Anonymous block parameters
  *
- * Numbered parameters are implicitly defined block parameters intended to
- * simplify writing short blocks:
+ * To simplify writing short blocks, Ruby provides two different types of
+ * anonymous parameters: +it+ (single parameter) and numbered ones: <tt>_1</tt>,
+ * <tt>_2</tt> and so on.
  *
  *     # Explicit parameter:
  *     %w[test me please].each { |str| puts str.upcase } # prints TEST, ME, PLEASE
  *     (1..5).map { |i| i**2 } # => [1, 4, 9, 16, 25]
  *
- *     # Implicit parameter:
+ *     # it:
+ *     %w[test me please].each { puts it.upcase } # prints TEST, ME, PLEASE
+ *     (1..5).map { it**2 } # => [1, 4, 9, 16, 25]
+ *
+ *     # Numbered parameter:
  *     %w[test me please].each { puts _1.upcase } # prints TEST, ME, PLEASE
  *     (1..5).map { _1**2 } # => [1, 4, 9, 16, 25]
+ *
+ * === +it+
+ *
+ * +it+ is a name that is available inside a block when no explicit parameters
+ * defined, as shown above.
+ *
+ *     %w[test me please].each { puts it.upcase } # prints TEST, ME, PLEASE
+ *     (1..5).map { it**2 } # => [1, 4, 9, 16, 25]
+ *
+ * +it+ is a "soft keyword": it is not a reserved name, and can be used as
+ * a name for methods and local variables:
+ *
+ *      it = 5 # no warnings
+ *      def it(&block) # RSpec-like API, no warnings
+ *         # ...
+ *      end
+ *
+ * +it+ can be used as a local variable even in blocks that use it as an
+ * implicit parameter (though this style is obviously confusing):
+ *
+ *      [1, 2, 3].each {
+ *        # takes a value of implicit parameter "it" and uses it to
+ *        # define a local variable with the same name
+ *        it = it**2
+ *        p it
+ *      }
+ *
+ * In a block with explicit parameters defined +it+ usage raises an exception:
+ *
+ *      [1, 2, 3].each { |x| p it }
+ *      # syntax error found (SyntaxError)
+ *      # [1, 2, 3].each { |x| p it }
+ *      #                        ^~ 'it' is not allowed when an ordinary parameter is defined
+ *
+ * But if a local name (variable or method) is available, it would be used:
+ *
+ *      it = 5
+ *      [1, 2, 3].each { |x| p it }
+ *      # Prints 5, 5, 5
+ *
+ * Blocks using +it+ can be nested:
+ *
+ *     %w[test me].each { it.each_char { p it } }
+ *     # Prints "t", "e", "s", "t", "m", "e"
+ *
+ * Blocks using +it+ are considered to have one parameter:
+ *
+ *     p = proc { it**2 }
+ *     l = lambda { it**2 }
+ *     p.parameters     # => [[:opt]]
+ *     p.arity          # => 1
+ *     l.parameters     # => [[:req]]
+ *     l.arity          # => 1
+ *
+ * === Numbered parameters
+ *
+ * Numbered parameters are another way to name block parameters implicitly.
+ * Unlike +it+, numbered parameters allow to refer to several parameters
+ * in one block.
+ *
+ *     %w[test me please].each { puts _1.upcase } # prints TEST, ME, PLEASE
+ *     {a: 100, b: 200}.map { "#{_1} = #{_2}" } # => "a = 100", "b = 200"
  *
  * Parameter names from +_1+ to +_9+ are supported:
  *
@@ -4213,11 +4360,16 @@ proc_ruby2_keywords(VALUE procval)
  *     [10, 20, 30].map { |x| _1**2 }
  *     # SyntaxError (ordinary parameter is defined)
  *
- * To avoid conflicts, naming local variables or method
- * arguments +_1+, +_2+ and so on, causes a warning.
+ * Numbered parameters can't be mixed with +it+ either:
  *
- *     _1 = 'test'
- *     # warning: `_1' is reserved as numbered parameter
+ *     [10, 20, 30].map { _1 + it }
+ *     # SyntaxError: 'it' is not allowed when a numbered parameter is already used
+ *
+ * To avoid conflicts, naming local variables or method
+ * arguments +_1+, +_2+ and so on, causes an error.
+ *
+ *       _1 = 'test'
+ *     # ^~ _1 is reserved for numbered parameters (SyntaxError)
  *
  * Using implicit numbered parameters affects block's arity:
  *
@@ -4231,13 +4383,11 @@ proc_ruby2_keywords(VALUE procval)
  * Blocks with numbered parameters can't be nested:
  *
  *     %w[test me].each { _1.each_char { p _1 } }
- *     # SyntaxError (numbered parameter is already used in outer block here)
+ *     # numbered parameter is already used in outer block (SyntaxError)
  *     # %w[test me].each { _1.each_char { p _1 } }
  *     #                    ^~
  *
- * Numbered parameters were introduced in Ruby 2.7.
  */
-
 
 void
 Init_Proc(void)
@@ -4263,7 +4413,7 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "to_proc", proc_to_proc, 0);
     rb_define_method(rb_cProc, "arity", proc_arity, 0);
     rb_define_method(rb_cProc, "clone", proc_clone, 0);
-    rb_define_method(rb_cProc, "dup", rb_proc_dup, 0);
+    rb_define_method(rb_cProc, "dup", proc_dup, 0);
     rb_define_method(rb_cProc, "hash", proc_hash, 0);
     rb_define_method(rb_cProc, "to_s", proc_to_s, 0);
     rb_define_alias(rb_cProc, "inspect", "to_s");
@@ -4299,6 +4449,7 @@ Init_Proc(void)
     rb_define_method(rb_cMethod, "eql?", method_eq, 1);
     rb_define_method(rb_cMethod, "hash", method_hash, 0);
     rb_define_method(rb_cMethod, "clone", method_clone, 0);
+    rb_define_method(rb_cMethod, "dup", method_dup, 0);
     rb_define_method(rb_cMethod, "call", rb_method_call_pass_called_kw, -1);
     rb_define_method(rb_cMethod, "===", rb_method_call_pass_called_kw, -1);
     rb_define_method(rb_cMethod, "curry", rb_method_curry, -1);
@@ -4329,6 +4480,7 @@ Init_Proc(void)
     rb_define_method(rb_cUnboundMethod, "eql?", unbound_method_eq, 1);
     rb_define_method(rb_cUnboundMethod, "hash", method_hash, 0);
     rb_define_method(rb_cUnboundMethod, "clone", method_clone, 0);
+    rb_define_method(rb_cUnboundMethod, "dup", method_dup, 0);
     rb_define_method(rb_cUnboundMethod, "arity", method_arity_m, 0);
     rb_define_method(rb_cUnboundMethod, "inspect", method_inspect, 0);
     rb_define_method(rb_cUnboundMethod, "to_s", method_inspect, 0);

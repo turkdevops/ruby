@@ -22,10 +22,6 @@
 #include <unistd.h>
 #endif
 
-#ifndef O_CLOEXEC
-#  define O_CLOEXEC 0
-#endif
-
 #ifndef USE_OPENDIR_AT
 # if defined(HAVE_FDOPENDIR) && defined(HAVE_DIRFD) && \
     defined(HAVE_OPENAT) && defined(HAVE_FSTATAT)
@@ -35,8 +31,12 @@
 # endif
 #endif
 
-#if USE_OPENDIR_AT
-# include <fcntl.h>
+#ifdef HAVE_FCNTL_H
+#  include <fcntl.h>
+#endif
+
+#ifndef O_CLOEXEC
+#  define O_CLOEXEC 0
 #endif
 
 #undef HAVE_DIRENT_NAMLEN
@@ -113,6 +113,7 @@ char *strchr(char*,char);
 #include "internal/gc.h"
 #include "internal/io.h"
 #include "internal/object.h"
+#include "internal/imemo.h"
 #include "internal/vm.h"
 #include "ruby/encoding.h"
 #include "ruby/ruby.h"
@@ -142,6 +143,50 @@ char *strchr(char*,char);
 # define IS_WIN32 0
 #endif
 
+#ifdef HAVE_GETATTRLIST
+struct getattrlist_args {
+    const char *path;
+    int fd;
+    struct attrlist *list;
+    void *buf;
+    size_t size;
+    unsigned int options;
+};
+
+# define GETATTRLIST_ARGS(list_, buf_, options_) (struct getattrlist_args) \
+    {.list = list_, .buf = buf_, .size = sizeof(buf_), .options = options_}
+
+static void *
+nogvl_getattrlist(void *args)
+{
+    struct getattrlist_args *arg = args;
+    return (void *)(VALUE)getattrlist(arg->path, arg->list, arg->buf, arg->size, arg->options);
+}
+
+static int
+gvl_getattrlist(struct getattrlist_args *args, const char *path)
+{
+    args->path = path;
+    return IO_WITHOUT_GVL_INT(nogvl_getattrlist, args);
+}
+
+# ifdef HAVE_FGETATTRLIST
+static void *
+nogvl_fgetattrlist(void *args)
+{
+    struct getattrlist_args *arg = args;
+    return (void *)(VALUE)fgetattrlist(arg->fd, arg->list, arg->buf, arg->size, arg->options);
+}
+
+static int
+gvl_fgetattrlist(struct getattrlist_args *args, int fd)
+{
+    args->fd = fd;
+    return IO_WITHOUT_GVL_INT(nogvl_fgetattrlist, args);
+}
+# endif
+#endif
+
 #if NORMALIZE_UTF8PATH
 # if defined HAVE_FGETATTRLIST || !defined HAVE_GETATTRLIST
 #   define need_normalization(dirp, path) need_normalization(dirp)
@@ -154,10 +199,11 @@ need_normalization(DIR *dirp, const char *path)
 # if defined HAVE_FGETATTRLIST || defined HAVE_GETATTRLIST
     u_int32_t attrbuf[SIZEUP32(fsobj_tag_t)];
     struct attrlist al = {ATTR_BIT_MAP_COUNT, 0, ATTR_CMN_OBJTAG,};
+    struct getattrlist_args args = GETATTRLIST_ARGS(&al, attrbuf, 0);
 #   if defined HAVE_FGETATTRLIST
-    int ret = fgetattrlist(dirfd(dirp), &al, attrbuf, sizeof(attrbuf), 0);
+    int ret = gvl_fgetattrlist(&args, dirfd(dirp));
 #   else
-    int ret = getattrlist(path, &al, attrbuf, sizeof(attrbuf), 0);
+    int ret = gvl_getattrlist(&args, path);
 #   endif
     if (!ret) {
         const fsobj_tag_t *tag = (void *)(attrbuf+1);
@@ -471,23 +517,21 @@ dir_free(void *ptr)
     struct dir_data *dir = ptr;
 
     if (dir->dir) closedir(dir->dir);
-    xfree(dir);
 }
 
-static size_t
-dir_memsize(const void *ptr)
-{
-    return sizeof(struct dir_data);
-}
-
-RUBY_REFERENCES_START(dir_refs)
-    REF_EDGE(dir_data, path),
-RUBY_REFERENCES_END
+RUBY_REFERENCES(dir_refs) = {
+    RUBY_REF_EDGE(struct dir_data, path),
+    RUBY_REF_END
+};
 
 static const rb_data_type_t dir_data_type = {
     "dir",
-    {REFS_LIST_PTR(dir_refs), dir_free, dir_memsize,},
-    0, NULL, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_DECL_MARKING
+    {
+        RUBY_REFS_LIST_PTR(dir_refs),
+        dir_free,
+        NULL, // Nothing allocated externally, so don't need a memsize function
+    },
+    0, NULL, RUBY_TYPED_WB_PROTECTED | RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_DECL_MARKING | RUBY_TYPED_EMBEDDABLE
 };
 
 static VALUE dir_close(VALUE);
@@ -510,7 +554,7 @@ nogvl_opendir(void *ptr)
 {
     const char *path = ptr;
 
-    return (void *)opendir(path);
+    return opendir(path);
 }
 
 static DIR *
@@ -521,10 +565,29 @@ opendir_without_gvl(const char *path)
 
         u.in = path;
 
-        return rb_thread_call_without_gvl(nogvl_opendir, u.out, RUBY_UBF_IO, 0);
+        return IO_WITHOUT_GVL(nogvl_opendir, u.out);
     }
     else
         return opendir(path);
+}
+
+static void
+close_dir_data(struct dir_data *dp)
+{
+    if (dp->dir) {
+        if (closedir(dp->dir) < 0) {
+            dp->dir = NULL;
+            rb_sys_fail("closedir");
+        }
+        dp->dir = NULL;
+    }
+}
+
+static void
+check_closedir(DIR *dirp)
+{
+    if (closedir(dirp) < 0)
+        rb_sys_fail("closedir");
 }
 
 static VALUE
@@ -541,8 +604,7 @@ dir_initialize(rb_execution_context_t *ec, VALUE dir, VALUE dirname, VALUE enc)
     dirname = rb_str_dup_frozen(dirname);
 
     TypedData_Get_Struct(dir, struct dir_data, &dir_data_type, dp);
-    if (dp->dir) closedir(dp->dir);
-    dp->dir = NULL;
+    close_dir_data(dp);
     RB_OBJ_WRITE(dir, &dp->path, Qnil);
     dp->enc = fsenc;
     path = RSTRING_PTR(dirname);
@@ -556,7 +618,8 @@ dir_initialize(rb_execution_context_t *ec, VALUE dir, VALUE dirname, VALUE enc)
         else if (e == EIO) {
             u_int32_t attrbuf[1];
             struct attrlist al = {ATTR_BIT_MAP_COUNT, 0};
-            if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), FSOPT_NOFOLLOW) == 0) {
+            struct getattrlist_args args = GETATTRLIST_ARGS(&al, attrbuf, FSOPT_NOFOLLOW);
+            if (gvl_getattrlist(&args, path) == 0) {
                 dp->dir = opendir_without_gvl(path);
             }
         }
@@ -589,6 +652,12 @@ dir_s_close(rb_execution_context_t *ec, VALUE klass, VALUE dir)
 }
 
 # if defined(HAVE_FDOPENDIR) && defined(HAVE_DIRFD)
+static void *
+nogvl_fdopendir(void *fd)
+{
+    return fdopendir((int)(VALUE)fd);
+}
+
 /*
  * call-seq:
  *   Dir.for_fd(fd) -> dir
@@ -615,7 +684,7 @@ dir_s_for_fd(VALUE klass, VALUE fd)
     struct dir_data *dp;
     VALUE dir = TypedData_Make_Struct(klass, struct dir_data, &dir_data_type, dp);
 
-    if (!(dp->dir = fdopendir(NUM2INT(fd)))) {
+    if (!(dp->dir = IO_WITHOUT_GVL(nogvl_fdopendir, (void *)(VALUE)NUM2INT(fd)))) {
         rb_sys_fail("fdopendir");
         UNREACHABLE_RETURN(Qnil);
     }
@@ -757,8 +826,28 @@ fundamental_encoding_p(rb_encoding *enc)
     }
 }
 # define READDIR(dir, enc) rb_w32_readdir((dir), (enc))
+# define READDIR_NOGVL READDIR
 #else
-# define READDIR(dir, enc) readdir((dir))
+NORETURN(static void *sys_failure(void *function));
+static void *
+sys_failure(void *function)
+{
+    rb_sys_fail(function);
+}
+
+static void *
+nogvl_readdir(void *dir)
+{
+    rb_errno_set(0);
+    if ((dir = readdir(dir)) == NULL) {
+        if (rb_errno())
+            rb_thread_call_with_gvl(sys_failure, (void *)"readdir");
+    }
+    return dir;
+}
+
+# define READDIR(dir, enc) IO_WITHOUT_GVL(nogvl_readdir, (void *)(dir))
+# define READDIR_NOGVL(dir, enc) nogvl_readdir((dir))
 #endif
 
 /* safe to use without GVL */
@@ -805,7 +894,7 @@ dir_read(VALUE dir)
     struct dirent *dp;
 
     GetDIR(dir, dirp);
-    errno = 0;
+    rb_errno_set(0);
     if ((dp = READDIR(dirp->dir, dirp->enc)) != NULL) {
         return rb_external_str_new_with_enc(dp->d_name, NAMLEN(dp), dirp->enc);
     }
@@ -903,7 +992,8 @@ dir_tell(VALUE dir)
     long pos;
 
     GetDIR(dir, dirp);
-    pos = telldir(dirp->dir);
+    if((pos = telldir(dirp->dir)) < 0)
+        rb_sys_fail("telldir");
     return rb_int2inum(pos);
 }
 #else
@@ -1022,8 +1112,7 @@ dir_close(VALUE dir)
 
     dirp = dir_get(dir);
     if (!dirp->dir) return Qnil;
-    closedir(dirp->dir);
-    dirp->dir = NULL;
+    close_dir_data(dirp);
 
     return Qnil;
 }
@@ -1039,16 +1128,68 @@ nogvl_chdir(void *ptr)
 static void
 dir_chdir0(VALUE path)
 {
-    if (chdir(RSTRING_PTR(path)) < 0)
+    if (IO_WITHOUT_GVL_INT(nogvl_chdir, (void*)RSTRING_PTR(path)) < 0)
         rb_sys_fail_path(path);
 }
 
-static int chdir_blocking = 0;
-static VALUE chdir_thread = Qnil;
+static struct {
+    VALUE thread;
+    VALUE path;
+    int line;
+    int blocking;
+} chdir_lock = {
+    .blocking = 0, .thread = Qnil,
+    .path = Qnil, .line = 0,
+};
+
+static void
+chdir_enter(void)
+{
+    if (chdir_lock.blocking == 0) {
+        chdir_lock.path = rb_source_location(&chdir_lock.line);
+    }
+    chdir_lock.blocking++;
+    if (NIL_P(chdir_lock.thread)) {
+        chdir_lock.thread = rb_thread_current();
+    }
+}
+
+static void
+chdir_leave(void)
+{
+    chdir_lock.blocking--;
+    if (chdir_lock.blocking == 0) {
+        chdir_lock.thread = Qnil;
+        chdir_lock.path = Qnil;
+        chdir_lock.line = 0;
+    }
+}
+
+static int
+chdir_alone_block_p(void)
+{
+    int block_given = rb_block_given_p();
+    if (chdir_lock.blocking > 0) {
+        if (rb_thread_current() != chdir_lock.thread)
+            rb_raise(rb_eRuntimeError, "conflicting chdir during another chdir block");
+        if (!block_given) {
+            if (!NIL_P(chdir_lock.path)) {
+                rb_warn("conflicting chdir during another chdir block\n"
+                        "%" PRIsVALUE ":%d: note: previous chdir was here",
+                        chdir_lock.path, chdir_lock.line);
+            }
+            else {
+                rb_warn("conflicting chdir during another chdir block");
+            }
+        }
+    }
+    return block_given;
+}
 
 struct chdir_data {
     VALUE old_path, new_path;
     int done;
+    bool yield_path;
 };
 
 static VALUE
@@ -1057,10 +1198,8 @@ chdir_yield(VALUE v)
     struct chdir_data *args = (void *)v;
     dir_chdir0(args->new_path);
     args->done = TRUE;
-    chdir_blocking++;
-    if (NIL_P(chdir_thread))
-        chdir_thread = rb_thread_current();
-    return rb_yield(args->new_path);
+    chdir_enter();
+    return args->yield_path ? rb_yield(args->new_path) : rb_yield_values2(0, NULL);
 }
 
 static VALUE
@@ -1068,12 +1207,32 @@ chdir_restore(VALUE v)
 {
     struct chdir_data *args = (void *)v;
     if (args->done) {
-        chdir_blocking--;
-        if (chdir_blocking == 0)
-            chdir_thread = Qnil;
+        chdir_leave();
         dir_chdir0(args->old_path);
     }
     return Qnil;
+}
+
+static VALUE
+chdir_path(VALUE path, bool yield_path)
+{
+    if (chdir_alone_block_p()) {
+        struct chdir_data args;
+
+        args.old_path = rb_str_encode_ospath(rb_dir_getwd());
+        args.new_path = path;
+        args.done = FALSE;
+        args.yield_path = yield_path;
+        return rb_ensure(chdir_yield, (VALUE)&args, chdir_restore, (VALUE)&args);
+    }
+    else {
+        char *p = RSTRING_PTR(path);
+        int r = IO_WITHOUT_GVL_INT(nogvl_chdir, p);
+        if (r < 0)
+            rb_sys_fail_path(path);
+    }
+
+    return INT2FIX(0);
 }
 
 /*
@@ -1102,7 +1261,7 @@ chdir_restore(VALUE v)
  *
  * - Calls the block with the argument.
  * - Changes to the given directory.
- * - Executes the block
+ * - Executes the block (yielding the new path).
  * - Restores the previous working directory.
  * - Returns the block's return value.
  *
@@ -1156,30 +1315,7 @@ dir_s_chdir(int argc, VALUE *argv, VALUE obj)
         path = rb_str_new2(dist);
     }
 
-    if (chdir_blocking > 0) {
-        if (rb_thread_current() != chdir_thread)
-            rb_raise(rb_eRuntimeError, "conflicting chdir during another chdir block");
-        if (!rb_block_given_p())
-            rb_warn("conflicting chdir during another chdir block");
-    }
-
-    if (rb_block_given_p()) {
-        struct chdir_data args;
-
-        args.old_path = rb_str_encode_ospath(rb_dir_getwd());
-        args.new_path = path;
-        args.done = FALSE;
-        return rb_ensure(chdir_yield, (VALUE)&args, chdir_restore, (VALUE)&args);
-    }
-    else {
-        char *p = RSTRING_PTR(path);
-        int r = (int)(VALUE)rb_thread_call_without_gvl(nogvl_chdir, p,
-                                                        RUBY_UBF_IO, 0);
-        if (r < 0)
-            rb_sys_fail_path(path);
-    }
-
-    return INT2FIX(0);
+    return chdir_path(path, true);
 }
 
 #if defined(HAVE_FCHDIR) && defined(HAVE_DIRFD) && HAVE_FCHDIR && HAVE_DIRFD
@@ -1194,7 +1330,7 @@ nogvl_fchdir(void *ptr)
 static void
 dir_fchdir(int fd)
 {
-    if (fchdir(fd) < 0)
+    if (IO_WITHOUT_GVL_INT(nogvl_fchdir, (void *)&fd) < 0)
         rb_sys_fail("fchdir");
 }
 
@@ -1210,9 +1346,7 @@ fchdir_yield(VALUE v)
     struct fchdir_data *args = (void *)v;
     dir_fchdir(args->fd);
     args->done = TRUE;
-    chdir_blocking++;
-    if (NIL_P(chdir_thread))
-        chdir_thread = rb_thread_current();
+    chdir_enter();
     return rb_yield_values(0);
 }
 
@@ -1221,9 +1355,7 @@ fchdir_restore(VALUE v)
 {
     struct fchdir_data *args = (void *)v;
     if (args->done) {
-        chdir_blocking--;
-        if (chdir_blocking == 0)
-            chdir_thread = Qnil;
+        chdir_leave();
         dir_fchdir(RB_NUM2INT(dir_fileno(args->old_dir)));
     }
     dir_close(args->old_dir);
@@ -1248,16 +1380,14 @@ fchdir_restore(VALUE v)
  *   Dir.pwd # => "/var/spool/mail"
  *   dir  = Dir.new('/usr')
  *   fd = dir.fileno
- *   Dir.fchdir(fd) do
- *     Dir.pwd # => "/usr"
- *   end
- *   Dir.pwd # => "/var/spool/mail"
+ *   Dir.fchdir(fd)
+ *   Dir.pwd # => "/usr"
  *
  * With a block, temporarily changes the working directory:
  *
  * - Calls the block with the argument.
  * - Changes to the given directory.
- * - Executes the block
+ * - Executes the block (yields no args).
  * - Restores the previous working directory.
  * - Returns the block's return value.
  *
@@ -1265,7 +1395,9 @@ fchdir_restore(VALUE v)
  *
  *   Dir.chdir('/var/spool/mail')
  *   Dir.pwd # => "/var/spool/mail"
- *   Dir.chdir('/tmp') do
+ *   dir  = Dir.new('/tmp')
+ *   fd = dir.fileno
+ *   Dir.fchdir(fd) do
  *     Dir.pwd # => "/tmp"
  *   end
  *   Dir.pwd # => "/var/spool/mail"
@@ -1287,14 +1419,7 @@ dir_s_fchdir(VALUE klass, VALUE fd_value)
 {
     int fd = RB_NUM2INT(fd_value);
 
-    if (chdir_blocking > 0) {
-        if (rb_thread_current() != chdir_thread)
-            rb_raise(rb_eRuntimeError, "conflicting chdir during another chdir block");
-        if (!rb_block_given_p())
-            rb_warn("conflicting chdir during another chdir block");
-    }
-
-    if (rb_block_given_p()) {
+    if (chdir_alone_block_p()) {
         struct fchdir_data args;
         args.old_dir = dir_s_alloc(klass);
         dir_initialize(NULL, args.old_dir, rb_fstring_cstr("."), Qnil);
@@ -1303,8 +1428,7 @@ dir_s_fchdir(VALUE klass, VALUE fd_value)
         return rb_ensure(fchdir_yield, (VALUE)&args, fchdir_restore, (VALUE)&args);
     }
     else {
-        int r = (int)(VALUE)rb_thread_call_without_gvl(nogvl_fchdir, &fd,
-                                                       RUBY_UBF_IO, 0);
+        int r = IO_WITHOUT_GVL_INT(nogvl_fchdir, &fd);
         if (r < 0)
             rb_sys_fail("fchdir");
     }
@@ -1317,27 +1441,35 @@ dir_s_fchdir(VALUE klass, VALUE fd_value)
 
 /*
  * call-seq:
- *   chdir -> nil
+ *   chdir -> 0
+ *   chdir { ... } -> object
  *
- * Changes the current working directory to the path of +self+:
+ * Changes the current working directory to +self+:
  *
  *   Dir.pwd # => "/"
  *   dir = Dir.new('example')
  *   dir.chdir
- *   dir.pwd # => "/example"
+ *   Dir.pwd # => "/example"
  *
+ * With a block, temporarily changes the working directory:
+ *
+ * - Calls the block.
+ * - Changes to the given directory.
+ * - Executes the block (yields no args).
+ * - Restores the previous working directory.
+ * - Returns the block's return value.
+ *
+ * Uses Dir.fchdir if available, and Dir.chdir if not, see those
+ * methods for caveats.
  */
 static VALUE
 dir_chdir(VALUE dir)
 {
 #if defined(HAVE_FCHDIR) && defined(HAVE_DIRFD) && HAVE_FCHDIR && HAVE_DIRFD
-    dir_s_fchdir(rb_cDir, dir_fileno(dir));
+    return dir_s_fchdir(rb_cDir, dir_fileno(dir));
 #else
-    VALUE path = dir_get(dir)->path;
-    dir_s_chdir(1, &path, rb_cDir);
+    return chdir_path(dir_get(dir)->path, false);
 #endif
-
-    return Qnil;
 }
 
 #ifndef _WIN32
@@ -1348,19 +1480,15 @@ rb_dir_getwd_ospath(void)
     VALUE cwd;
     VALUE path_guard;
 
-#undef RUBY_UNTYPED_DATA_WARNING
-#define RUBY_UNTYPED_DATA_WARNING 0
-    path_guard = Data_Wrap_Struct((VALUE)0, NULL, RUBY_DEFAULT_FREE, NULL);
+    path_guard = rb_imemo_tmpbuf_auto_free_pointer();
     path = ruby_getcwd();
-    DATA_PTR(path_guard) = path;
+    rb_imemo_tmpbuf_set_ptr(path_guard, path);
 #ifdef __APPLE__
     cwd = rb_str_normalize_ospath(path, strlen(path));
 #else
     cwd = rb_str_new2(path);
 #endif
-    DATA_PTR(path_guard) = 0;
-
-    xfree(path);
+    rb_free_tmp_buffer(&path_guard);
     return cwd;
 }
 #endif
@@ -1422,6 +1550,12 @@ check_dirname(VALUE dir)
 }
 
 #if defined(HAVE_CHROOT)
+static void *
+nogvl_chroot(void *dirname)
+{
+    return (void *)(VALUE)chroot((const char *)dirname);
+}
+
 /*
  * call-seq:
  *   Dir.chroot(dirpath) -> 0
@@ -1438,7 +1572,7 @@ static VALUE
 dir_s_chroot(VALUE dir, VALUE path)
 {
     path = check_dirname(path);
-    if (chroot(RSTRING_PTR(path)) == -1)
+    if (IO_WITHOUT_GVL_INT(nogvl_chroot, (void *)RSTRING_PTR(path)) == -1)
         rb_sys_fail_path(path);
 
     return INT2FIX(0);
@@ -1492,7 +1626,7 @@ dir_s_mkdir(int argc, VALUE *argv, VALUE obj)
 
     path = check_dirname(path);
     m.path = RSTRING_PTR(path);
-    r = (int)(VALUE)rb_thread_call_without_gvl(nogvl_mkdir, &m, RUBY_UBF_IO, 0);
+    r = IO_WITHOUT_GVL_INT(nogvl_mkdir, &m);
     if (r < 0)
         rb_sys_fail_path(path);
 
@@ -1525,7 +1659,7 @@ dir_s_rmdir(VALUE obj, VALUE dir)
 
     dir = check_dirname(dir);
     p = RSTRING_PTR(dir);
-    r = (int)(VALUE)rb_thread_call_without_gvl(nogvl_rmdir, (void *)p, RUBY_UBF_IO, 0);
+    r = IO_WITHOUT_GVL_INT(nogvl_rmdir, (void *)p);
     if (r < 0)
         rb_sys_fail_path(dir);
 
@@ -1615,11 +1749,11 @@ to_be_ignored(int e)
 }
 
 #ifdef _WIN32
-#define STAT(p, s)	rb_w32_ustati128((p), (s))
-#undef lstat
-#define lstat(p, s)	rb_w32_ulstati128((p), (s))
+#define STAT(args)	(int)(VALUE)nogvl_stat(&(args))
+#define LSTAT(args)	(int)(VALUE)nogvl_lstat(&(args))
 #else
-#define STAT(p, s)	stat((p), (s))
+#define STAT(args)	IO_WITHOUT_GVL_INT(nogvl_stat, (void *)&(args))
+#define LSTAT(args)	IO_WITHOUT_GVL_INT(nogvl_lstat, (void *)&(args))
 #endif
 
 typedef int ruby_glob_errfunc(const char*, VALUE, const void*, int);
@@ -1640,14 +1774,50 @@ at_subpath(int fd, size_t baselen, const char *path)
     return *path ? path : ".";
 }
 
+#if USE_OPENDIR_AT
+struct fstatat_args {
+    int fd;
+    int flag;
+    const char *path;
+    struct stat *pst;
+};
+
+static void *
+nogvl_fstatat(void *args)
+{
+    struct fstatat_args *arg = (struct fstatat_args *)args;
+    return (void *)(VALUE)fstatat(arg->fd, arg->path, arg->pst, arg->flag);
+}
+#else
+struct stat_args {
+    const char *path;
+    struct stat *pst;
+};
+
+static void *
+nogvl_stat(void *args)
+{
+    struct stat_args *arg = (struct stat_args *)args;
+    return (void *)(VALUE)stat(arg->path, arg->pst);
+}
+#endif
+
 /* System call with warning */
 static int
 do_stat(int fd, size_t baselen, const char *path, struct stat *pst, int flags, rb_encoding *enc)
 {
 #if USE_OPENDIR_AT
-    int ret = fstatat(fd, at_subpath(fd, baselen, path), pst, 0);
+    struct fstatat_args args;
+    args.fd = fd;
+    args.path = path;
+    args.pst = pst;
+    args.flag = 0;
+    int ret = IO_WITHOUT_GVL_INT(nogvl_fstatat, (void *)&args);
 #else
-    int ret = STAT(path, pst);
+    struct stat_args args;
+    args.path = path;
+    args.pst = pst;
+    int ret = STAT(args);
 #endif
     if (ret < 0 && !to_be_ignored(errno))
         sys_warning(path, enc);
@@ -1656,13 +1826,30 @@ do_stat(int fd, size_t baselen, const char *path, struct stat *pst, int flags, r
 }
 
 #if defined HAVE_LSTAT || defined lstat || USE_OPENDIR_AT
+#if !USE_OPENDIR_AT
+static void *
+nogvl_lstat(void *args)
+{
+    struct stat_args *arg = (struct stat_args *)args;
+    return (void *)(VALUE)lstat(arg->path, arg->pst);
+}
+#endif
+
 static int
 do_lstat(int fd, size_t baselen, const char *path, struct stat *pst, int flags, rb_encoding *enc)
 {
 #if USE_OPENDIR_AT
-    int ret = fstatat(fd, at_subpath(fd, baselen, path), pst, AT_SYMLINK_NOFOLLOW);
+    struct fstatat_args args;
+    args.fd = fd;
+    args.path = path;
+    args.pst = pst;
+    args.flag = AT_SYMLINK_NOFOLLOW;
+    int ret = IO_WITHOUT_GVL_INT(nogvl_fstatat, (void *)&args);
 #else
-    int ret = lstat(path, pst);
+    struct stat_args args;
+    args.path = path;
+    args.pst = pst;
+    int ret = LSTAT(args);
 #endif
     if (ret < 0 && !to_be_ignored(errno))
         sys_warning(path, enc);
@@ -1723,7 +1910,7 @@ nogvl_opendir_at(void *ptr)
             /* fallthrough*/
           case 0:
             if (fd >= 0) close(fd);
-            errno = e;
+            rb_errno_set(e);
         }
     }
 #else  /* !USE_OPENDIR_AT */
@@ -1744,7 +1931,7 @@ opendir_at(int basefd, const char *path)
     oaa.path = path;
 
     if (vm_initialized)
-        return rb_thread_call_without_gvl(nogvl_opendir_at, &oaa, RUBY_UBF_IO, 0);
+        return IO_WITHOUT_GVL(nogvl_opendir_at, &oaa);
     else
         return nogvl_opendir_at(&oaa);
 }
@@ -2023,14 +2210,15 @@ is_case_sensitive(DIR *dirp, const char *path)
     const vol_capabilities_attr_t *const cap = attrbuf[0].cap;
     const int idx = VOL_CAPABILITIES_FORMAT;
     const uint32_t mask = VOL_CAP_FMT_CASE_SENSITIVE;
-
+    struct getattrlist_args args = GETATTRLIST_ARGS(&al, attrbuf, FSOPT_NOFOLLOW);
 #   if defined HAVE_FGETATTRLIST
-    if (fgetattrlist(dirfd(dirp), &al, attrbuf, sizeof(attrbuf), FSOPT_NOFOLLOW))
-        return -1;
+    int ret = gvl_fgetattrlist(&args, dirfd(dirp));
 #   else
-    if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), FSOPT_NOFOLLOW))
-        return -1;
+    int ret = gvl_getattrlist(&args, path);
 #   endif
+    if (ret)
+        return -1;
+
     if (!(cap->valid[idx] & mask))
         return -1;
     return (cap->capabilities[idx] & mask) != 0;
@@ -2053,7 +2241,8 @@ replace_real_basename(char *path, long base, rb_encoding *enc, int norm_p, int f
     IF_NORMALIZE_UTF8PATH(VALUE utf8str = Qnil);
 
     *type = path_noent;
-    if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), FSOPT_NOFOLLOW)) {
+    struct getattrlist_args args = GETATTRLIST_ARGS(&al, attrbuf, FSOPT_NOFOLLOW);
+    if (gvl_getattrlist(&args, path)) {
         if (!to_be_ignored(errno))
             sys_warning(path, enc);
         return path;
@@ -2426,7 +2615,7 @@ static void
 glob_dir_finish(ruby_glob_entries_t *ent, int flags)
 {
     if (flags & FNM_GLOB_NOSORT) {
-        closedir(ent->nosort.dirp);
+        check_closedir(ent->nosort.dirp);
         ent->nosort.dirp = NULL;
     }
     else if (ent->sort.entries) {
@@ -2457,7 +2646,7 @@ glob_opendir(ruby_glob_entries_t *ent, DIR *dirp, int flags, rb_encoding *enc)
 #ifdef _WIN32
         if ((capacity = dirp->nfiles) > 0) {
             if (!(newp = GLOB_ALLOC_N(rb_dirent_t, capacity))) {
-                closedir(dirp);
+                check_closedir(dirp);
                 return NULL;
             }
             ent->sort.entries = newp;
@@ -2477,7 +2666,7 @@ glob_opendir(ruby_glob_entries_t *ent, DIR *dirp, int flags, rb_encoding *enc)
             ent->sort.entries[count++] = rdp;
             ent->sort.count = count;
         }
-        closedir(dirp);
+        check_closedir(dirp);
         if (count < capacity) {
             if (!(newp = GLOB_REALLOC_N(ent->sort.entries, count))) {
                 glob_dir_finish(ent, 0);
@@ -2492,7 +2681,7 @@ glob_opendir(ruby_glob_entries_t *ent, DIR *dirp, int flags, rb_encoding *enc)
 
   nomem:
     glob_dir_finish(ent, 0);
-    closedir(dirp);
+    check_closedir(dirp);
     return NULL;
 }
 
@@ -2655,7 +2844,7 @@ glob_helper(
 
 # if NORMALIZE_UTF8PATH
         if (!(norm_p || magical || recursive)) {
-            closedir(dirp);
+            check_closedir(dirp);
             goto literally;
         }
 # endif
@@ -3116,7 +3305,7 @@ push_glob(VALUE ary, VALUE str, VALUE base, int flags)
     fd = AT_FDCWD;
     if (!NIL_P(base)) {
         if (!RB_TYPE_P(base, T_STRING) || !rb_enc_check(str, base)) {
-            struct dir_data *dirp = DATA_PTR(base);
+            struct dir_data *dirp = RTYPEDDATA_GET_DATA(base);
             if (!dirp->dir) dir_closed();
 #ifdef HAVE_DIRFD
             if ((fd = dirfd(dirp->dir)) == -1)
@@ -3357,7 +3546,7 @@ dir_s_each_child(int argc, VALUE *argv, VALUE io)
  *   "main.rb"
  *
  * If no block is given, returns an enumerator.
-  */
+ */
 static VALUE
 dir_each_child_m(VALUE dir)
 {
@@ -3478,6 +3667,9 @@ file_s_fnmatch(int argc, VALUE *argv, VALUE obj)
  * call-seq:
  *   Dir.home(user_name = nil) -> dirpath
  *
+ * Returns the home directory path of the user specified with +user_name+
+ * if it is not +nil+, or the current login user:
+ *
  *   Dir.home         # => "/home/me"
  *   Dir.home('root') # => "/root"
  *
@@ -3492,7 +3684,7 @@ dir_s_home(int argc, VALUE *argv, VALUE obj)
     rb_check_arity(argc, 0, 1);
     user = (argc > 0) ? argv[0] : Qnil;
     if (!NIL_P(user)) {
-        SafeStringValue(user);
+        StringValue(user);
         rb_must_asciicompat(user);
         u = StringValueCStr(user);
         if (*u) {
@@ -3514,6 +3706,7 @@ dir_s_home(int argc, VALUE *argv, VALUE obj)
  *   Dir.exist?('/nosuch')          # => false
  *   Dir.exist?('/example/main.rb') # => false
  *
+ * Same as File.directory?.
  *
  */
 VALUE
@@ -3543,13 +3736,13 @@ nogvl_dir_empty_p(void *ptr)
             return (void *)INT2FIX(e);
         }
     }
-    while ((dp = READDIR(dir, NULL)) != NULL) {
+    while ((dp = READDIR_NOGVL(dir, NULL)) != NULL) {
         if (!to_be_skipped(dp)) {
             result = Qfalse;
             break;
         }
     }
-    closedir(dir);
+    check_closedir(dir);
     return (void *)result;
 }
 
@@ -3585,12 +3778,13 @@ rb_dir_s_empty_p(VALUE obj, VALUE dirname)
     {
         u_int32_t attrbuf[SIZEUP32(fsobj_tag_t)];
         struct attrlist al = {ATTR_BIT_MAP_COUNT, 0, ATTR_CMN_OBJTAG,};
-        if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), 0) != 0)
+        struct getattrlist_args args = GETATTRLIST_ARGS(&al, attrbuf, 0);
+        if (gvl_getattrlist(&args, path) != 0)
             rb_sys_fail_path(orig);
         if (*(const fsobj_tag_t *)(attrbuf+1) == VT_HFS) {
             al.commonattr = 0;
             al.dirattr = ATTR_DIR_ENTRYCOUNT;
-            if (getattrlist(path, &al, attrbuf, sizeof(attrbuf), 0) == 0) {
+            if (gvl_getattrlist(&args, path) == 0) {
                 if (attrbuf[0] >= 2 * sizeof(u_int32_t))
                     return RBOOL(attrbuf[1] == 0);
                 if (false_on_notdir) return Qfalse;
@@ -3600,8 +3794,7 @@ rb_dir_s_empty_p(VALUE obj, VALUE dirname)
     }
 #endif
 
-    result = (VALUE)rb_thread_call_without_gvl(nogvl_dir_empty_p, (void *)path,
-                                            RUBY_UBF_IO, 0);
+    result = (VALUE)IO_WITHOUT_GVL(nogvl_dir_empty_p, (void *)path);
     if (FIXNUM_P(result)) {
         rb_syserr_fail_path((int)FIX2LONG(result), orig);
     }
@@ -3611,6 +3804,9 @@ rb_dir_s_empty_p(VALUE obj, VALUE dirname)
 void
 Init_Dir(void)
 {
+    rb_gc_register_address(&chdir_lock.path);
+    rb_gc_register_address(&chdir_lock.thread);
+
     rb_cDir = rb_define_class("Dir", rb_cObject);
 
     rb_include_module(rb_cDir, rb_mEnumerable);
@@ -3654,12 +3850,20 @@ Init_Dir(void)
 
     rb_define_singleton_method(rb_cFile,"fnmatch", file_s_fnmatch, -1);
     rb_define_singleton_method(rb_cFile,"fnmatch?", file_s_fnmatch, -1);
+
+    /* {File::FNM_NOESCAPE}[rdoc-ref:File::Constants@File-3A-3AFNM_NOESCAPE] */
     rb_file_const("FNM_NOESCAPE", INT2FIX(FNM_NOESCAPE));
+    /* {File::FNM_PATHNAME}[rdoc-ref:File::Constants@File-3A-3AFNM_PATHNAME] */
     rb_file_const("FNM_PATHNAME", INT2FIX(FNM_PATHNAME));
+    /* {File::FNM_DOTMATCH}[rdoc-ref:File::Constants@File-3A-3AFNM_DOTMATCH] */
     rb_file_const("FNM_DOTMATCH", INT2FIX(FNM_DOTMATCH));
+    /* {File::FNM_CASEFOLD}[rdoc-ref:File::Constants@File-3A-3AFNM_CASEFOLD] */
     rb_file_const("FNM_CASEFOLD", INT2FIX(FNM_CASEFOLD));
+    /* {File::FNM_EXTGLOB}[rdoc-ref:File::Constants@File-3A-3AFNM_EXTGLOB] */
     rb_file_const("FNM_EXTGLOB", INT2FIX(FNM_EXTGLOB));
+    /* {File::FNM_SYSCASE}[rdoc-ref:File::Constants@File-3A-3AFNM_SYSCASE] */
     rb_file_const("FNM_SYSCASE", INT2FIX(FNM_SYSCASE));
+    /* {File::FNM_SHORTNAME}[rdoc-ref:File::Constants@File-3A-3AFNM_SHORTNAME] */
     rb_file_const("FNM_SHORTNAME", INT2FIX(FNM_SHORTNAME));
 }
 

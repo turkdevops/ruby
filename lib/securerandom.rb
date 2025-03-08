@@ -40,19 +40,33 @@ require 'random/formatter'
 
 module SecureRandom
 
-  VERSION = "0.2.2"
+  # The version
+  VERSION = "0.4.1"
 
   class << self
+    # Returns a random binary string containing +size+ bytes.
+    #
+    # See Random.bytes
     def bytes(n)
       return gen_random(n)
     end
 
+    # Compatibility methods for Ruby 3.2, we can remove this after dropping to support Ruby 3.2
+    def alphanumeric(n = nil, chars: ALPHANUMERIC)
+      n = 16 if n.nil?
+      choose(chars, n)
+    end if RUBY_VERSION < '3.3'
+
     private
 
+    # :stopdoc:
+
+    # Implementation using OpenSSL
     def gen_random_openssl(n)
       return OpenSSL::Random.random_bytes(n)
     end
 
+    # Implementation using system random device
     def gen_random_urandom(n)
       ret = Random.urandom(n)
       unless ret
@@ -78,6 +92,9 @@ module SecureRandom
       end
     end
 
+    # :startdoc:
+
+    # Generate random data bytes for Random::Formatter
     public :gen_random
   end
 end

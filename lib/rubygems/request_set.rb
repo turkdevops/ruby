@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "tsort"
+require_relative "vendored_tsort"
 
 ##
 # A RequestSet groups a request to activate a set of dependencies.
@@ -324,7 +324,7 @@ class Gem::RequestSet
 
     @git_set.root_dir = @install_dir
 
-    lock_file = "#{File.expand_path(path)}.lock".dup.tap(&Gem::UNTAINT)
+    lock_file = "#{File.expand_path(path)}.lock"
     begin
       tokenizer = Gem::RequestSet::Lockfile::Tokenizer.from_file lock_file
       parser = tokenizer.make_parser self, []

@@ -1,21 +1,15 @@
-# type: :dollar or :at
-# ex_tag: "$<tag>1" (Optional)
+# frozen_string_literal: true
 
 module Lrama
   class Grammar
-    class Reference < Struct.new(:type, :value, :ex_tag, :first_column, :last_column, :referring_symbol, :position_in_rhs, keyword_init: true)
-      def tag
-        if ex_tag
-          ex_tag
-        else
-          # FIXME: Remove this class check
-          if referring_symbol.is_a?(Symbol)
-            referring_symbol.tag
-          else
-            # Lrama::Lexer::Token (User_code) case
-            nil
-          end
-        end
+    # type: :dollar or :at
+    # name: String (e.g. $$, $foo, $expr.right)
+    # number: Integer (e.g. $1)
+    # index: Integer
+    # ex_tag: "$<tag>1" (Optional)
+    class Reference < Struct.new(:type, :name, :number, :index, :ex_tag, :first_column, :last_column, keyword_init: true)
+      def value
+        name || number
       end
     end
   end

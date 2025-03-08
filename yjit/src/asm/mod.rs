@@ -2,16 +2,14 @@ use std::cell::RefCell;
 use std::fmt;
 use std::mem;
 use std::rc::Rc;
+use std::collections::BTreeMap;
+
 use crate::core::IseqPayload;
 use crate::core::for_each_off_stack_iseq_payload;
 use crate::core::for_each_on_stack_iseq_payload;
 use crate::invariants::rb_yjit_tracing_invalidate_all;
 use crate::stats::incr_counter;
 use crate::virtualmem::WriteError;
-
-#[cfg(feature = "disasm")]
-use std::collections::BTreeMap;
-
 use crate::codegen::CodegenGlobals;
 use crate::virtualmem::{VirtualMem, CodePtr};
 
@@ -59,6 +57,9 @@ pub struct CodeBlock {
     // Current writing position
     write_pos: usize,
 
+    // The index of the last page with written bytes
+    last_page_idx: usize,
+
     // Total number of bytes written to past pages
     past_page_bytes: usize,
 
@@ -74,8 +75,10 @@ pub struct CodeBlock {
     // References to labels
     label_refs: Vec<LabelRef>,
 
+    // A switch for keeping comments. They take up memory.
+    keep_comments: bool,
+
     // Comments for assembly instructions, if that feature is enabled
-    #[cfg(feature = "disasm")]
     asm_comments: BTreeMap<usize, Vec<String>>,
 
     // True for OutlinedCb
@@ -104,7 +107,7 @@ impl CodeBlock {
     const PREFERRED_CODE_PAGE_SIZE: usize = 16 * 1024;
 
     /// Make a new CodeBlock
-    pub fn new(mem_block: Rc<RefCell<VirtualMem>>, outlined: bool, freed_pages: Rc<Option<Vec<usize>>>) -> Self {
+    pub fn new(mem_block: Rc<RefCell<VirtualMem>>, outlined: bool, freed_pages: Rc<Option<Vec<usize>>>, keep_comments: bool) -> Self {
         // Pick the code page size
         let system_page_size = mem_block.borrow().system_page_size();
         let page_size = if 0 == Self::PREFERRED_CODE_PAGE_SIZE % system_page_size {
@@ -119,12 +122,13 @@ impl CodeBlock {
             mem_size,
             page_size,
             write_pos: 0,
+            last_page_idx: 0,
             past_page_bytes: 0,
             page_end_reserve: 0,
             label_addrs: Vec::new(),
             label_names: Vec::new(),
             label_refs: Vec::new(),
-            #[cfg(feature = "disasm")]
+            keep_comments,
             asm_comments: BTreeMap::new(),
             outlined,
             dropped_bytes: false,
@@ -132,11 +136,16 @@ impl CodeBlock {
         };
         cb.page_end_reserve = cb.jmp_ptr_bytes();
         cb.write_pos = cb.page_start();
+
+        #[cfg(not(test))]
+        assert_eq!(0, mem_size % page_size, "partially in-bounds code pages should be impossible");
+
         cb
     }
 
     /// Move the CodeBlock to the next page. If it's on the furthest page,
     /// move the other CodeBlock to the next page as well.
+    #[must_use]
     pub fn next_page<F: Fn(&mut CodeBlock, CodePtr)>(&mut self, base_ptr: CodePtr, jmp_ptr: F) -> bool {
         let old_write_ptr = self.get_write_ptr();
         self.set_write_ptr(base_ptr);
@@ -185,29 +194,32 @@ impl CodeBlock {
         // but you need to waste some space for keeping write_pos for every single page.
         // It doesn't seem necessary for performance either. So we're currently not doing it.
         let dst_pos = self.get_page_pos(page_idx);
-        if self.page_size * page_idx < self.mem_size && self.write_pos < dst_pos {
+        if self.write_pos < dst_pos {
+            // Fail if next page is out of bounds
+            if dst_pos >= self.mem_size {
+                return false;
+            }
+
             // Reset dropped_bytes
             self.dropped_bytes = false;
 
-            // Convert dst_pos to dst_ptr
-            let src_pos = self.write_pos;
-            self.write_pos = dst_pos;
-            let dst_ptr = self.get_write_ptr();
-            self.write_pos = src_pos;
-            self.without_page_end_reserve(|cb| assert!(cb.has_capacity(cb.jmp_ptr_bytes())));
-
             // Generate jmp_ptr from src_pos to dst_pos
+            let dst_ptr = self.get_ptr(dst_pos);
             self.without_page_end_reserve(|cb| {
+                assert!(cb.has_capacity(cb.jmp_ptr_bytes()));
                 cb.add_comment("jump to next page");
                 jmp_ptr(cb, dst_ptr);
-                assert!(!cb.has_dropped_bytes());
             });
 
-            // Update past_page_bytes for code_size()
-            self.past_page_bytes += self.current_page_bytes();
+            // Update past_page_bytes for code_size() if this is a new page
+            if self.last_page_idx < page_idx {
+                self.past_page_bytes += self.current_page_bytes();
+            }
 
             // Start the next code from dst_pos
             self.write_pos = dst_pos;
+            // Update the last_page_idx if page_idx points to the furthest page
+            self.last_page_idx = usize::max(self.last_page_idx, page_idx);
         }
         !self.dropped_bytes
     }
@@ -315,13 +327,12 @@ impl CodeBlock {
     }
 
     /// Return the address ranges of a given address range that this CodeBlock can write.
-    #[cfg(any(feature = "disasm", target_arch = "aarch64"))]
     #[allow(dead_code)]
     pub fn writable_addrs(&self, start_ptr: CodePtr, end_ptr: CodePtr) -> Vec<(usize, usize)> {
-        let region_start = self.get_ptr(0).into_usize();
-        let region_end = self.get_ptr(self.get_mem_size()).into_usize();
-        let mut start = start_ptr.into_usize();
-        let end = std::cmp::min(end_ptr.into_usize(), region_end);
+        let region_start = self.get_ptr(0).raw_addr(self);
+        let region_end = self.get_ptr(self.get_mem_size()).raw_addr(self);
+        let mut start = start_ptr.raw_addr(self);
+        let end = std::cmp::min(end_ptr.raw_addr(self), region_end);
 
         let freed_pages = self.freed_pages.as_ref().as_ref();
         let mut addrs = vec![];
@@ -356,10 +367,12 @@ impl CodeBlock {
     }
 
     /// Add an assembly comment if the feature is on.
-    /// If not, this becomes an inline no-op.
-    #[cfg(feature = "disasm")]
     pub fn add_comment(&mut self, comment: &str) {
-        let cur_ptr = self.get_write_ptr().into_usize();
+        if !self.keep_comments {
+            return;
+        }
+
+        let cur_ptr = self.get_write_ptr().raw_addr(self);
 
         // If there's no current list of comments for this line number, add one.
         let this_line_comments = self.asm_comments.entry(cur_ptr).or_default();
@@ -369,28 +382,21 @@ impl CodeBlock {
             this_line_comments.push(comment.to_string());
         }
     }
-    #[cfg(not(feature = "disasm"))]
-    #[inline]
-    pub fn add_comment(&mut self, _: &str) {}
 
-    #[cfg(feature = "disasm")]
     pub fn comments_at(&self, pos: usize) -> Option<&Vec<String>> {
         self.asm_comments.get(&pos)
     }
 
-    #[allow(unused_variables)]
-    #[cfg(feature = "disasm")]
     pub fn remove_comments(&mut self, start_addr: CodePtr, end_addr: CodePtr) {
-        for addr in start_addr.into_usize()..end_addr.into_usize() {
+        if self.asm_comments.is_empty() {
+            return;
+        }
+        for addr in start_addr.raw_addr(self)..end_addr.raw_addr(self) {
             self.asm_comments.remove(&addr);
         }
     }
-    #[cfg(not(feature = "disasm"))]
-    #[inline]
-    pub fn remove_comments(&mut self, _: CodePtr, _: CodePtr) {}
 
     pub fn clear_comments(&mut self) {
-        #[cfg(feature = "disasm")]
         self.asm_comments.clear();
     }
 
@@ -417,8 +423,8 @@ impl CodeBlock {
 
     // Set the current write position from a pointer
     pub fn set_write_ptr(&mut self, code_ptr: CodePtr) {
-        let pos = code_ptr.into_usize() - self.mem_block.borrow().start_ptr().into_usize();
-        self.set_pos(pos);
+        let pos = code_ptr.as_offset() - self.mem_block.borrow().start_ptr().as_offset();
+        self.set_pos(pos.try_into().unwrap());
     }
 
     /// Get a (possibly dangling) direct pointer into the executable memory block
@@ -427,21 +433,21 @@ impl CodeBlock {
     }
 
     /// Convert an address range to memory page indexes against a num_pages()-sized array.
-    pub fn addrs_to_pages(&self, start_addr: CodePtr, end_addr: CodePtr) -> Vec<usize> {
-        let mem_start = self.mem_block.borrow().start_ptr().into_usize();
-        let mem_end = self.mem_block.borrow().mapped_end_ptr().into_usize();
-        assert!(mem_start <= start_addr.into_usize());
-        assert!(start_addr.into_usize() <= end_addr.into_usize());
-        assert!(end_addr.into_usize() <= mem_end);
+    pub fn addrs_to_pages(&self, start_addr: CodePtr, end_addr: CodePtr) -> impl Iterator<Item = usize> {
+        let mem_start = self.mem_block.borrow().start_ptr().raw_addr(self);
+        let mem_end = self.mem_block.borrow().mapped_end_ptr().raw_addr(self);
+        assert!(mem_start <= start_addr.raw_addr(self));
+        assert!(start_addr.raw_addr(self) <= end_addr.raw_addr(self));
+        assert!(end_addr.raw_addr(self) <= mem_end);
 
         // Ignore empty code ranges
         if start_addr == end_addr {
-            return vec![];
+            return (0..0).into_iter();
         }
 
-        let start_page = (start_addr.into_usize() - mem_start) / self.page_size;
-        let end_page = (end_addr.into_usize() - mem_start - 1) / self.page_size;
-        (start_page..=end_page).collect() // TODO: consider returning an iterator
+        let start_page = (start_addr.raw_addr(self) - mem_start) / self.page_size;
+        let end_page = (end_addr.raw_addr(self) - mem_start - 1) / self.page_size;
+        (start_page..end_page + 1).into_iter()
     }
 
     /// Get a (possibly dangling) direct pointer to the current write position
@@ -681,9 +687,9 @@ impl CodeBlock {
 
         let alloc = TestingAllocator::new(mem_size);
         let mem_start: *const u8 = alloc.mem_start();
-        let virt_mem = VirtualMem::new(alloc, 1, NonNull::new(mem_start as *mut u8).unwrap(), mem_size);
+        let virt_mem = VirtualMem::new(alloc, 1, NonNull::new(mem_start as *mut u8).unwrap(), mem_size, 128 * 1024 * 1024);
 
-        Self::new(Rc::new(RefCell::new(virt_mem)), false, Rc::new(None))
+        Self::new(Rc::new(RefCell::new(virt_mem)), false, Rc::new(None), true)
     }
 
     /// Stubbed CodeBlock for testing conditions that can arise due to code GC. Can't execute generated code.
@@ -699,9 +705,9 @@ impl CodeBlock {
 
         let alloc = TestingAllocator::new(mem_size);
         let mem_start: *const u8 = alloc.mem_start();
-        let virt_mem = VirtualMem::new(alloc, 1, NonNull::new(mem_start as *mut u8).unwrap(), mem_size);
+        let virt_mem = VirtualMem::new(alloc, 1, NonNull::new(mem_start as *mut u8).unwrap(), mem_size, 128 * 1024 * 1024);
 
-        Self::new(Rc::new(RefCell::new(virt_mem)), false, Rc::new(Some(freed_pages)))
+        Self::new(Rc::new(RefCell::new(virt_mem)), false, Rc::new(Some(freed_pages)), true)
     }
 }
 
@@ -709,10 +715,17 @@ impl CodeBlock {
 impl fmt::LowerHex for CodeBlock {
     fn fmt(&self, fmtr: &mut fmt::Formatter) -> fmt::Result {
         for pos in 0..self.write_pos {
-            let byte = unsafe { self.mem_block.borrow().start_ptr().raw_ptr().add(pos).read() };
+            let mem_block = &*self.mem_block.borrow();
+            let byte = unsafe { mem_block.start_ptr().raw_ptr(mem_block).add(pos).read() };
             fmtr.write_fmt(format_args!("{:02x}", byte))?;
         }
         Ok(())
+    }
+}
+
+impl crate::virtualmem::CodePtrBase for CodeBlock {
+    fn base_ptr(&self) -> std::ptr::NonNull<u8> {
+        self.mem_block.borrow().base_ptr()
     }
 }
 
@@ -805,15 +818,27 @@ mod tests
 
     #[test]
     fn test_code_size() {
+        // Write 4 bytes in the first page
         let mut cb = CodeBlock::new_dummy(CodeBlock::PREFERRED_CODE_PAGE_SIZE * 2);
         cb.write_bytes(&[0, 0, 0, 0]);
         assert_eq!(cb.code_size(), 4);
 
         // Moving to the next page should not increase code_size
-        cb.next_page(cb.get_write_ptr(), |_, _| {});
+        assert!(cb.next_page(cb.get_write_ptr(), |_, _| {}));
         assert_eq!(cb.code_size(), 4);
 
+        // Write 4 bytes in the second page
         cb.write_bytes(&[0, 0, 0, 0]);
+        assert_eq!(cb.code_size(), 8);
+
+        // Rewrite 4 bytes in the first page
+        let old_write_pos = cb.get_write_pos();
+        cb.set_pos(0);
+        cb.write_bytes(&[1, 1, 1, 1]);
+
+        // Moving from an old page to the next page should not increase code_size
+        assert!(cb.next_page(cb.get_write_ptr(), |_, _| {}));
+        cb.set_pos(old_write_pos);
         assert_eq!(cb.code_size(), 8);
     }
 }

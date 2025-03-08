@@ -438,6 +438,33 @@ class TestGemPackage < Gem::Package::TarTestCase
     assert_equal %w[lib/code.rb], reader.contents
   end
 
+  def test_build_modified_platform
+    spec = quick_gem "a", "1" do |s|
+      s.files = %w[lib/code.rb]
+      s.platform = Gem::Platform.new "x86_64-linux"
+    end
+
+    spec.platform = Gem::Platform.new "java"
+
+    FileUtils.mkdir "lib"
+
+    File.open "lib/code.rb", "w" do |io|
+      io.write "# lib/code.rb"
+    end
+
+    package = Gem::Package.new spec.file_name
+    package.spec = spec
+
+    package.build
+
+    assert_path_exist spec.file_name
+
+    reader = Gem::Package.new spec.file_name
+    assert reader.verify
+
+    assert_equal spec, reader.spec
+  end
+
   def test_raw_spec
     data_tgz = util_tar_gz {}
 
@@ -569,6 +596,32 @@ class TestGemPackage < Gem::Package::TarTestCase
     extracted = File.join @destination, "lib/foo.rb"
     assert_path_exist extracted
     assert_equal "../relative.rb",
+                 File.readlink(extracted)
+    assert_equal "hi",
+                 File.read(extracted)
+  end
+
+  def test_extract_symlink_into_symlink_dir
+    package = Gem::Package.new @gem
+    tgz_io = util_tar_gz do |tar|
+      tar.mkdir       "lib", 0o755
+      tar.add_symlink "lib/link", "./inside.rb", 0o644
+      tar.add_file    "lib/inside.rb", 0o644 do |io|
+        io.write "hi"
+      end
+    end
+
+    destination_subdir = File.join @destination, "subdir"
+    FileUtils.mkdir_p destination_subdir
+
+    destination_linkdir = File.join @destination, "linkdir"
+    File.symlink(destination_subdir, destination_linkdir)
+
+    package.extract_tar_gz tgz_io, destination_linkdir
+
+    extracted = File.join destination_subdir, "lib/link"
+    assert_path_exist extracted
+    assert_equal "./inside.rb",
                  File.readlink(extracted)
     assert_equal "hi",
                  File.read(extracted)
@@ -734,12 +787,10 @@ class TestGemPackage < Gem::Package::TarTestCase
     package = Gem::Package.new @gem
 
     file = "file.rb".dup
-    file.taint if RUBY_VERSION < "2.7"
 
     destination = package.install_location file, @destination
 
     assert_equal File.join(@destination, "file.rb"), destination
-    refute destination.tainted? if RUBY_VERSION < "2.7"
   end
 
   def test_install_location_absolute
@@ -773,12 +824,10 @@ class TestGemPackage < Gem::Package::TarTestCase
     package = Gem::Package.new @gem
 
     file = "foo//file.rb".dup
-    file.taint if RUBY_VERSION < "2.7"
 
     destination = package.install_location file, @destination
 
     assert_equal File.join(@destination, "foo", "file.rb"), destination
-    refute destination.tainted? if RUBY_VERSION < "2.7"
   end
 
   def test_install_location_relative

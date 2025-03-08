@@ -19,6 +19,7 @@ module Bundler
       add_sources
       add_platforms
       add_dependencies
+      add_checksums
       add_locked_ruby_version
       add_bundled_with
 
@@ -28,7 +29,7 @@ module Bundler
     private
 
     def add_sources
-      definition.send(:sources).lock_sources.each_with_index do |source, idx|
+      definition.sources.lock_sources.each_with_index do |source, idx|
         out << "\n" unless idx.zero?
 
         # Add the source header
@@ -63,6 +64,14 @@ module Bundler
         out << dep.to_lock << "\n"
         handled << dep.name
       end
+    end
+
+    def add_checksums
+      return unless definition.locked_checksums
+      checksums = definition.resolve.map do |spec|
+        spec.source.checksum_store.to_lock(spec)
+      end
+      add_section("CHECKSUMS", checksums)
     end
 
     def add_locked_ruby_version

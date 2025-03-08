@@ -21,7 +21,7 @@ class Gem::Commands::UpdateCommand < Gem::Command
 
   def initialize
     options = {
-      :force => false,
+      force: false,
     }
 
     options.merge!(install_update_options)
@@ -197,18 +197,17 @@ command to remove old versions.
       yield
     else
       require "tmpdir"
-      tmpdir = Dir.mktmpdir
-      FileUtils.mv Gem.plugindir, tmpdir
+      Dir.mktmpdir("gem_update") do |tmpdir|
+        FileUtils.mv Gem.plugindir, tmpdir
 
-      status = yield
+        status = yield
 
-      if status
-        FileUtils.rm_rf tmpdir
-      else
-        FileUtils.mv File.join(tmpdir, "plugins"), Gem.plugindir
+        unless status
+          FileUtils.mv File.join(tmpdir, "plugins"), Gem.plugindir
+        end
+
+        status
       end
-
-      status
     end
   end
 
@@ -244,7 +243,7 @@ command to remove old versions.
 
     @installer = Gem::DependencyInstaller.new update_options
 
-    say "Updating #{name}" unless options[:system] && options[:silent]
+    say "Updating #{name}" unless options[:system]
     begin
       @installer.install name, Gem::Requirement.new(version)
     rescue Gem::InstallError, Gem::DependencyError => e
@@ -282,7 +281,7 @@ command to remove old versions.
     check_oldest_rubygems version
 
     installed_gems = Gem::Specification.find_all_by_name "rubygems-update", requirement
-    installed_gems = update_gem("rubygems-update", version) if installed_gems.empty? || installed_gems.first.version != version
+    installed_gems = update_gem("rubygems-update", requirement) if installed_gems.empty? || installed_gems.first.version != version
     return if installed_gems.empty?
 
     install_rubygems installed_gems.first
@@ -294,9 +293,7 @@ command to remove old versions.
     args << "--prefix" << Gem.prefix if Gem.prefix
     args << "--no-document" unless options[:document].include?("rdoc") || options[:document].include?("ri")
     args << "--no-format-executable" if options[:no_format_executable]
-    args << "--previous-version" << Gem::VERSION if
-      options[:system] == true ||
-      Gem::Version.new(options[:system]) >= Gem::Version.new(2)
+    args << "--previous-version" << Gem::VERSION
     args
   end
 
@@ -320,20 +317,10 @@ command to remove old versions.
 
   #
   # Oldest version we support downgrading to. This is the version that
-  # originally ships with the first patch version of each ruby, because we never
-  # test each ruby against older rubygems, so we can't really guarantee it
-  # works. Version list can be checked here: https://stdgems.org/rubygems
+  # originally ships with the oldest supported patch version of ruby.
   #
   def oldest_supported_version
     @oldest_supported_version ||=
-      if Gem.ruby_version > Gem::Version.new("3.1.a")
-        Gem::Version.new("3.3.3")
-      elsif Gem.ruby_version > Gem::Version.new("3.0.a")
-        Gem::Version.new("3.2.3")
-      elsif Gem.ruby_version > Gem::Version.new("2.7.a")
-        Gem::Version.new("3.1.2")
-      else
-        Gem::Version.new("3.0.1")
-      end
+      Gem::Version.new("3.3.3")
   end
 end

@@ -8,8 +8,8 @@ class Gem::Commands::CleanupCommand < Gem::Command
   def initialize
     super "cleanup",
           "Clean up old versions of installed gems",
-          :force => false, :install_dir => Gem.dir,
-          :check_dev => true
+          force: false, install_dir: Gem.dir,
+          check_dev: true
 
     add_option("-n", "-d", "--dry-run",
                "Do not uninstall gems") do |_value, options|
@@ -38,8 +38,6 @@ class Gem::Commands::CleanupCommand < Gem::Command
     @default_gems    = []
     @full            = nil
     @gems_to_cleanup = nil
-    @original_home   = nil
-    @original_path   = nil
     @primary_gems    = nil
   end
 
@@ -95,9 +93,6 @@ If no gems are named all gems in GEM_HOME are cleaned.
   end
 
   def clean_gems
-    @original_home = Gem.dir
-    @original_path = Gem.path
-
     get_primary_gems
     get_candidate_gems
     get_gems_to_cleanup
@@ -112,17 +107,15 @@ If no gems are named all gems in GEM_HOME are cleaned.
     deps.reverse_each do |spec|
       uninstall_dep spec
     end
-
-    Gem::Specification.reset
   end
 
   def get_candidate_gems
     @candidate_gems = if options[:args].empty?
       Gem::Specification.to_a
     else
-      options[:args].map do |gem_name|
+      options[:args].flat_map do |gem_name|
         Gem::Specification.find_all_by_name gem_name
-      end.flatten
+      end
     end
   end
 
@@ -133,7 +126,7 @@ If no gems are named all gems in GEM_HOME are cleaned.
 
     default_gems, gems_to_cleanup = gems_to_cleanup.partition(&:default_gem?)
 
-    uninstall_from = options[:user_install] ? Gem.user_dir : @original_home
+    uninstall_from = options[:user_install] ? Gem.user_dir : Gem.dir
 
     gems_to_cleanup = gems_to_cleanup.select do |spec|
       spec.base_dir == uninstall_from
@@ -166,8 +159,8 @@ If no gems are named all gems in GEM_HOME are cleaned.
     say "Attempting to uninstall #{spec.full_name}"
 
     uninstall_options = {
-      :executables => false,
-      :version => "= #{spec.version}",
+      executables: false,
+      version: "= #{spec.version}",
     }
 
     uninstall_options[:user_install] = Gem.user_dir == spec.base_dir
@@ -181,8 +174,5 @@ If no gems are named all gems in GEM_HOME are cleaned.
       say "Unable to uninstall #{spec.full_name}:"
       say "\t#{e.class}: #{e.message}"
     end
-  ensure
-    # Restore path Gem::Uninstaller may have changed
-    Gem.use_paths @original_home, *@original_path
   end
 end

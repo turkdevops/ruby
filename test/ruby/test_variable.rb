@@ -413,6 +413,25 @@ class TestVariable < Test::Unit::TestCase
     assert_equal(%i(v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 v11), v, bug11674)
   end
 
+  def test_many_instance_variables
+    objects = [Object.new, Hash.new, Module.new]
+    objects.each do |obj|
+      1000.times do |i|
+        obj.instance_variable_set("@var#{i}", i)
+      end
+      1000.times do |i|
+        assert_equal(i, obj.instance_variable_get("@var#{i}"))
+      end
+    end
+  end
+
+  def test_local_variables_encoding
+    α = 1
+    b = binding
+    b.eval("".encode("us-ascii"))
+    assert_equal(%i[α b], b.local_variables)
+  end
+
   private
   def with_kwargs_11(v1:, v2:, v3:, v4:, v5:, v6:, v7:, v8:, v9:, v10:, v11:)
     local_variables

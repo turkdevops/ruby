@@ -39,6 +39,20 @@ class SampleClassForTestProfileFrames
   end
 end
 
+class SampleClassForTestProfileThreadFrames
+  def initialize(mutex)
+    @mutex = mutex
+  end
+
+  def foo(block)
+    bar(block)
+  end
+
+  def bar(block)
+    block.call
+  end
+end
+
 class TestProfileFrames < Test::Unit::TestCase
   def test_profile_frames
     obj, frames = Fiber.new{
@@ -139,21 +153,65 @@ class TestProfileFrames < Test::Unit::TestCase
     }
   end
 
+  def test_profile_thread_frames
+    mutex = Mutex.new
+    th = Thread.new do
+      mutex.lock
+      Thread.stop
+      SampleClassForTestProfileThreadFrames.new(mutex).foo(lambda { mutex.unlock; loop { sleep(1) } } )
+    end
+
+    # ensure execution has reached SampleClassForTestProfileThreadFrames#bar before running profile_thread_frames
+    loop { break if th.status == "sleep"; sleep 0.1 }
+    th.run
+    mutex.lock # wait until SampleClassForTestProfileThreadFrames#bar has been called
+
+    frames = Bug::Debug.profile_thread_frames(th, 0, 10)
+
+    full_labels = [
+      "Kernel#sleep",
+      "TestProfileFrames#test_profile_thread_frames",
+      "Kernel#loop",
+      "TestProfileFrames#test_profile_thread_frames",
+      "SampleClassForTestProfileThreadFrames#bar",
+      "SampleClassForTestProfileThreadFrames#foo",
+      "TestProfileFrames#test_profile_thread_frames",
+    ]
+
+    frames.each.with_index do |frame, i|
+      assert_equal(full_labels[i], frame)
+    end
+
+  ensure
+    th.kill
+    th.join
+  end
+
+
   def test_matches_backtrace_locations_main_thread
     assert_equal(Thread.current, Thread.main)
 
     # Keep these in the same line, so the backtraces match exactly
     backtrace_locations, profile_frames = [Thread.current.backtrace_locations, Bug::Debug.profile_frames(0, 100)]
 
-    assert_equal(backtrace_locations.size, profile_frames.size)
+    errmsg  = "backtrace_locations:\n  " + backtrace_locations.map.with_index{|loc, i| "#{i} #{loc}"}.join("\n  ")
+    errmsg += "\n\nprofile_frames:\n  "      + profile_frames.map.with_index{|(path, absolute_path, _, base_label, _, _, _, _, _, full_label, lineno), i|
+      if lineno
+        "#{i} #{absolute_path}:#{lineno} // #{full_label}"
+      else
+        "#{i} #{absolute_path} #{full_label}"
+      end
+    }.join("\n  ")
+    assert_equal(backtrace_locations.size, profile_frames.size, errmsg)
 
     # The first entries are not going to match, since one is #backtrace_locations and the other #profile_frames
     backtrace_locations.shift
     profile_frames.shift
 
     # The rest of the stack is expected to look the same...
-    backtrace_locations.zip(profile_frames).each.with_index do |(location, (path, absolute_path, _, base_label, _, _, _, _, _, _, lineno)), i|
+    backtrace_locations.zip(profile_frames).each.with_index do |(location, (path, absolute_path, _, base_label, label, _, _, _, _, _, lineno)), i|
       next if absolute_path == "<cfunc>" # ...except for cfunc frames
+      next if label in "Array#each" | "Array#map" # ...except for :c_trace method frames
 
       err_msg = "#{i}th frame"
       assert_equal(location.absolute_path, absolute_path, err_msg)
@@ -178,5 +236,9 @@ class TestProfileFrames < Test::Unit::TestCase
       end
       a
     end;
+  end
+
+  def test_start
+    assert_equal Bug::Debug.profile_frames(0, 10).tap(&:shift), Bug::Debug.profile_frames(1, 9)
   end
 end

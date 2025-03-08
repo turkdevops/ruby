@@ -1,162 +1,68 @@
-require 'optparse'
+# frozen_string_literal: true
 
 module Lrama
   class Command
-    def initialize(argv)
-      @argv = argv
+    LRAMA_LIB = File.realpath(File.join(File.dirname(__FILE__)))
+    STDLIB_FILE_PATH = File.join(LRAMA_LIB, 'grammar', 'stdlib.y')
 
-      @skeleton = "bison/yacc.c"
-      @header = false
-      @header_file = nil
-      @report = []
-      @report_file = nil
-      @outfile = "y.tab.c"
-      @trace = []
-      @error_recovery = false
-      @grammar_file = nil
-      @report_file = nil
-      @trace_opts = nil
-      @report_opts = nil
-    end
+    def run(argv)
+      begin
+        options = OptionParser.new.parse(argv)
+      rescue => e
+        message = e.message
+        message = message.gsub(/.+/, "\e[1m\\&\e[m") if Exception.to_tty?
+        abort message
+      end
 
-    def run
-      parse_option
+      Report::Duration.enable if options.trace_opts[:time]
 
-      Report::Duration.enable if @trace_opts[:time]
-
-      warning = Lrama::Warning.new
-      grammar = Lrama::Parser.new(@y.read).parse
-      @y.close if @y != STDIN
-      states = Lrama::States.new(grammar, warning, trace_state: (@trace_opts[:automaton] || @trace_opts[:closure]))
+      text = options.y.read
+      options.y.close if options.y != STDIN
+      begin
+        grammar = Lrama::Parser.new(text, options.grammar_file, options.debug, options.define).parse
+        unless grammar.no_stdlib
+          stdlib_grammar = Lrama::Parser.new(File.read(STDLIB_FILE_PATH), STDLIB_FILE_PATH, options.debug).parse
+          grammar.insert_before_parameterizing_rules(stdlib_grammar.parameterizing_rules)
+        end
+        grammar.prepare
+        grammar.validate!
+      rescue => e
+        raise e if options.debug
+        message = e.message
+        message = message.gsub(/.+/, "\e[1m\\&\e[m") if Exception.to_tty?
+        abort message
+      end
+      states = Lrama::States.new(grammar, trace_state: (options.trace_opts[:automaton] || options.trace_opts[:closure]))
       states.compute
+      states.compute_ielr if grammar.ielr_defined?
       context = Lrama::Context.new(states)
 
-      if @report_file
+      if options.report_file
         reporter = Lrama::StatesReporter.new(states)
-        File.open(@report_file, "w+") do |f|
-          reporter.report(f, **@report_opts)
+        File.open(options.report_file, "w+") do |f|
+          reporter.report(f, **options.report_opts)
         end
       end
 
-      File.open(@outfile, "w+") do |f|
+      reporter = Lrama::TraceReporter.new(grammar)
+      reporter.report(**options.trace_opts)
+
+      File.open(options.outfile, "w+") do |f|
         Lrama::Output.new(
           out: f,
-          output_file_path: @outfile,
-          template_name: @skeleton,
-          grammar_file_path: @grammar_file,
-          header_file_path: @header_file,
+          output_file_path: options.outfile,
+          template_name: options.skeleton,
+          grammar_file_path: options.grammar_file,
+          header_file_path: options.header_file,
           context: context,
           grammar: grammar,
-          error_recovery: @error_recovery,
+          error_recovery: options.error_recovery,
         ).render
       end
 
-      if warning.has_error?
-        exit 1
-      end
-    end
-
-    private
-
-    def validate_report(report)
-      bison_list = %w[states itemsets lookaheads solved counterexamples cex all none]
-      others = %w[verbose]
-      list = bison_list + others
-      not_supported = %w[cex none]
-      h = { grammar: true }
-
-      report.each do |r|
-        if list.include?(r) && !not_supported.include?(r)
-          h[r.to_sym] = true
-        else
-          raise "Invalid report option \"#{r}\"."
-        end
-      end
-
-      if h[:all]
-        (bison_list - not_supported).each do |r|
-          h[r.to_sym] = true
-        end
-
-        h.delete(:all)
-      end
-
-      return h
-    end
-
-    def validate_trace(trace)
-      list = %w[
-        none locations scan parse automaton bitsets
-        closure grammar resource sets muscles tools
-        m4-early m4 skeleton time ielr cex all
-      ]
-      h = {}
-
-      trace.each do |t|
-        if list.include?(t)
-          h[t.to_sym] = true
-        else
-          raise "Invalid trace option \"#{t}\"."
-        end
-      end
-
-      return h
-    end
-
-    def parse_option
-      opt = OptionParser.new
-
-      # opt.on('-h') {|v| p v }
-      opt.on('-V', '--version') {|v| puts "lrama #{Lrama::VERSION}"; exit 0 }
-
-      # Tuning the Parser
-      opt.on('-S', '--skeleton=FILE') {|v| @skeleton = v }
-      opt.on('-t') {  } # Do nothing
-
-      # Output Files:
-      opt.on('-h', '--header=[FILE]') {|v| @header = true; @header_file = v }
-      opt.on('-d') { @header = true }
-      opt.on('-r', '--report=THINGS', Array) {|v| @report = v }
-      opt.on('--report-file=FILE')    {|v| @report_file = v }
-      opt.on('-v') {  } # Do nothing
-      opt.on('-o', '--output=FILE')   {|v| @outfile = v }
-
-      # Hidden
-      opt.on('--trace=THINGS', Array) {|v| @trace = v }
-
-      # Error Recovery
-      opt.on('-e') {|v| @error_recovery = true }
-
-      opt.parse!(@argv)
-
-      @trace_opts = validate_trace(@trace)
-      @report_opts = validate_report(@report)
-
-      @grammar_file = @argv.shift
-
-      if !@grammar_file
-        abort "File should be specified\n"
-      end
-
-      if @grammar_file == '-'
-        @grammar_file = @argv.shift or abort "File name for STDIN should be specified\n"
-        @y = STDIN
-      else
-        @y = File.open(@grammar_file, 'r')
-      end
-
-      if !@report.empty? && @report_file.nil? && @grammar_file
-        @report_file = File.dirname(@grammar_file) + "/" + File.basename(@grammar_file, ".*") + ".output"
-      end
-
-      if !@header_file && @header
-        case
-        when @outfile
-          @header_file = File.dirname(@outfile) + "/" + File.basename(@outfile, ".*") + ".h"
-        when @grammar_file
-          @header_file = File.dirname(@grammar_file) + "/" + File.basename(@grammar_file, ".*") + ".h"
-        end
-      end
+      logger = Lrama::Logger.new
+      exit false unless Lrama::GrammarValidator.new(grammar, states, logger).valid?
+      Lrama::Diagnostics.new(grammar, states, logger).run(options.diagnostic)
     end
   end
 end

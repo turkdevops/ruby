@@ -107,6 +107,7 @@ nonempty_memcpy(void *dest, const void *src, size_t n)
 #define st_get_key rb_parser_st_get_key
 #undef st_add_direct
 #define st_add_direct rb_parser_st_add_direct
+#define rb_st_add_direct_with_hash rb_parser_st_add_direct_with_hash
 #undef st_insert2
 #define st_insert2 rb_parser_st_insert2
 #undef st_replace
@@ -153,7 +154,8 @@ nonempty_memcpy(void *dest, const void *src, size_t n)
     _Pragma("GCC diagnostic push") \
     _Pragma("GCC diagnostic ignored \"-Wattributes\"") \
     __attribute__((__no_sanitize__(x))) y; \
-    _Pragma("GCC diagnostic pop")
+    _Pragma("GCC diagnostic pop") \
+    y
 #endif
 
 #ifndef NO_SANITIZE

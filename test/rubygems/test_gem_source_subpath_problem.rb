@@ -21,10 +21,10 @@ class TestGemSourceSubpathProblem < Gem::TestCase
   end
 
   def test_dependency_resolver_set
-    response = Net::HTTPResponse.new "1.1", 200, "OK"
-    response.uri = URI("http://example")
+    response = Gem::Net::HTTPResponse.new "1.1", 200, "OK"
+    response.uri = Gem::URI("http://example")
 
-    @fetcher.data["#{@gem_repo}/"] = response
+    @fetcher.data["#{@gem_repo}/versions"] = response
 
     set = @source.dependency_resolver_set
 

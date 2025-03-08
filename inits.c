@@ -22,8 +22,6 @@ rb_call_inits(void)
 {
     CALL(default_shapes);
     CALL(Thread_Mutex);
-    CALL(vm_postponed_job);
-    CALL(Method);
     CALL(RandomSeedCore);
     CALL(encodings);
     CALL(sym);
@@ -53,7 +51,6 @@ rb_call_inits(void)
     CALL(Dir);
     CALL(Time);
     CALL(Random);
-    CALL(signal);
     CALL(load);
     CALL(Proc);
     CALL(Binding);
@@ -65,6 +62,7 @@ rb_call_inits(void)
     CALL(VM);
     CALL(ISeq);
     CALL(Thread);
+    CALL(signal);
     CALL(Fiber_Scheduler);
     CALL(process);
     CALL(Cont);
@@ -75,9 +73,8 @@ rb_call_inits(void)
     CALL(vm_trace);
     CALL(vm_stack_canary);
     CALL(ast);
-    CALL(gc_stress);
     CALL(shape);
-    CALL(YARP);
+    CALL(Prism);
 
     // enable builtin loading
     CALL(builtin);
@@ -87,6 +84,9 @@ void
 rb_call_builtin_inits(void)
 {
 #define BUILTIN(n) CALL(builtin_##n)
+    BUILTIN(kernel);
+    BUILTIN(yjit);
+    // BUILTIN(yjit_hook) is called after rb_yjit_init()
     BUILTIN(gc);
     BUILTIN(ractor);
     BUILTIN(numeric);
@@ -97,17 +97,12 @@ rb_call_builtin_inits(void)
     BUILTIN(pack);
     BUILTIN(warning);
     BUILTIN(array);
-    BUILTIN(kernel);
+    BUILTIN(hash);
     BUILTIN(symbol);
     BUILTIN(timev);
     BUILTIN(thread_sync);
-    BUILTIN(yjit);
     BUILTIN(nilclass);
     BUILTIN(marshal);
-#if USE_RJIT
-    BUILTIN(rjit_c);
-    BUILTIN(rjit);
-#endif
     Init_builtin_prelude();
 }
 #undef CALL

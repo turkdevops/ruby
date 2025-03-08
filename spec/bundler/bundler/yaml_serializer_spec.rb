@@ -57,6 +57,19 @@ RSpec.describe Bundler::YAMLSerializer do
 
       expect(serializer.dump(hash)).to eq(expected)
     end
+
+    it "handles empty array" do
+      hash = {
+        "empty_array" => [],
+      }
+
+      expected = <<~YAML
+        ---
+        empty_array: []
+      YAML
+
+      expect(serializer.dump(hash)).to eq(expected)
+    end
   end
 
   describe "#load" do
@@ -99,10 +112,10 @@ RSpec.describe Bundler::YAMLSerializer do
 
     it "handles colon in key/value" do
       yaml = <<~YAML
-        BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: http://rubygems-mirror.org
+        BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/: http://example-mirror.rubygems.org
       YAML
 
-      expect(serializer.load(yaml)).to eq("BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/" => "http://rubygems-mirror.org")
+      expect(serializer.load(yaml)).to eq("BUNDLE_MIRROR__HTTPS://RUBYGEMS__ORG/" => "http://example-mirror.rubygems.org")
     end
 
     it "handles arrays inside hashes" do
@@ -144,6 +157,34 @@ RSpec.describe Bundler::YAMLSerializer do
             "oh so silly",
           ],
         },
+      }
+
+      expect(serializer.load(yaml)).to eq(hash)
+    end
+
+    it "handles empty array" do
+      yaml = <<~YAML
+        ---
+        empty_array: []
+      YAML
+
+      hash = {
+        "empty_array" => [],
+      }
+
+      expect(serializer.load(yaml)).to eq(hash)
+    end
+
+    it "skip commented out words" do
+      yaml = <<~YAML
+        ---
+        foo: bar
+        buzz: foo # bar
+      YAML
+
+      hash = {
+        "foo" => "bar",
+        "buzz" => "foo",
       }
 
       expect(serializer.load(yaml)).to eq(hash)

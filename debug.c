@@ -147,10 +147,18 @@ NODE *
 ruby_debug_print_node(int level, int debug_level, const char *header, const NODE *node)
 {
     if (level < debug_level) {
-        fprintf(stderr, "DBG> %s: %s (%u)\n", header,
-                ruby_node_name(nd_type(node)), nd_line(node));
+        fprintf(stderr, "DBG> %s: %s (id: %d, line: %d, location: (%d,%d)-(%d,%d))\n",
+                header, ruby_node_name(nd_type(node)), nd_node_id(node), nd_line(node),
+                nd_first_lineno(node), nd_first_column(node),
+                nd_last_lineno(node), nd_last_column(node));
     }
     return (NODE *)node;
+}
+
+void
+ruby_debug_print_n(const NODE *node)
+{
+    ruby_debug_print_node(0, 1, "", node);
 }
 
 void
@@ -177,9 +185,9 @@ ruby_env_debug_option(const char *str, int len, void *arg)
     int ov;
     size_t retlen;
     unsigned long n;
+#define NAME_MATCH(name) (len == sizeof(name) - 1 && strncmp(str, (name), len) == 0)
 #define SET_WHEN(name, var, val) do {	    \
-        if (len == sizeof(name) - 1 &&	    \
-            strncmp(str, (name), len) == 0) { \
+        if (NAME_MATCH(name)) { \
             (var) = (val);		    \
             return 1;			    \
         }				    \
@@ -207,31 +215,31 @@ ruby_env_debug_option(const char *str, int len, void *arg)
             --len; \
         } \
         if (len > 0) { \
-            fprintf(stderr, "ignored "name" option: `%.*s'\n", len, str); \
+            fprintf(stderr, "ignored "name" option: '%.*s'\n", len, str); \
         } \
     } while (0)
 #define SET_WHEN_UINT(name, vals, num, req) \
-    if (NAME_MATCH_VALUE(name)) SET_UINT_LIST(name, vals, num);
+    if (NAME_MATCH_VALUE(name)) { \
+        if (!len) req; \
+        else SET_UINT_LIST(name, vals, num); \
+        return 1; \
+    }
 
-    SET_WHEN("gc_stress", *ruby_initial_gc_stress_ptr, Qtrue);
-    SET_WHEN("core", ruby_enable_coredump, 1);
-    SET_WHEN("ci", ruby_on_ci, 1);
-    if (NAME_MATCH_VALUE("rgengc")) {
-        if (!len) ruby_rgengc_debug = 1;
-        else SET_UINT_LIST("rgengc", &ruby_rgengc_debug, 1);
+    if (NAME_MATCH("gc_stress")) {
+        rb_gc_initial_stress_set(Qtrue);
         return 1;
     }
+    SET_WHEN("core", ruby_enable_coredump, 1);
+    SET_WHEN("ci", ruby_on_ci, 1);
+    SET_WHEN_UINT("rgengc", &ruby_rgengc_debug, 1, ruby_rgengc_debug = 1);
 #if defined _WIN32
 # if RUBY_MSVCRT_VERSION >= 80
     SET_WHEN("rtc_error", ruby_w32_rtc_error, 1);
 # endif
 #endif
 #if defined _WIN32 || defined __CYGWIN__
-    if (NAME_MATCH_VALUE("codepage")) {
-        if (!len) fprintf(stderr, "missing codepage argument");
-        else SET_UINT_LIST("codepage", ruby_w32_codepage, numberof(ruby_w32_codepage));
-        return 1;
-    }
+    SET_WHEN_UINT("codepage", ruby_w32_codepage, numberof(ruby_w32_codepage),
+                  fprintf(stderr, "missing codepage argument"));
 #endif
     return 0;
 }
@@ -285,6 +293,12 @@ static const char *dlf_type_names[] = {
     "func",
 };
 
+#ifdef MAX_PATH
+#define DEBUG_LOG_MAX_PATH (MAX_PATH-1)
+#else
+#define DEBUG_LOG_MAX_PATH 255
+#endif
+
 static struct {
     char *mem;
     unsigned int cnt;
@@ -292,6 +306,7 @@ static struct {
     unsigned int filters_num;
     bool show_pid;
     rb_nativethread_lock_t lock;
+    char output_file[DEBUG_LOG_MAX_PATH+1];
     FILE *output;
 } debug_log;
 
@@ -393,7 +408,39 @@ setup_debug_log(void)
         }
         else {
             ruby_debug_log_mode |= ruby_debug_log_file;
-            if ((debug_log.output = fopen(log_config, "w")) == NULL) {
+
+            // pid extension with %p
+            unsigned long len = strlen(log_config);
+
+            for (unsigned long i=0, j=0; i<len; i++) {
+                const char c = log_config[i];
+
+                if (c == '%') {
+                    i++;
+                    switch (log_config[i]) {
+                      case '%':
+                        debug_log.output_file[j++] = '%';
+                        break;
+                      case 'p':
+                        snprintf(debug_log.output_file + j, DEBUG_LOG_MAX_PATH - j, "%d", getpid());
+                        j = strlen(debug_log.output_file);
+                        break;
+                      default:
+                        fprintf(stderr, "can not parse RUBY_DEBUG_LOG filename: %s\n", log_config);
+                        exit(1);
+                    }
+                }
+                else {
+                    debug_log.output_file[j++] = c;
+                }
+
+                if (j >= DEBUG_LOG_MAX_PATH) {
+                    fprintf(stderr, "RUBY_DEBUG_LOG=%s is too long\n", log_config);
+                    exit(1);
+                }
+            }
+
+            if ((debug_log.output = fopen(debug_log.output_file, "w")) == NULL) {
                 fprintf(stderr, "can not open %s for RUBY_DEBUG_LOG\n", log_config);
                 exit(1);
             }
@@ -404,6 +451,10 @@ setup_debug_log(void)
                 (ruby_debug_log_mode & ruby_debug_log_memory) ? "[mem]" : "",
                 (ruby_debug_log_mode & ruby_debug_log_stderr) ? "[stderr]" : "",
                 (ruby_debug_log_mode & ruby_debug_log_file)   ? "[file]" : "");
+        if (debug_log.output_file[0]) {
+            fprintf(stderr, "RUBY_DEBUG_LOG filename=%s\n", debug_log.output_file);
+        }
+
         rb_nativethread_lock_initialize(&debug_log.lock);
 
         setup_debug_log_filter();
@@ -570,10 +621,11 @@ ruby_debug_log(const char *file, int line, const char *func_name, const char *fm
         // ractor information
         if (ruby_single_main_ractor == NULL) {
             rb_ractor_t *cr = th ? th->ractor : NULL;
+            rb_vm_t *vm = GET_VM();
 
             if (r && len < MAX_DEBUG_LOG_MESSAGE_LEN) {
-                r = snprintf(buff + len, MAX_DEBUG_LOG_MESSAGE_LEN - len, "\tr:#%d/%u",
-                             cr ? (int)rb_ractor_id(cr) : -1, GET_VM()->ractor.cnt);
+                r = snprintf(buff + len, MAX_DEBUG_LOG_MESSAGE_LEN - len, "\tr:#%d/%u (%u)",
+                             cr ? (int)rb_ractor_id(cr) : -1, vm->ractor.cnt, vm->ractor.sched.running_cnt);
 
                 if (r < 0) rb_bug("ruby_debug_log returns %d", r);
                 len += r;
@@ -631,7 +683,7 @@ debug_log_dump(FILE *out, unsigned int n)
             int index = current_index - size + i;
             if (index < 0) index += MAX_DEBUG_LOG;
             VM_ASSERT(index <= MAX_DEBUG_LOG);
-            const char *mesg = RUBY_DEBUG_LOG_MEM_ENTRY(index);;
+            const char *mesg = RUBY_DEBUG_LOG_MEM_ENTRY(index);
             fprintf(out, "%4u: %s\n", debug_log.cnt - size + i, mesg);
         }
     }

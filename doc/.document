@@ -1,10 +1,12 @@
 *.md
 *.rb
-*.rdoc
+[^_]*.rdoc
 contributing
 NEWS
 syntax
 optparse
+date
 rdoc
 regexp
 yjit
+ruby

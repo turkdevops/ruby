@@ -46,14 +46,14 @@
 # The stream has a _position_, which is the index of an entry in the directory:
 #
 # - The initial position is zero (before the first entry).
-# - \Method #tell (aliased as #pos) returns the position.
-# - \Method #pos= sets the position (but ignores a value outside the stream),
+# - Method #tell (aliased as #pos) returns the position.
+# - Method #pos= sets the position (but ignores a value outside the stream),
 #   and returns the position.
-# - \Method #seek is like #pos=, but returns +self+ (convenient for chaining).
-# - \Method #read, if not at end-of-stream, reads the next entry and increments
+# - Method #seek is like #pos=, but returns +self+ (convenient for chaining).
+# - Method #read, if not at end-of-stream, reads the next entry and increments
 #   the position;
 #   if at end-of-stream, does not increment the position.
-# - \Method #rewind sets the position to zero.
+# - Method #rewind sets the position to zero.
 #
 # Examples (using the {simple file tree}[rdoc-ref:Dir@About+the+Examples]):
 #
@@ -83,7 +83,7 @@
 #
 # == What's Here
 #
-# First, what's elsewhere. \Class \Dir:
+# First, what's elsewhere. Class \Dir:
 #
 # - Inherits from {class Object}[rdoc-ref:Object@What-27s+Here].
 # - Includes {module Enumerable}[rdoc-ref:Enumerable@What-27s+Here],
@@ -320,7 +320,7 @@ class Dir
   #     Dir.glob('io.?') # => ["io.c"]
   #
   # - <tt>'[_set_]'</tt>: Matches any one character in the string _set_;
-  #   behaves like a {Regexp character class}[rdoc-ref:regexp.rdoc@Character+Classes],
+  #   behaves like a {Regexp character class}[rdoc-ref:Regexp@Character+Classes],
   #   including set negation (<tt>'[^a-z]'</tt>):
   #
   #     Dir.glob('*.[a-z][a-z]').take(3)
@@ -328,7 +328,7 @@ class Dir
   #
   # - <tt>'{_abc_,_xyz_}'</tt>:
   #   Matches either string _abc_ or string _xyz_;
-  #   behaves like {Regexp alternation}[rdoc-ref:regexp.rdoc@Alternation]:
+  #   behaves like {Regexp alternation}[rdoc-ref:Regexp@Alternation]:
   #
   #     Dir.glob('{LEGAL,BSDL}') # => ["LEGAL", "BSDL"]
   #
@@ -408,6 +408,7 @@ class Dir
   #   specifies that patterns may match short names if they exist; Windows only.
   #
   def self.glob(pattern, _flags = 0, flags: _flags, base: nil, sort: true)
+    Primitive.attr! :use_block
     Primitive.dir_s_glob(pattern, flags, base, sort)
   end
 end

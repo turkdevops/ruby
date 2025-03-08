@@ -350,6 +350,19 @@ class TestIO < Test::Unit::TestCase
     end)
   end
 
+  def test_ungetc_with_seek
+    make_tempfile {|t|
+      t.open
+      t.write('0123456789')
+      t.rewind
+
+      t.ungetc('a')
+      t.seek(2, :SET)
+
+      assert_equal('2', t.getc)
+    }
+  end
+
   def test_ungetbyte
     make_tempfile {|t|
       t.open
@@ -370,6 +383,19 @@ class TestIO < Test::Unit::TestCase
       t.ungetbyte("\xe7\xb4\x85")
       assert_equal(-2, t.pos)
       assert_equal("\u7d05\u7389bar\n", t.gets)
+    }
+  end
+
+  def test_ungetbyte_with_seek
+    make_tempfile {|t|
+      t.open
+      t.write('0123456789')
+      t.rewind
+
+      t.ungetbyte('a'.ord)
+      t.seek(2, :SET)
+
+      assert_equal('2'.ord, t.getbyte)
     }
   end
 
@@ -655,7 +681,6 @@ class TestIO < Test::Unit::TestCase
 
   if have_nonblock?
     def test_copy_stream_no_busy_wait
-      omit "RJIT has busy wait on GC. This sometimes fails with --jit." if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled?
       omit "multiple threads already active" if Thread.list.size > 1
 
       msg = 'r58534 [ruby-core:80969] [Backport #13533]'
@@ -1114,6 +1139,34 @@ class TestIO < Test::Unit::TestCase
       IO.copy_stream(src, dst)
       assert_equal("ok", IO.read("dst"), bug11199)
     }
+  end
+
+  def test_copy_stream_dup_buffer
+    bug21131 = '[ruby-core:120961] [Bug #21131]'
+    mkcdtmpdir do
+      dst_class = Class.new do
+        def initialize(&block)
+          @block = block
+        end
+
+        def write(data)
+          @block.call(data.dup)
+          data.bytesize
+        end
+      end
+
+      rng = Random.new(42)
+      body = Tempfile.new("ruby-bug", binmode: true)
+      body.write(rng.bytes(16_385))
+      body.rewind
+
+      payload = []
+      IO.copy_stream(body, dst_class.new{payload << it})
+      body.rewind
+      assert_equal(body.read, payload.join, bug21131)
+    ensure
+      body&.close
+    end
   end
 
   def test_copy_stream_write_in_binmode
@@ -1679,7 +1732,6 @@ class TestIO < Test::Unit::TestCase
   end if have_nonblock?
 
   def test_read_nonblock_no_exceptions
-    omit '[ruby-core:90895] RJIT worker may leave fd open in a forked child' if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled? # TODO: consider acquiring GVL from RJIT worker.
     with_pipe {|r, w|
       assert_equal :wait_readable, r.read_nonblock(4096, exception: false)
       w.puts "HI!"
@@ -1896,6 +1948,148 @@ class TestIO < Test::Unit::TestCase
       r.gets; assert_equal(1001, $.)
       r.gets; assert_equal(1001, $.)
     end)
+  end
+
+  def test_readline_bad_param_raises
+    File.open(__FILE__) do |f|
+      assert_raise(TypeError) do
+        f.readline Object.new
+      end
+    end
+
+    File.open(__FILE__) do |f|
+      assert_raise(TypeError) do
+        f.readline 1, 2
+      end
+    end
+  end
+
+  def test_readline_raises
+    File.open(__FILE__) do |f|
+      assert_equal File.read(__FILE__), f.readline(nil)
+      assert_raise(EOFError) do
+        f.readline
+      end
+    end
+  end
+
+  def test_readline_separators
+    File.open(__FILE__) do |f|
+      line = f.readline("def")
+      assert_equal File.read(__FILE__)[/\A.*?def/m], line
+    end
+
+    File.open(__FILE__) do |f|
+      line = f.readline("def", chomp: true)
+      assert_equal File.read(__FILE__)[/\A.*?(?=def)/m], line
+    end
+  end
+
+  def test_readline_separators_limits
+    t = Tempfile.open("readline_limit")
+    str = "#" * 50
+    sep = "def"
+
+    t.write str
+    t.write sep
+    t.write str
+    t.flush
+
+    # over limit
+    File.open(t.path) do |f|
+      line = f.readline sep, str.bytesize
+      assert_equal(str, line)
+    end
+
+    # under limit
+    File.open(t.path) do |f|
+      line = f.readline(sep, str.bytesize + 5)
+      assert_equal(str + sep, line)
+    end
+
+    # under limit + chomp
+    File.open(t.path) do |f|
+      line = f.readline(sep, str.bytesize + 5, chomp: true)
+      assert_equal(str, line)
+    end
+  ensure
+    t&.close!
+  end
+
+  def test_readline_limit_without_separator
+    t = Tempfile.open("readline_limit")
+    str = "#" * 50
+    sep = "\n"
+
+    t.write str
+    t.write sep
+    t.write str
+    t.flush
+
+    # over limit
+    File.open(t.path) do |f|
+      line = f.readline str.bytesize
+      assert_equal(str, line)
+    end
+
+    # under limit
+    File.open(t.path) do |f|
+      line = f.readline(str.bytesize + 5)
+      assert_equal(str + sep, line)
+    end
+
+    # under limit + chomp
+    File.open(t.path) do |f|
+      line = f.readline(str.bytesize + 5, chomp: true)
+      assert_equal(str, line)
+    end
+  ensure
+    t&.close!
+  end
+
+  def test_readline_chomp_true
+    File.open(__FILE__) do |f|
+      line = f.readline(chomp: true)
+      assert_equal File.readlines(__FILE__).first.chomp, line
+    end
+  end
+
+  def test_readline_incompatible_rs
+    first_line = File.open(__FILE__, &:gets).encode("utf-32le")
+    File.open(__FILE__, encoding: "utf-8:utf-32le") {|f|
+      assert_equal first_line, f.readline
+      assert_raise(ArgumentError) {f.readline("\0")}
+    }
+  end
+
+  def test_readline_limit_nonascii
+    mkcdtmpdir do
+      i = 0
+
+      File.open("text#{i+=1}", "w+:utf-8") do |f|
+        f.write("Test\nok\u{bf}ok\n")
+        f.rewind
+
+        assert_equal("Test\nok\u{bf}", f.readline("\u{bf}"))
+        assert_equal("ok\n", f.readline("\u{bf}"))
+      end
+
+      File.open("text#{i+=1}", "w+b:utf-32le") do |f|
+        f.write("0123456789")
+        f.rewind
+
+        assert_equal(4, f.readline(4).bytesize)
+        assert_equal(4, f.readline(3).bytesize)
+      end
+
+      File.open("text#{i+=1}", "w+:utf-8:utf-32le") do |f|
+        f.write("0123456789")
+        f.rewind
+
+        assert_equal(4, f.readline(4).bytesize)
+        assert_equal(4, f.readline(3).bytesize)
+      end
+    end
   end
 
   def test_set_lineno_readline
@@ -2347,10 +2541,6 @@ class TestIO < Test::Unit::TestCase
   end
 
   def test_autoclose_true_closed_by_finalizer
-    # http://ci.rvm.jp/results/trunk-rjit@silicon-docker/1465760
-    # http://ci.rvm.jp/results/trunk-rjit@silicon-docker/1469765
-    omit 'this randomly fails with RJIT' if defined?(RubyVM::RJIT) && RubyVM::RJIT.enabled?
-
     feature2250 = '[ruby-core:26222]'
     pre = 'ft2250'
     t = Tempfile.new(pre)
@@ -2439,7 +2629,7 @@ class TestIO < Test::Unit::TestCase
     end
     assert_raise(Errno::ESPIPE) do
       assert_deprecated_warning(/IO process creation with a leading '\|'/) do # https://bugs.ruby-lang.org/issues/19630
-        IO.read("|echo foo", 1, 1)
+        IO.read("|#{EnvUtil.rubybin} -e 'puts :foo'", 1, 1)
       end
     end
   end
@@ -2543,6 +2733,17 @@ class TestIO < Test::Unit::TestCase
     }
   end
 
+  def test_reopen_binmode
+    f1 = File.open(__FILE__)
+    f2 = File.open(__FILE__)
+    f1.binmode
+    f1.reopen(f2)
+    assert_not_operator(f1, :binmode?)
+  ensure
+    f2.close
+    f1.close
+  end
+
   def make_tempfile_for_encoding
     t = make_tempfile
     open(t.path, "rb+:utf-8") {|f| f.puts "\u7d05\u7389bar\n"}
@@ -2571,6 +2772,16 @@ class TestIO < Test::Unit::TestCase
         assert_equal("\xB9\xC8\xB6\xCCbar\n".force_encoding(Encoding::EUC_JP), s)
       }
     }
+  end
+
+  def test_reopen_encoding_from_io
+    f1 = File.open(__FILE__, "rb:UTF-16LE")
+    f2 = File.open(__FILE__, "r:UTF-8")
+    f1.reopen(f2)
+    assert_equal(Encoding::UTF_8, f1.external_encoding)
+  ensure
+    f2.close
+    f1.close
   end
 
   def test_reopen_opt_encoding
@@ -2825,6 +3036,15 @@ class TestIO < Test::Unit::TestCase
       f.close
 
       assert_equal("FOO\n", File.read(t.path))
+
+      fd = IO.sysopen(t.path)
+      %w[w r+ w+ a+].each do |mode|
+        assert_raise(Errno::EINVAL, "#{mode} [ruby-dev:38571]") {IO.new(fd, mode)}
+      end
+      f = IO.new(fd, "r")
+      data = f.read
+      f.close
+      assert_equal("FOO\n", data)
     }
   end
 
@@ -3763,8 +3983,10 @@ __END__
   end
 
   def test_open_fifo_does_not_block_other_threads
-    mkcdtmpdir {
+    mkcdtmpdir do
       File.mkfifo("fifo")
+    rescue NotImplementedError
+    else
       assert_separately([], <<-'EOS')
         t1 = Thread.new {
           open("fifo", "r") {|r|
@@ -3779,8 +4001,32 @@ __END__
         t1_value, _ = assert_join_threads([t1, t2])
         assert_equal("foo", t1_value)
       EOS
-    }
-  end if /mswin|mingw|bccwin|cygwin/ !~ RUBY_PLATFORM
+    end
+  end
+
+  def test_open_fifo_restart_at_signal_intterupt
+    mkcdtmpdir do
+      File.mkfifo("fifo")
+    rescue NotImplementedError
+    else
+      wait = EnvUtil.apply_timeout_scale(0.1)
+      data = "writing to fifo"
+
+      # Do not use assert_separately, because reading from stdin
+      # prevents to reproduce [Bug #20708]
+      assert_in_out_err(["-e", "#{<<~"begin;"}\n#{<<~'end;'}"], [], [data])
+      wait, data = #{wait}, #{data.dump}
+      ;
+      begin;
+        trap(:USR1) {}
+        Thread.new do
+          sleep wait; Process.kill(:USR1, $$)
+          sleep wait; File.write("fifo", data)
+        end
+        puts File.read("fifo")
+      end;
+    end
+  end if Signal.list[:USR1] # Pointless on platforms without signal
 
   def test_open_flag
     make_tempfile do |t|

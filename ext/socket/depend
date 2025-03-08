@@ -170,6 +170,7 @@ ancdata.o: $(hdrdir)/ruby/internal/special_consts.h
 ancdata.o: $(hdrdir)/ruby/internal/static_assert.h
 ancdata.o: $(hdrdir)/ruby/internal/stdalign.h
 ancdata.o: $(hdrdir)/ruby/internal/stdbool.h
+ancdata.o: $(hdrdir)/ruby/internal/stdckdint.h
 ancdata.o: $(hdrdir)/ruby/internal/symbol.h
 ancdata.o: $(hdrdir)/ruby/internal/value.h
 ancdata.o: $(hdrdir)/ruby/internal/value_type.h
@@ -186,6 +187,7 @@ ancdata.o: $(hdrdir)/ruby/subst.h
 ancdata.o: $(hdrdir)/ruby/thread.h
 ancdata.o: $(hdrdir)/ruby/thread_native.h
 ancdata.o: $(hdrdir)/ruby/util.h
+ancdata.o: $(hdrdir)/ruby/version.h
 ancdata.o: $(top_srcdir)/ccan/check_type/check_type.h
 ancdata.o: $(top_srcdir)/ccan/container_of/container_of.h
 ancdata.o: $(top_srcdir)/ccan/list/list.h
@@ -198,6 +200,7 @@ ancdata.o: $(top_srcdir)/internal/error.h
 ancdata.o: $(top_srcdir)/internal/gc.h
 ancdata.o: $(top_srcdir)/internal/imemo.h
 ancdata.o: $(top_srcdir)/internal/io.h
+ancdata.o: $(top_srcdir)/internal/sanitizers.h
 ancdata.o: $(top_srcdir)/internal/serial.h
 ancdata.o: $(top_srcdir)/internal/static_assert.h
 ancdata.o: $(top_srcdir)/internal/string.h
@@ -378,6 +381,7 @@ basicsocket.o: $(hdrdir)/ruby/internal/special_consts.h
 basicsocket.o: $(hdrdir)/ruby/internal/static_assert.h
 basicsocket.o: $(hdrdir)/ruby/internal/stdalign.h
 basicsocket.o: $(hdrdir)/ruby/internal/stdbool.h
+basicsocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 basicsocket.o: $(hdrdir)/ruby/internal/symbol.h
 basicsocket.o: $(hdrdir)/ruby/internal/value.h
 basicsocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -394,6 +398,7 @@ basicsocket.o: $(hdrdir)/ruby/subst.h
 basicsocket.o: $(hdrdir)/ruby/thread.h
 basicsocket.o: $(hdrdir)/ruby/thread_native.h
 basicsocket.o: $(hdrdir)/ruby/util.h
+basicsocket.o: $(hdrdir)/ruby/version.h
 basicsocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 basicsocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 basicsocket.o: $(top_srcdir)/ccan/list/list.h
@@ -406,6 +411,7 @@ basicsocket.o: $(top_srcdir)/internal/error.h
 basicsocket.o: $(top_srcdir)/internal/gc.h
 basicsocket.o: $(top_srcdir)/internal/imemo.h
 basicsocket.o: $(top_srcdir)/internal/io.h
+basicsocket.o: $(top_srcdir)/internal/sanitizers.h
 basicsocket.o: $(top_srcdir)/internal/serial.h
 basicsocket.o: $(top_srcdir)/internal/static_assert.h
 basicsocket.o: $(top_srcdir)/internal/string.h
@@ -586,6 +592,7 @@ constants.o: $(hdrdir)/ruby/internal/special_consts.h
 constants.o: $(hdrdir)/ruby/internal/static_assert.h
 constants.o: $(hdrdir)/ruby/internal/stdalign.h
 constants.o: $(hdrdir)/ruby/internal/stdbool.h
+constants.o: $(hdrdir)/ruby/internal/stdckdint.h
 constants.o: $(hdrdir)/ruby/internal/symbol.h
 constants.o: $(hdrdir)/ruby/internal/value.h
 constants.o: $(hdrdir)/ruby/internal/value_type.h
@@ -602,6 +609,7 @@ constants.o: $(hdrdir)/ruby/subst.h
 constants.o: $(hdrdir)/ruby/thread.h
 constants.o: $(hdrdir)/ruby/thread_native.h
 constants.o: $(hdrdir)/ruby/util.h
+constants.o: $(hdrdir)/ruby/version.h
 constants.o: $(top_srcdir)/ccan/check_type/check_type.h
 constants.o: $(top_srcdir)/ccan/container_of/container_of.h
 constants.o: $(top_srcdir)/ccan/list/list.h
@@ -614,6 +622,7 @@ constants.o: $(top_srcdir)/internal/error.h
 constants.o: $(top_srcdir)/internal/gc.h
 constants.o: $(top_srcdir)/internal/imemo.h
 constants.o: $(top_srcdir)/internal/io.h
+constants.o: $(top_srcdir)/internal/sanitizers.h
 constants.o: $(top_srcdir)/internal/serial.h
 constants.o: $(top_srcdir)/internal/static_assert.h
 constants.o: $(top_srcdir)/internal/string.h
@@ -795,6 +804,7 @@ ifaddr.o: $(hdrdir)/ruby/internal/special_consts.h
 ifaddr.o: $(hdrdir)/ruby/internal/static_assert.h
 ifaddr.o: $(hdrdir)/ruby/internal/stdalign.h
 ifaddr.o: $(hdrdir)/ruby/internal/stdbool.h
+ifaddr.o: $(hdrdir)/ruby/internal/stdckdint.h
 ifaddr.o: $(hdrdir)/ruby/internal/symbol.h
 ifaddr.o: $(hdrdir)/ruby/internal/value.h
 ifaddr.o: $(hdrdir)/ruby/internal/value_type.h
@@ -811,6 +821,7 @@ ifaddr.o: $(hdrdir)/ruby/subst.h
 ifaddr.o: $(hdrdir)/ruby/thread.h
 ifaddr.o: $(hdrdir)/ruby/thread_native.h
 ifaddr.o: $(hdrdir)/ruby/util.h
+ifaddr.o: $(hdrdir)/ruby/version.h
 ifaddr.o: $(top_srcdir)/ccan/check_type/check_type.h
 ifaddr.o: $(top_srcdir)/ccan/container_of/container_of.h
 ifaddr.o: $(top_srcdir)/ccan/list/list.h
@@ -823,6 +834,7 @@ ifaddr.o: $(top_srcdir)/internal/error.h
 ifaddr.o: $(top_srcdir)/internal/gc.h
 ifaddr.o: $(top_srcdir)/internal/imemo.h
 ifaddr.o: $(top_srcdir)/internal/io.h
+ifaddr.o: $(top_srcdir)/internal/sanitizers.h
 ifaddr.o: $(top_srcdir)/internal/serial.h
 ifaddr.o: $(top_srcdir)/internal/static_assert.h
 ifaddr.o: $(top_srcdir)/internal/string.h
@@ -1003,6 +1015,7 @@ init.o: $(hdrdir)/ruby/internal/special_consts.h
 init.o: $(hdrdir)/ruby/internal/static_assert.h
 init.o: $(hdrdir)/ruby/internal/stdalign.h
 init.o: $(hdrdir)/ruby/internal/stdbool.h
+init.o: $(hdrdir)/ruby/internal/stdckdint.h
 init.o: $(hdrdir)/ruby/internal/symbol.h
 init.o: $(hdrdir)/ruby/internal/value.h
 init.o: $(hdrdir)/ruby/internal/value_type.h
@@ -1019,6 +1032,7 @@ init.o: $(hdrdir)/ruby/subst.h
 init.o: $(hdrdir)/ruby/thread.h
 init.o: $(hdrdir)/ruby/thread_native.h
 init.o: $(hdrdir)/ruby/util.h
+init.o: $(hdrdir)/ruby/version.h
 init.o: $(top_srcdir)/ccan/check_type/check_type.h
 init.o: $(top_srcdir)/ccan/container_of/container_of.h
 init.o: $(top_srcdir)/ccan/list/list.h
@@ -1031,6 +1045,7 @@ init.o: $(top_srcdir)/internal/error.h
 init.o: $(top_srcdir)/internal/gc.h
 init.o: $(top_srcdir)/internal/imemo.h
 init.o: $(top_srcdir)/internal/io.h
+init.o: $(top_srcdir)/internal/sanitizers.h
 init.o: $(top_srcdir)/internal/serial.h
 init.o: $(top_srcdir)/internal/static_assert.h
 init.o: $(top_srcdir)/internal/string.h
@@ -1211,6 +1226,7 @@ ipsocket.o: $(hdrdir)/ruby/internal/special_consts.h
 ipsocket.o: $(hdrdir)/ruby/internal/static_assert.h
 ipsocket.o: $(hdrdir)/ruby/internal/stdalign.h
 ipsocket.o: $(hdrdir)/ruby/internal/stdbool.h
+ipsocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 ipsocket.o: $(hdrdir)/ruby/internal/symbol.h
 ipsocket.o: $(hdrdir)/ruby/internal/value.h
 ipsocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -1227,6 +1243,7 @@ ipsocket.o: $(hdrdir)/ruby/subst.h
 ipsocket.o: $(hdrdir)/ruby/thread.h
 ipsocket.o: $(hdrdir)/ruby/thread_native.h
 ipsocket.o: $(hdrdir)/ruby/util.h
+ipsocket.o: $(hdrdir)/ruby/version.h
 ipsocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 ipsocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 ipsocket.o: $(top_srcdir)/ccan/list/list.h
@@ -1239,6 +1256,7 @@ ipsocket.o: $(top_srcdir)/internal/error.h
 ipsocket.o: $(top_srcdir)/internal/gc.h
 ipsocket.o: $(top_srcdir)/internal/imemo.h
 ipsocket.o: $(top_srcdir)/internal/io.h
+ipsocket.o: $(top_srcdir)/internal/sanitizers.h
 ipsocket.o: $(top_srcdir)/internal/serial.h
 ipsocket.o: $(top_srcdir)/internal/static_assert.h
 ipsocket.o: $(top_srcdir)/internal/string.h
@@ -1419,6 +1437,7 @@ option.o: $(hdrdir)/ruby/internal/special_consts.h
 option.o: $(hdrdir)/ruby/internal/static_assert.h
 option.o: $(hdrdir)/ruby/internal/stdalign.h
 option.o: $(hdrdir)/ruby/internal/stdbool.h
+option.o: $(hdrdir)/ruby/internal/stdckdint.h
 option.o: $(hdrdir)/ruby/internal/symbol.h
 option.o: $(hdrdir)/ruby/internal/value.h
 option.o: $(hdrdir)/ruby/internal/value_type.h
@@ -1435,6 +1454,7 @@ option.o: $(hdrdir)/ruby/subst.h
 option.o: $(hdrdir)/ruby/thread.h
 option.o: $(hdrdir)/ruby/thread_native.h
 option.o: $(hdrdir)/ruby/util.h
+option.o: $(hdrdir)/ruby/version.h
 option.o: $(top_srcdir)/ccan/check_type/check_type.h
 option.o: $(top_srcdir)/ccan/container_of/container_of.h
 option.o: $(top_srcdir)/ccan/list/list.h
@@ -1447,6 +1467,7 @@ option.o: $(top_srcdir)/internal/error.h
 option.o: $(top_srcdir)/internal/gc.h
 option.o: $(top_srcdir)/internal/imemo.h
 option.o: $(top_srcdir)/internal/io.h
+option.o: $(top_srcdir)/internal/sanitizers.h
 option.o: $(top_srcdir)/internal/serial.h
 option.o: $(top_srcdir)/internal/static_assert.h
 option.o: $(top_srcdir)/internal/string.h
@@ -1627,6 +1648,7 @@ raddrinfo.o: $(hdrdir)/ruby/internal/special_consts.h
 raddrinfo.o: $(hdrdir)/ruby/internal/static_assert.h
 raddrinfo.o: $(hdrdir)/ruby/internal/stdalign.h
 raddrinfo.o: $(hdrdir)/ruby/internal/stdbool.h
+raddrinfo.o: $(hdrdir)/ruby/internal/stdckdint.h
 raddrinfo.o: $(hdrdir)/ruby/internal/symbol.h
 raddrinfo.o: $(hdrdir)/ruby/internal/value.h
 raddrinfo.o: $(hdrdir)/ruby/internal/value_type.h
@@ -1643,6 +1665,7 @@ raddrinfo.o: $(hdrdir)/ruby/subst.h
 raddrinfo.o: $(hdrdir)/ruby/thread.h
 raddrinfo.o: $(hdrdir)/ruby/thread_native.h
 raddrinfo.o: $(hdrdir)/ruby/util.h
+raddrinfo.o: $(hdrdir)/ruby/version.h
 raddrinfo.o: $(top_srcdir)/ccan/check_type/check_type.h
 raddrinfo.o: $(top_srcdir)/ccan/container_of/container_of.h
 raddrinfo.o: $(top_srcdir)/ccan/list/list.h
@@ -1655,6 +1678,7 @@ raddrinfo.o: $(top_srcdir)/internal/error.h
 raddrinfo.o: $(top_srcdir)/internal/gc.h
 raddrinfo.o: $(top_srcdir)/internal/imemo.h
 raddrinfo.o: $(top_srcdir)/internal/io.h
+raddrinfo.o: $(top_srcdir)/internal/sanitizers.h
 raddrinfo.o: $(top_srcdir)/internal/serial.h
 raddrinfo.o: $(top_srcdir)/internal/static_assert.h
 raddrinfo.o: $(top_srcdir)/internal/string.h
@@ -1835,6 +1859,7 @@ socket.o: $(hdrdir)/ruby/internal/special_consts.h
 socket.o: $(hdrdir)/ruby/internal/static_assert.h
 socket.o: $(hdrdir)/ruby/internal/stdalign.h
 socket.o: $(hdrdir)/ruby/internal/stdbool.h
+socket.o: $(hdrdir)/ruby/internal/stdckdint.h
 socket.o: $(hdrdir)/ruby/internal/symbol.h
 socket.o: $(hdrdir)/ruby/internal/value.h
 socket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -1851,6 +1876,7 @@ socket.o: $(hdrdir)/ruby/subst.h
 socket.o: $(hdrdir)/ruby/thread.h
 socket.o: $(hdrdir)/ruby/thread_native.h
 socket.o: $(hdrdir)/ruby/util.h
+socket.o: $(hdrdir)/ruby/version.h
 socket.o: $(top_srcdir)/ccan/check_type/check_type.h
 socket.o: $(top_srcdir)/ccan/container_of/container_of.h
 socket.o: $(top_srcdir)/ccan/list/list.h
@@ -1863,6 +1889,7 @@ socket.o: $(top_srcdir)/internal/error.h
 socket.o: $(top_srcdir)/internal/gc.h
 socket.o: $(top_srcdir)/internal/imemo.h
 socket.o: $(top_srcdir)/internal/io.h
+socket.o: $(top_srcdir)/internal/sanitizers.h
 socket.o: $(top_srcdir)/internal/serial.h
 socket.o: $(top_srcdir)/internal/static_assert.h
 socket.o: $(top_srcdir)/internal/string.h
@@ -2043,6 +2070,7 @@ sockssocket.o: $(hdrdir)/ruby/internal/special_consts.h
 sockssocket.o: $(hdrdir)/ruby/internal/static_assert.h
 sockssocket.o: $(hdrdir)/ruby/internal/stdalign.h
 sockssocket.o: $(hdrdir)/ruby/internal/stdbool.h
+sockssocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 sockssocket.o: $(hdrdir)/ruby/internal/symbol.h
 sockssocket.o: $(hdrdir)/ruby/internal/value.h
 sockssocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -2059,6 +2087,7 @@ sockssocket.o: $(hdrdir)/ruby/subst.h
 sockssocket.o: $(hdrdir)/ruby/thread.h
 sockssocket.o: $(hdrdir)/ruby/thread_native.h
 sockssocket.o: $(hdrdir)/ruby/util.h
+sockssocket.o: $(hdrdir)/ruby/version.h
 sockssocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 sockssocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 sockssocket.o: $(top_srcdir)/ccan/list/list.h
@@ -2071,6 +2100,7 @@ sockssocket.o: $(top_srcdir)/internal/error.h
 sockssocket.o: $(top_srcdir)/internal/gc.h
 sockssocket.o: $(top_srcdir)/internal/imemo.h
 sockssocket.o: $(top_srcdir)/internal/io.h
+sockssocket.o: $(top_srcdir)/internal/sanitizers.h
 sockssocket.o: $(top_srcdir)/internal/serial.h
 sockssocket.o: $(top_srcdir)/internal/static_assert.h
 sockssocket.o: $(top_srcdir)/internal/string.h
@@ -2251,6 +2281,7 @@ tcpserver.o: $(hdrdir)/ruby/internal/special_consts.h
 tcpserver.o: $(hdrdir)/ruby/internal/static_assert.h
 tcpserver.o: $(hdrdir)/ruby/internal/stdalign.h
 tcpserver.o: $(hdrdir)/ruby/internal/stdbool.h
+tcpserver.o: $(hdrdir)/ruby/internal/stdckdint.h
 tcpserver.o: $(hdrdir)/ruby/internal/symbol.h
 tcpserver.o: $(hdrdir)/ruby/internal/value.h
 tcpserver.o: $(hdrdir)/ruby/internal/value_type.h
@@ -2267,6 +2298,7 @@ tcpserver.o: $(hdrdir)/ruby/subst.h
 tcpserver.o: $(hdrdir)/ruby/thread.h
 tcpserver.o: $(hdrdir)/ruby/thread_native.h
 tcpserver.o: $(hdrdir)/ruby/util.h
+tcpserver.o: $(hdrdir)/ruby/version.h
 tcpserver.o: $(top_srcdir)/ccan/check_type/check_type.h
 tcpserver.o: $(top_srcdir)/ccan/container_of/container_of.h
 tcpserver.o: $(top_srcdir)/ccan/list/list.h
@@ -2279,6 +2311,7 @@ tcpserver.o: $(top_srcdir)/internal/error.h
 tcpserver.o: $(top_srcdir)/internal/gc.h
 tcpserver.o: $(top_srcdir)/internal/imemo.h
 tcpserver.o: $(top_srcdir)/internal/io.h
+tcpserver.o: $(top_srcdir)/internal/sanitizers.h
 tcpserver.o: $(top_srcdir)/internal/serial.h
 tcpserver.o: $(top_srcdir)/internal/static_assert.h
 tcpserver.o: $(top_srcdir)/internal/string.h
@@ -2459,6 +2492,7 @@ tcpsocket.o: $(hdrdir)/ruby/internal/special_consts.h
 tcpsocket.o: $(hdrdir)/ruby/internal/static_assert.h
 tcpsocket.o: $(hdrdir)/ruby/internal/stdalign.h
 tcpsocket.o: $(hdrdir)/ruby/internal/stdbool.h
+tcpsocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 tcpsocket.o: $(hdrdir)/ruby/internal/symbol.h
 tcpsocket.o: $(hdrdir)/ruby/internal/value.h
 tcpsocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -2475,6 +2509,7 @@ tcpsocket.o: $(hdrdir)/ruby/subst.h
 tcpsocket.o: $(hdrdir)/ruby/thread.h
 tcpsocket.o: $(hdrdir)/ruby/thread_native.h
 tcpsocket.o: $(hdrdir)/ruby/util.h
+tcpsocket.o: $(hdrdir)/ruby/version.h
 tcpsocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 tcpsocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 tcpsocket.o: $(top_srcdir)/ccan/list/list.h
@@ -2487,6 +2522,7 @@ tcpsocket.o: $(top_srcdir)/internal/error.h
 tcpsocket.o: $(top_srcdir)/internal/gc.h
 tcpsocket.o: $(top_srcdir)/internal/imemo.h
 tcpsocket.o: $(top_srcdir)/internal/io.h
+tcpsocket.o: $(top_srcdir)/internal/sanitizers.h
 tcpsocket.o: $(top_srcdir)/internal/serial.h
 tcpsocket.o: $(top_srcdir)/internal/static_assert.h
 tcpsocket.o: $(top_srcdir)/internal/string.h
@@ -2667,6 +2703,7 @@ udpsocket.o: $(hdrdir)/ruby/internal/special_consts.h
 udpsocket.o: $(hdrdir)/ruby/internal/static_assert.h
 udpsocket.o: $(hdrdir)/ruby/internal/stdalign.h
 udpsocket.o: $(hdrdir)/ruby/internal/stdbool.h
+udpsocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 udpsocket.o: $(hdrdir)/ruby/internal/symbol.h
 udpsocket.o: $(hdrdir)/ruby/internal/value.h
 udpsocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -2683,6 +2720,7 @@ udpsocket.o: $(hdrdir)/ruby/subst.h
 udpsocket.o: $(hdrdir)/ruby/thread.h
 udpsocket.o: $(hdrdir)/ruby/thread_native.h
 udpsocket.o: $(hdrdir)/ruby/util.h
+udpsocket.o: $(hdrdir)/ruby/version.h
 udpsocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 udpsocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 udpsocket.o: $(top_srcdir)/ccan/list/list.h
@@ -2695,6 +2733,7 @@ udpsocket.o: $(top_srcdir)/internal/error.h
 udpsocket.o: $(top_srcdir)/internal/gc.h
 udpsocket.o: $(top_srcdir)/internal/imemo.h
 udpsocket.o: $(top_srcdir)/internal/io.h
+udpsocket.o: $(top_srcdir)/internal/sanitizers.h
 udpsocket.o: $(top_srcdir)/internal/serial.h
 udpsocket.o: $(top_srcdir)/internal/static_assert.h
 udpsocket.o: $(top_srcdir)/internal/string.h
@@ -2875,6 +2914,7 @@ unixserver.o: $(hdrdir)/ruby/internal/special_consts.h
 unixserver.o: $(hdrdir)/ruby/internal/static_assert.h
 unixserver.o: $(hdrdir)/ruby/internal/stdalign.h
 unixserver.o: $(hdrdir)/ruby/internal/stdbool.h
+unixserver.o: $(hdrdir)/ruby/internal/stdckdint.h
 unixserver.o: $(hdrdir)/ruby/internal/symbol.h
 unixserver.o: $(hdrdir)/ruby/internal/value.h
 unixserver.o: $(hdrdir)/ruby/internal/value_type.h
@@ -2891,6 +2931,7 @@ unixserver.o: $(hdrdir)/ruby/subst.h
 unixserver.o: $(hdrdir)/ruby/thread.h
 unixserver.o: $(hdrdir)/ruby/thread_native.h
 unixserver.o: $(hdrdir)/ruby/util.h
+unixserver.o: $(hdrdir)/ruby/version.h
 unixserver.o: $(top_srcdir)/ccan/check_type/check_type.h
 unixserver.o: $(top_srcdir)/ccan/container_of/container_of.h
 unixserver.o: $(top_srcdir)/ccan/list/list.h
@@ -2903,6 +2944,7 @@ unixserver.o: $(top_srcdir)/internal/error.h
 unixserver.o: $(top_srcdir)/internal/gc.h
 unixserver.o: $(top_srcdir)/internal/imemo.h
 unixserver.o: $(top_srcdir)/internal/io.h
+unixserver.o: $(top_srcdir)/internal/sanitizers.h
 unixserver.o: $(top_srcdir)/internal/serial.h
 unixserver.o: $(top_srcdir)/internal/static_assert.h
 unixserver.o: $(top_srcdir)/internal/string.h
@@ -3083,6 +3125,7 @@ unixsocket.o: $(hdrdir)/ruby/internal/special_consts.h
 unixsocket.o: $(hdrdir)/ruby/internal/static_assert.h
 unixsocket.o: $(hdrdir)/ruby/internal/stdalign.h
 unixsocket.o: $(hdrdir)/ruby/internal/stdbool.h
+unixsocket.o: $(hdrdir)/ruby/internal/stdckdint.h
 unixsocket.o: $(hdrdir)/ruby/internal/symbol.h
 unixsocket.o: $(hdrdir)/ruby/internal/value.h
 unixsocket.o: $(hdrdir)/ruby/internal/value_type.h
@@ -3099,6 +3142,7 @@ unixsocket.o: $(hdrdir)/ruby/subst.h
 unixsocket.o: $(hdrdir)/ruby/thread.h
 unixsocket.o: $(hdrdir)/ruby/thread_native.h
 unixsocket.o: $(hdrdir)/ruby/util.h
+unixsocket.o: $(hdrdir)/ruby/version.h
 unixsocket.o: $(top_srcdir)/ccan/check_type/check_type.h
 unixsocket.o: $(top_srcdir)/ccan/container_of/container_of.h
 unixsocket.o: $(top_srcdir)/ccan/list/list.h
@@ -3111,6 +3155,7 @@ unixsocket.o: $(top_srcdir)/internal/error.h
 unixsocket.o: $(top_srcdir)/internal/gc.h
 unixsocket.o: $(top_srcdir)/internal/imemo.h
 unixsocket.o: $(top_srcdir)/internal/io.h
+unixsocket.o: $(top_srcdir)/internal/sanitizers.h
 unixsocket.o: $(top_srcdir)/internal/serial.h
 unixsocket.o: $(top_srcdir)/internal/static_assert.h
 unixsocket.o: $(top_srcdir)/internal/string.h

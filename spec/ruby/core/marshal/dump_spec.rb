@@ -38,7 +38,7 @@ describe "Marshal.dump" do
       ].should be_computed_by(:dump)
     end
 
-    platform_is wordsize: 64 do
+    platform_is c_long_size: 64 do
       it "dumps a positive Fixnum > 31 bits as a Bignum" do
         Marshal.dump(2**31 + 1).should == "\x04\bl+\a\x01\x00\x00\x80"
       end
@@ -46,6 +46,11 @@ describe "Marshal.dump" do
       it "dumps a negative Fixnum > 31 bits as a Bignum" do
         Marshal.dump(-2**31 - 1).should == "\x04\bl-\a\x01\x00\x00\x80"
       end
+    end
+
+    it "does not use object links for objects repeatedly dumped" do
+      Marshal.dump([0, 0]).should == "\x04\b[\ai\x00i\x00"
+      Marshal.dump([2**16, 2**16]).should == "\x04\b[\ai\x03\x00\x00\x01i\x03\x00\x00\x01"
     end
   end
 
@@ -76,7 +81,7 @@ describe "Marshal.dump" do
     end
 
     it "dumps a binary encoded Symbol" do
-      s = "\u2192".force_encoding("binary").to_sym
+      s = "\u2192".dup.force_encoding("binary").to_sym
       Marshal.dump(s).should == "\x04\b:\b\xE2\x86\x92"
     end
 
@@ -85,13 +90,18 @@ describe "Marshal.dump" do
       symbol1 = "I:\t\xE2\x82\xACa\x06:\x06ET"
       symbol2 = "I:\t\xE2\x82\xACb\x06;\x06T"
       value = [
-        "€a".force_encoding(Encoding::UTF_8).to_sym,
-        "€b".force_encoding(Encoding::UTF_8).to_sym
+        "€a".dup.force_encoding(Encoding::UTF_8).to_sym,
+        "€b".dup.force_encoding(Encoding::UTF_8).to_sym
       ]
       Marshal.dump(value).should == "\x04\b[\a#{symbol1}#{symbol2}"
 
       value = [*value, value[0]]
       Marshal.dump(value).should == "\x04\b[\b#{symbol1}#{symbol2};\x00"
+    end
+
+    it "uses symbol links for objects repeatedly dumped" do
+      symbol = :foo
+      Marshal.dump([symbol, symbol]).should == "\x04\b[\a:\bfoo;\x00" # ;\x00 is a link to the symbol object
     end
   end
 
@@ -107,6 +117,20 @@ describe "Marshal.dump" do
 
     it "raises TypeError if an Object is an instance of an anonymous class" do
       -> { Marshal.dump(Class.new(UserMarshal).new) }.should raise_error(TypeError, /can't dump anonymous class/)
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      obj = UserMarshal.new
+      Marshal.dump([obj, obj]).should == "\x04\b[\aU:\x10UserMarshal:\tdata@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables of a dumped object after the object itself into the objects table" do
+      value = "<foo>"
+      obj = MarshalSpec::UserMarshalDumpWithIvar.new("string", value)
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\t, that means Integer 4)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bU:)MarshalSpec::UserMarshalDumpWithIvarI[\x06\"\vstring\x06:\t@foo\"\n<foo>@\x06@\t"
     end
   end
 
@@ -150,7 +174,7 @@ describe "Marshal.dump" do
     it "indexes instance variables of a String returned by #_dump at first and then indexes the object itself" do
       class MarshalSpec::M1::A
         def _dump(level)
-          s = "<dump>"
+          s = +"<dump>"
           s.instance_variable_set(:@foo, "bar")
           s
         end
@@ -164,6 +188,20 @@ describe "Marshal.dump" do
       # So the second occurenc of the object a is encoded as an index 2.
       reference = "@\a"
       Marshal.dump([a, a]).should == "\x04\b[\aIu:\x17MarshalSpec::M1::A\v<dump>\x06:\t@foo\"\bbar#{reference}"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      obj = UserDefined.new
+      Marshal.dump([obj, obj]).should == "\x04\b[\au:\x10UserDefined\x12\x04\b[\a:\nstuff;\x00@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables of a dumped String before the object itself into the objects table" do
+      value = "<foo>"
+      obj = MarshalSpec::UserDefinedDumpWithIVars.new(+"string", value)
+
+      # expect a link to the object (@\a, that means Integer 2) is greater than a link
+      # to the instance variable value (@\x06, that means Integer 1)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bIu:*MarshalSpec::UserDefinedDumpWithIVars\vstring\x06:\t@foo\"\n<foo>@\a@\x06"
     end
 
     describe "Core library classes with #_dump returning a String with instance variables" do
@@ -194,8 +232,12 @@ describe "Marshal.dump" do
     end
 
     it "dumps a class with multibyte characters in name" do
-      source_object = eval("MarshalSpec::MultibyteぁあぃいClass".force_encoding(Encoding::UTF_8))
+      source_object = eval("MarshalSpec::MultibyteぁあぃいClass".dup.force_encoding(Encoding::UTF_8))
       Marshal.dump(source_object).should == "\x04\bc,MarshalSpec::Multibyte\xE3\x81\x81\xE3\x81\x82\xE3\x81\x83\xE3\x81\x84Class"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      Marshal.dump([String, String]).should == "\x04\b[\ac\vString@\x06" # @\x06 is a link to the object
     end
 
     it "raises TypeError with an anonymous Class" do
@@ -217,8 +259,12 @@ describe "Marshal.dump" do
     end
 
     it "dumps a module with multibyte characters in name" do
-      source_object = eval("MarshalSpec::MultibyteけげこごModule".force_encoding(Encoding::UTF_8))
+      source_object = eval("MarshalSpec::MultibyteけげこごModule".dup.force_encoding(Encoding::UTF_8))
       Marshal.dump(source_object).should == "\x04\bm-MarshalSpec::Multibyte\xE3\x81\x91\xE3\x81\x92\xE3\x81\x93\xE3\x81\x94Module"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      Marshal.dump([Marshal, Marshal]).should == "\x04\b[\am\fMarshal@\x06" # @\x06 is a link to the object
     end
 
     it "raises TypeError with an anonymous Module" do
@@ -239,6 +285,23 @@ describe "Marshal.dump" do
         [Marshal,  nan_value,      "\004\bf\bnan"],
       ].should be_computed_by(:dump)
     end
+
+    it "may or may not use object links for objects repeatedly dumped" do
+      # it's an MRI implementation detail - on x86 architecture object links
+      # aren't used for Float values but on amd64 - object links are used
+
+      dump = Marshal.dump([0.0, 0.0])
+      ["\x04\b[\af\x060@\x06", "\x04\b[\af\x060f\x060"].should.include?(dump)
+
+      # if object links aren't used - entries in the objects table are still
+      # occupied by Float values
+      if dump == "\x04\b[\af\x060f\x060"
+        s = "string"
+        # an index of "string" ("@\b") in the object table equals 3 (`"\b".ord - 5`),
+        # so `0.0, 0,0` elements occupied indices 1 and 2
+        Marshal.dump([0.0, 0.0, s, s]).should == "\x04\b[\tf\x060f\x060\"\vstring@\b"
+      end
+    end
   end
 
   describe "with a Bignum" do
@@ -254,6 +317,11 @@ describe "Marshal.dump" do
         [Marshal, -2**63, "\004\bl-\t\000\000\000\000\000\000\000\200"],
         [Marshal, -2**64, "\004\bl-\n\000\000\000\000\000\000\000\000\001\000"],
       ].should be_computed_by(:dump)
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      n = 2**64
+      Marshal.dump([n, n]).should == "\x04\b[\al+\n\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00@\x06" # @\x06 is a link to the object
     end
 
     it "increases the object links counter" do
@@ -275,21 +343,58 @@ describe "Marshal.dump" do
     it "dumps a Rational" do
       Marshal.dump(Rational(2, 3)).should == "\x04\bU:\rRational[\ai\ai\b"
     end
+
+    it "uses object links for objects repeatedly dumped" do
+      r = Rational(2, 3)
+      Marshal.dump([r, r]).should == "\x04\b[\aU:\rRational[\ai\ai\b@\x06" # @\x06 is a link to the object
+    end
   end
 
   describe "with a Complex" do
     it "dumps a Complex" do
       Marshal.dump(Complex(2, 3)).should == "\x04\bU:\fComplex[\ai\ai\b"
     end
+
+    it "uses object links for objects repeatedly dumped" do
+      c = Complex(2, 3)
+      Marshal.dump([c, c]).should == "\x04\b[\aU:\fComplex[\ai\ai\b@\x06" # @\x06 is a link to the object
+    end
+  end
+
+  ruby_version_is "3.2" do
+    describe "with a Data" do
+      it "dumps a Data" do
+        Marshal.dump(MarshalSpec::DataSpec::Measure.new(100, 'km')).should == "\x04\bS:#MarshalSpec::DataSpec::Measure\a:\vamountii:\tunit\"\akm"
+      end
+
+      it "dumps an extended Data" do
+        obj = MarshalSpec::DataSpec::MeasureExtended.new(100, "km")
+        Marshal.dump(obj).should == "\x04\bS:+MarshalSpec::DataSpec::MeasureExtended\a:\vamountii:\tunit\"\akm"
+      end
+
+      it "ignores overridden name method" do
+        obj = MarshalSpec::DataSpec::MeasureWithOverriddenName.new(100, "km")
+        Marshal.dump(obj).should == "\x04\bS:5MarshalSpec::DataSpec::MeasureWithOverriddenName\a:\vamountii:\tunit\"\akm"
+      end
+
+      it "uses object links for objects repeatedly dumped" do
+        d = MarshalSpec::DataSpec::Measure.new(100, 'km')
+        Marshal.dump([d, d]).should == "\x04\b[\aS:#MarshalSpec::DataSpec::Measure\a:\vamountii:\tunit\"\akm@\x06" # @\x06 is a link to the object
+      end
+
+      it "raises TypeError with an anonymous Struct" do
+        -> { Marshal.dump(Data.define(:a).new(1)) }.should raise_error(TypeError, /can't dump anonymous class/)
+      end
+    end
   end
 
   describe "with a String" do
     it "dumps a blank String" do
-      Marshal.dump("".force_encoding("binary")).should == "\004\b\"\000"
+      Marshal.dump("".dup.force_encoding("binary")).should == "\004\b\"\000"
     end
 
     it "dumps a short String" do
-      Marshal.dump("short".force_encoding("binary")).should == "\004\b\"\012short"
+      Marshal.dump("short".dup.force_encoding("binary")).should == "\004\b\"\012short"
     end
 
     it "dumps a long String" do
@@ -297,7 +402,7 @@ describe "Marshal.dump" do
     end
 
     it "dumps a String extended with a Module" do
-      Marshal.dump("".extend(Meths).force_encoding("binary")).should == "\004\be:\nMeths\"\000"
+      Marshal.dump("".dup.extend(Meths).force_encoding("binary")).should == "\004\be:\nMeths\"\000"
     end
 
     it "dumps a String subclass" do
@@ -314,29 +419,44 @@ describe "Marshal.dump" do
     end
 
     it "dumps a String with instance variables" do
-      str = ""
+      str = +""
       str.instance_variable_set("@foo", "bar")
       Marshal.dump(str.force_encoding("binary")).should == "\x04\bI\"\x00\x06:\t@foo\"\bbar"
     end
 
     it "dumps a US-ASCII String" do
-      str = "abc".force_encoding("us-ascii")
+      str = "abc".dup.force_encoding("us-ascii")
       Marshal.dump(str).should == "\x04\bI\"\babc\x06:\x06EF"
     end
 
     it "dumps a UTF-8 String" do
-      str = "\x6d\xc3\xb6\x68\x72\x65".force_encoding("utf-8")
+      str = "\x6d\xc3\xb6\x68\x72\x65".dup.force_encoding("utf-8")
       Marshal.dump(str).should == "\x04\bI\"\vm\xC3\xB6hre\x06:\x06ET"
     end
 
     it "dumps a String in another encoding" do
-      str = "\x6d\x00\xf6\x00\x68\x00\x72\x00\x65\x00".force_encoding("utf-16le")
+      str = "\x6d\x00\xf6\x00\x68\x00\x72\x00\x65\x00".dup.force_encoding("utf-16le")
       result = "\x04\bI\"\x0Fm\x00\xF6\x00h\x00r\x00e\x00\x06:\rencoding\"\rUTF-16LE"
       Marshal.dump(str).should == result
     end
 
     it "dumps multiple strings using symlinks for the :E (encoding) symbol" do
       Marshal.dump(["".encode("us-ascii"), "".encode("utf-8")]).should == "\x04\b[\aI\"\x00\x06:\x06EFI\"\x00\x06;\x00T"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      s = "string"
+      Marshal.dump([s, s]).should == "\x04\b[\a\"\vstring@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = +"string"
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bI\"\vstring\x06:\t@foo\"\n<foo>@\x06@\a"
     end
   end
 
@@ -364,7 +484,7 @@ describe "Marshal.dump" do
     end
 
     it "dumps a binary Regexp" do
-      o = Regexp.new("".force_encoding("binary"), Regexp::FIXEDENCODING)
+      o = Regexp.new("".dup.force_encoding("binary"), Regexp::FIXEDENCODING)
       Marshal.dump(o).should == "\x04\b/\x00\x10"
     end
 
@@ -383,18 +503,18 @@ describe "Marshal.dump" do
     end
 
     it "dumps a UTF-8 Regexp" do
-      o = Regexp.new("".force_encoding("utf-8"), Regexp::FIXEDENCODING)
+      o = Regexp.new("".dup.force_encoding("utf-8"), Regexp::FIXEDENCODING)
       Marshal.dump(o).should == "\x04\bI/\x00\x10\x06:\x06ET"
 
-      o = Regexp.new("a".force_encoding("utf-8"), Regexp::FIXEDENCODING)
+      o = Regexp.new("a".dup.force_encoding("utf-8"), Regexp::FIXEDENCODING)
       Marshal.dump(o).should == "\x04\bI/\x06a\x10\x06:\x06ET"
 
-      o = Regexp.new("\u3042".force_encoding("utf-8"), Regexp::FIXEDENCODING)
+      o = Regexp.new("\u3042".dup.force_encoding("utf-8"), Regexp::FIXEDENCODING)
       Marshal.dump(o).should == "\x04\bI/\b\xE3\x81\x82\x10\x06:\x06ET"
     end
 
     it "dumps a Regexp in another encoding" do
-      o = Regexp.new("".force_encoding("utf-16le"), Regexp::FIXEDENCODING)
+      o = Regexp.new("".dup.force_encoding("utf-16le"), Regexp::FIXEDENCODING)
       Marshal.dump(o).should == "\x04\bI/\x00\x10\x06:\rencoding\"\rUTF-16LE"
 
       o = Regexp.new("a".encode("utf-16le"), Regexp::FIXEDENCODING)
@@ -404,6 +524,11 @@ describe "Marshal.dump" do
     it "ignores overridden name method when dumps a Regexp subclass" do
       obj = MarshalSpec::RegexpWithOverriddenName.new("")
       Marshal.dump(obj).should == "\x04\bIC:*MarshalSpec::RegexpWithOverriddenName/\x00\x00\x06:\x06EF"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      r = /\A.\Z/
+      Marshal.dump([r, r]).should == "\x04\b[\aI/\n\\A.\\Z\x00\x06:\x06EF@\x06" # @\x06 is a link to the object
     end
   end
 
@@ -439,6 +564,21 @@ describe "Marshal.dump" do
     it "ignores overridden name method when dumps an Array subclass" do
       obj = MarshalSpec::ArrayWithOverriddenName.new
       Marshal.dump(obj).should == "\x04\bC:)MarshalSpec::ArrayWithOverriddenName[\x00"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      a = [1]
+      Marshal.dump([a, a]).should == "\x04\b[\a[\x06i\x06@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = []
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bI[\x00\x06:\t@foo\"\n<foo>@\x06@\a"
     end
   end
 
@@ -497,6 +637,21 @@ describe "Marshal.dump" do
       obj = MarshalSpec::HashWithOverriddenName.new
       Marshal.dump(obj).should == "\x04\bC:(MarshalSpec::HashWithOverriddenName{\x00"
     end
+
+    it "uses object links for objects repeatedly dumped" do
+      h = {a: 1}
+      Marshal.dump([h, h]).should == "\x04\b[\a{\x06:\x06ai\x06@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = {}
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bI{\x00\x06:\t@foo\"\n<foo>@\x06@\a"
+    end
   end
 
   describe "with a Struct" do
@@ -531,8 +686,23 @@ describe "Marshal.dump" do
       Marshal.dump(obj).should == "\x04\bS:*MarshalSpec::StructWithOverriddenName\x06:\x06a\"\vmember"
     end
 
+    it "uses object links for objects repeatedly dumped" do
+      s = Struct::Pyramid.new
+      Marshal.dump([s, s]).should == "\x04\b[\aS:\x14Struct::Pyramid\x00@\x06" # @\x06 is a link to the object
+    end
+
     it "raises TypeError with an anonymous Struct" do
       -> { Marshal.dump(Struct.new(:a).new(1)) }.should raise_error(TypeError, /can't dump anonymous class/)
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = Struct::Pyramid.new
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bIS:\x14Struct::Pyramid\x00\x06:\t@foo\"\n<foo>@\x06@\a"
     end
   end
 
@@ -553,7 +723,7 @@ describe "Marshal.dump" do
 
     it "dumps an Object with a non-US-ASCII instance variable" do
       obj = Object.new
-      ivar = "@é".force_encoding(Encoding::UTF_8).to_sym
+      ivar = "@é".dup.force_encoding(Encoding::UTF_8).to_sym
       obj.instance_variable_set(ivar, 1)
       Marshal.dump(obj).should == "\x04\bo:\vObject\x06I:\b@\xC3\xA9\x06:\x06ETi\x06"
     end
@@ -623,19 +793,43 @@ describe "Marshal.dump" do
       ObjectSpace.define_finalizer(obj, finalizer.method(:noop))
       Marshal.load(Marshal.dump(obj)).class.should == Object
     end
+
+    it "uses object links for objects repeatedly dumped" do
+      obj = Object.new
+      Marshal.dump([obj, obj]).should == "\x04\b[\ao:\vObject\x00@\x06" # @\x06 is a link to the object
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = Object.new
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bo:\vObject\x06:\t@foo\"\n<foo>@\x06@\a"
+    end
   end
 
   describe "with a Range" do
-    it "dumps a Range inclusive of end (with indeterminant order)" do
+    it "dumps a Range inclusive of end" do
       dump = Marshal.dump(1..2)
+      dump.should == "\x04\bo:\nRange\b:\texclF:\nbegini\x06:\bendi\a"
+
       load = Marshal.load(dump)
       load.should == (1..2)
     end
 
-    it "dumps a Range exclusive of end (with indeterminant order)" do
+    it "dumps a Range exclusive of end" do
       dump = Marshal.dump(1...2)
+      dump.should == "\x04\bo:\nRange\b:\texclT:\nbegini\x06:\bendi\a"
+
       load = Marshal.load(dump)
       load.should == (1...2)
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      r = 1..2
+      Marshal.dump([r, r]).should == "\x04\b[\ao:\nRange\b:\texclF:\nbegini\x06:\bendi\a@\x06" # @\x06 is a link to the object
     end
 
     it "raises TypeError with an anonymous Range subclass" do
@@ -685,8 +879,28 @@ describe "Marshal.dump" do
     end
 
     it "dumps a Time subclass with multibyte characters in name" do
-      source_object = eval("MarshalSpec::MultibyteぁあぃいTime".force_encoding(Encoding::UTF_8))
+      source_object = eval("MarshalSpec::MultibyteぁあぃいTime".dup.force_encoding(Encoding::UTF_8))
       Marshal.dump(source_object).should == "\x04\bc+MarshalSpec::Multibyte\xE3\x81\x81\xE3\x81\x82\xE3\x81\x83\xE3\x81\x84Time"
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      # order of the offset and zone instance variables is a subject to change
+      # and may be different on different CRuby versions
+      base = Regexp.quote("\x04\b[\aIu:\tTime\r\xF5\xEF\e\x80\x00\x00\x00\x00\a")
+      offset = Regexp.quote(":\voffseti\x020*:\tzoneI\"\bAST\x06:\x06EF")
+      zone = Regexp.quote(":\tzoneI\"\bAST\x06:\x06EF:\voffseti\x020*")
+      instance_variables = /#{offset}|#{zone}/
+      Marshal.dump([@t, @t]).should =~ /\A#{base}#{instance_variables}@\a\Z/ # @\a is a link to the object
+    end
+
+    it "adds instance variables before the object itself into the objects table" do
+      obj = @utc
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\b, that means Integer 3) is greater than a link
+      # to the instance variable value (@\x06, that means Integer 1)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bIu:\tTime\r \x00\x1C\xC0\x00\x00\x00\x00\a:\t@foo\"\n<foo>:\tzoneI\"\bUTC\x06:\x06EF@\b@\x06"
     end
 
     it "raises TypeError with an anonymous Time subclass" do
@@ -740,7 +954,22 @@ describe "Marshal.dump" do
       rescue => e
       end
 
-      Marshal.dump(e).should =~ /undefined method `foo' for ("":String|an instance of String)/
+      Marshal.dump(e).should =~ /undefined method [`']foo' for ("":String|an instance of String)/
+    end
+
+    it "uses object links for objects repeatedly dumped" do
+      e = Exception.new
+      Marshal.dump([e, e]).should == "\x04\b[\ao:\x0EException\a:\tmesg0:\abt0@\x06" # @\x\a is a link to the object
+    end
+
+    it "adds instance variables after the object itself into the objects table" do
+      obj = Exception.new
+      value = "<foo>"
+      obj.instance_variable_set :@foo, value
+
+      # expect a link to the object (@\x06, that means Integer 1) is smaller than a link
+      # to the instance variable value (@\a, that means Integer 2)
+      Marshal.dump([obj, obj, value]).should == "\x04\b[\bo:\x0EException\b:\tmesg0:\abt0:\t@foo\"\n<foo>@\x06@\a"
     end
 
     it "raises TypeError if an Object is an instance of an anonymous class" do

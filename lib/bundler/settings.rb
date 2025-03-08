@@ -7,7 +7,6 @@ module Bundler
     autoload :Validator, File.expand_path("settings/validator", __dir__)
 
     BOOL_KEYS = %w[
-      allow_deployment_source_credential_changes
       allow_offline_install
       auto_clean_without_path
       auto_install
@@ -33,6 +32,7 @@ module Bundler
       ignore_messages
       init_gems_rb
       inline
+      lockfile_checksums
       no_install
       no_prune
       path_relative_to_cwd
@@ -44,6 +44,20 @@ module Bundler
       silence_deprecations
       silence_root_warning
       update_requires_all_flag
+    ].freeze
+
+    REMEMBERED_KEYS = %w[
+      bin
+      cache_all
+      clean
+      deployment
+      frozen
+      no_prune
+      path
+      shebang
+      path.system
+      without
+      with
     ].freeze
 
     NUMBER_KEYS = %w[
@@ -90,6 +104,7 @@ module Bundler
     def initialize(root = nil)
       @root            = root
       @local_config    = load_config(local_config_file)
+      @local_root      = root || Pathname.new(".bundle").expand_path
 
       @env_config      = ENV.to_h
       @env_config.select! {|key, _value| key.start_with?("BUNDLE_") }
@@ -97,6 +112,8 @@ module Bundler
 
       @global_config   = load_config(global_config_file)
       @temporary       = {}
+
+      @key_cache = {}
     end
 
     def [](name)
@@ -113,7 +130,7 @@ module Bundler
     end
 
     def set_command_option(key, value)
-      if Bundler.feature_flag.forget_cli_options?
+      if !is_remembered(key) || Bundler.feature_flag.forget_cli_options?
         temporary(key => value)
         value
       else
@@ -127,7 +144,7 @@ module Bundler
     end
 
     def set_local(key, value)
-      local_config_file || raise(GemfileNotFound, "Could not locate Gemfile")
+      local_config_file = @local_root.join("config")
 
       set_key(key, value, @local_config, local_config_file)
     end
@@ -173,7 +190,7 @@ module Bundler
     def mirror_for(uri)
       if uri.is_a?(String)
         require_relative "vendored_uri"
-        uri = Bundler::URI(uri)
+        uri = Gem::URI(uri)
       end
 
       gem_mirrors.for(uri.to_s).uri
@@ -312,18 +329,18 @@ module Bundler
     end
 
     def key_for(key)
-      self.class.key_for(key)
+      @key_cache[key] ||= self.class.key_for(key)
     end
 
     private
 
     def configs
       @configs ||= {
-        :temporary => @temporary,
-        :local => @local_config,
-        :env => @env_config,
-        :global => @global_config,
-        :default => DEFAULT_CONFIG,
+        temporary: @temporary,
+        local: @local_config,
+        env: @env_config,
+        global: @global_config,
+        default: DEFAULT_CONFIG,
       }
     end
 
@@ -344,12 +361,12 @@ module Bundler
     end
 
     def is_bool(name)
-      name = name.to_s
+      name = self.class.key_to_s(name)
       BOOL_KEYS.include?(name) || BOOL_KEYS.include?(parent_setting_for(name))
     end
 
     def is_string(name)
-      name = name.to_s
+      name = self.class.key_to_s(name)
       STRING_KEYS.include?(name) || name.start_with?("local.") || name.start_with?("mirror.") || name.start_with?("build.")
     end
 
@@ -365,11 +382,15 @@ module Bundler
     end
 
     def is_num(key)
-      NUMBER_KEYS.include?(key.to_s)
+      NUMBER_KEYS.include?(self.class.key_to_s(key))
     end
 
     def is_array(key)
-      ARRAY_KEYS.include?(key.to_s)
+      ARRAY_KEYS.include?(self.class.key_to_s(key))
+    end
+
+    def is_remembered(key)
+      REMEMBERED_KEYS.include?(self.class.key_to_s(key))
     end
 
     def is_credential(key)
@@ -392,7 +413,7 @@ module Bundler
     end
 
     def set_key(raw_key, value, hash, file)
-      raw_key = raw_key.to_s
+      raw_key = self.class.key_to_s(raw_key)
       value = array_to_s(value) if is_array(raw_key)
 
       key = key_for(raw_key)
@@ -405,14 +426,18 @@ module Bundler
       Validator.validate!(raw_key, converted_value(value, raw_key), hash)
 
       return unless file
+
+      SharedHelpers.filesystem_access(file.dirname, :create) do |p|
+        FileUtils.mkdir_p(p)
+      end
+
       SharedHelpers.filesystem_access(file) do |p|
-        FileUtils.mkdir_p(p.dirname)
         p.open("w") {|f| f.write(serializer_class.dump(hash)) }
       end
     end
 
     def converted_value(value, key)
-      key = key.to_s
+      key = self.class.key_to_s(key)
 
       if is_array(key)
         to_array(value)
@@ -472,17 +497,23 @@ module Bundler
         valid_file = file.exist? && !file.size.zero?
         return {} unless valid_file
         serializer_class.load(file.read).inject({}) do |config, (k, v)|
-          new_k = k
+          k = k.dup
+          k << "/" if /https?:/i.match?(k) && !k.end_with?("/", "__#{FALLBACK_TIMEOUT_URI_OPTION.upcase}")
+          k.gsub!(".", "__")
 
-          if k.include?("-")
-            Bundler.ui.warn "Your #{file} config includes `#{k}`, which contains the dash character (`-`).\n" \
-              "This is deprecated, because configuration through `ENV` should be possible, but `ENV` keys cannot include dashes.\n" \
-              "Please edit #{file} and replace any dashes in configuration keys with a triple underscore (`___`)."
+          unless k.start_with?("#")
+            if k.include?("-")
+              Bundler.ui.warn "Your #{file} config includes `#{k}`, which contains the dash character (`-`).\n" \
+                "This is deprecated, because configuration through `ENV` should be possible, but `ENV` keys cannot include dashes.\n" \
+                "Please edit #{file} and replace any dashes in configuration keys with a triple underscore (`___`)."
 
-            new_k = k.gsub("-", "___")
+              # string hash keys are frozen
+              k = k.gsub("-", "___")
+            end
+
+            config[k] = v
           end
 
-          config[new_k] = v
           config
         end
       end
@@ -497,26 +528,25 @@ module Bundler
       YAMLSerializer
     end
 
-    PER_URI_OPTIONS = %w[
-      fallback_timeout
-    ].freeze
+    FALLBACK_TIMEOUT_URI_OPTION = "fallback_timeout"
 
     NORMALIZE_URI_OPTIONS_PATTERN =
       /
         \A
         (\w+\.)? # optional prefix key
         (https?.*?) # URI
-        (\.#{Regexp.union(PER_URI_OPTIONS)})? # optional suffix key
+        (\.#{FALLBACK_TIMEOUT_URI_OPTION})? # optional suffix key
         \z
-      /ix.freeze
+      /ix
 
     def self.key_for(key)
-      key = normalize_uri(key).to_s if key.is_a?(String) && key.start_with?("http", "mirror.http")
-      key = key.to_s.gsub(".", "__")
+      key = key_to_s(key)
+      key = normalize_uri(key) if key.start_with?("http", "mirror.http")
+      key = key.gsub(".", "__")
       key.gsub!("-", "___")
       key.upcase!
 
-      key.prepend("BUNDLE_")
+      key.gsub(/\A([ #]*)/, '\1BUNDLE_')
     end
 
     # TODO: duplicates Rubygems#normalize_uri
@@ -530,11 +560,40 @@ module Bundler
       end
       uri = URINormalizer.normalize_suffix(uri)
       require_relative "vendored_uri"
-      uri = Bundler::URI(uri)
+      uri = Gem::URI(uri)
       unless uri.absolute?
         raise ArgumentError, format("Gem sources must be absolute. You provided '%s'.", uri)
       end
       "#{prefix}#{uri}#{suffix}"
+    end
+
+    # This is a hot method, so avoid respond_to? checks on every invocation
+    if :read.respond_to?(:name)
+      def self.key_to_s(key)
+        case key
+        when String
+          key
+        when Symbol
+          key.name
+        when Gem::URI::HTTP
+          key.to_s
+        else
+          raise ArgumentError, "Invalid key: #{key.inspect}"
+        end
+      end
+    else
+      def self.key_to_s(key)
+        case key
+        when String
+          key
+        when Symbol
+          key.to_s
+        when Gem::URI::HTTP
+          key.to_s
+        else
+          raise ArgumentError, "Invalid key: #{key.inspect}"
+        end
+      end
     end
   end
 end

@@ -5,12 +5,14 @@ module Bundler
     class Metadata < Source
       def specs
         @specs ||= Index.build do |idx|
-          idx << Gem::Specification.new("Ruby\0", Gem.ruby_version)
+          idx << Gem::Specification.new("Ruby\0", Bundler::RubyVersion.system.gem_version)
           idx << Gem::Specification.new("RubyGems\0", Gem::VERSION) do |s|
             s.required_rubygems_version = Gem::Requirement.default
           end
 
           if local_spec = Gem.loaded_specs["bundler"]
+            raise CorruptBundlerInstallError.new(local_spec) if local_spec.version.to_s != Bundler::VERSION
+
             idx << local_spec
           else
             idx << Gem::Specification.new do |s|
@@ -22,9 +24,8 @@ module Bundler
               s.bindir   = "exe"
               s.homepage = "https://bundler.io"
               s.summary  = "The best way to manage your application's dependencies"
-              s.executables = %w[bundle]
-              # can't point to the actual gemspec or else the require paths will be wrong
-              s.loaded_from = __dir__
+              s.executables = %w[bundle bundler]
+              s.loaded_from = SharedHelpers.gemspec_path
             end
           end
 

@@ -3,21 +3,20 @@
 ; Some relevant examples: https://github.com/gcc-mirror/gcc/blob/master/libphobos/libdruntime/config/powerpc/switchcontext.S
 ; https://github.com/gcc-mirror/gcc/blob/master/libgcc/config/rs6000/darwin-gpsave.S
 ; https://www.ibm.com/docs/en/aix/7.2?topic=epilogs-saving-gprs-only
-; ppc32 version may be re-written compactly with stmw/lwm, but the code wonʼt be faster, see: https://github.com/ruby/ruby/pull/5927#issuecomment-1139730541
+; ppc32 version may be re-written compactly with stmw/lwm, but the code won't be faster, see: https://github.com/ruby/ruby/pull/5927#issuecomment-1139730541
 
 ; Notice that this code is only for Darwin (macOS). Darwin ABI differs from AIX and ELF.
 ; To add support for AIX, *BSD or *Linux, please make separate implementations.
 
 #define TOKEN_PASTE(x,y) x##y
-#define PREFIXED_SYMBOL(prefix,name) TOKEN_PASTE(prefix,name)
 
 .machine ppc7400 ; = G4, Rosetta
 .text
 
-.globl PREFIXED_SYMBOL(SYMBOL_PREFIX,coroutine_transfer)
+.globl PREFIXED_SYMBOL(coroutine_transfer)
 .align 2
 
-PREFIXED_SYMBOL(SYMBOL_PREFIX,coroutine_transfer):
+PREFIXED_SYMBOL(coroutine_transfer):
 	; Make space on the stack for caller registers
 	; (Should we rather use red zone? See libphobos example.)
 	subi r1,r1,80

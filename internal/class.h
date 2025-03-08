@@ -19,6 +19,7 @@
 #include "shape.h"
 #include "ruby_assert.h"
 #include "vm_core.h"
+#include "vm_sync.h"
 #include "method.h"             /* for rb_cref_t */
 
 #ifdef RCLASS_SUPER
@@ -43,7 +44,7 @@ struct rb_classext_struct {
     VALUE *iv_ptr;
     struct rb_id_table *const_tbl;
     struct rb_id_table *callable_m_tbl;
-    struct rb_id_table *cc_tbl; /* ID -> [[ci, cc1], cc2, ...] */
+    struct rb_id_table *cc_tbl; /* ID -> [[ci1, cc1], [ci2, cc2] ...] */
     struct rb_id_table *cvc_tbl;
     size_t superclass_depth;
     VALUE *superclasses;
@@ -82,10 +83,15 @@ struct RClass {
     struct rb_id_table *m_tbl;
 };
 
-// Assert that classes can be embedded in size_pools[2] (which has 160B slot size)
+// Assert that classes can be embedded in heaps[2] (which has 160B slot size)
 STATIC_ASSERT(sizeof_rb_classext_t, sizeof(struct RClass) + sizeof(rb_classext_t) <= 4 * RVALUE_SIZE);
 
-#define RCLASS_EXT(c) ((rb_classext_t *)((char *)(c) + sizeof(struct RClass)))
+struct RClass_and_rb_classext_t {
+    struct RClass rclass;
+    rb_classext_t classext;
+};
+
+#define RCLASS_EXT(c) (&((struct RClass_and_rb_classext_t*)(c))->classext)
 #define RCLASS_CONST_TBL(c) (RCLASS_EXT(c)->const_tbl)
 #define RCLASS_M_TBL(c) (RCLASS(c)->m_tbl)
 #define RCLASS_IVPTR(c) (RCLASS_EXT(c)->iv_ptr)
@@ -102,9 +108,55 @@ STATIC_ASSERT(sizeof_rb_classext_t, sizeof(struct RClass) + sizeof(rb_classext_t
 #define RCLASS_SUPERCLASSES(c) (RCLASS_EXT(c)->superclasses)
 #define RCLASS_ATTACHED_OBJECT(c) (RCLASS_EXT(c)->as.singleton_class.attached_object)
 
+#define RCLASS_IS_ROOT FL_USER0
 #define RICLASS_IS_ORIGIN FL_USER0
 #define RCLASS_SUPERCLASSES_INCLUDE_SELF FL_USER2
 #define RICLASS_ORIGIN_SHARED_MTBL FL_USER3
+
+static inline st_table *
+RCLASS_IV_HASH(VALUE obj)
+{
+    RUBY_ASSERT(RB_TYPE_P(obj, RUBY_T_CLASS) || RB_TYPE_P(obj, RUBY_T_MODULE));
+    RUBY_ASSERT(rb_shape_obj_too_complex(obj));
+    return (st_table *)RCLASS_IVPTR(obj);
+}
+
+static inline void
+RCLASS_SET_IV_HASH(VALUE obj, const st_table *tbl)
+{
+    RUBY_ASSERT(RB_TYPE_P(obj, RUBY_T_CLASS) || RB_TYPE_P(obj, RUBY_T_MODULE));
+    RUBY_ASSERT(rb_shape_obj_too_complex(obj));
+    RCLASS_IVPTR(obj) = (VALUE *)tbl;
+}
+
+static inline uint32_t
+RCLASS_IV_COUNT(VALUE obj)
+{
+    RUBY_ASSERT(RB_TYPE_P(obj, RUBY_T_CLASS) || RB_TYPE_P(obj, RUBY_T_MODULE));
+    if (rb_shape_obj_too_complex(obj)) {
+        uint32_t count;
+
+        // "Too complex" classes could have their IV hash mutated in
+        // parallel, so lets lock around getting the hash size.
+        RB_VM_LOCK_ENTER();
+        {
+            count = (uint32_t)rb_st_table_size(RCLASS_IV_HASH(obj));
+        }
+        RB_VM_LOCK_LEAVE();
+
+        return count;
+    }
+    else {
+        return rb_shape_get_shape_by_id(RCLASS_SHAPE_ID(obj))->next_iv_index;
+    }
+}
+
+static inline void
+RCLASS_SET_M_TBL(VALUE klass, struct rb_id_table *table)
+{
+    RUBY_ASSERT(!RB_OBJ_PROMOTED(klass));
+    RCLASS_M_TBL(klass) = table;
+}
 
 /* class.c */
 void rb_class_subclass_add(VALUE super, VALUE klass);
@@ -119,12 +171,12 @@ VALUE rb_module_s_alloc(VALUE klass);
 void rb_module_set_initialized(VALUE module);
 void rb_module_check_initializable(VALUE module);
 VALUE rb_make_metaclass(VALUE, VALUE);
-VALUE rb_iclass_alloc(VALUE klass);
 VALUE rb_include_class_new(VALUE, VALUE);
 void rb_class_foreach_subclass(VALUE klass, void (*f)(VALUE, VALUE), VALUE);
 void rb_class_detach_subclasses(VALUE);
 void rb_class_detach_module_subclasses(VALUE);
 void rb_class_remove_from_module_subclasses(VALUE);
+VALUE rb_define_class_id_under_no_pin(VALUE outer, ID id, VALUE super);
 VALUE rb_obj_methods(int argc, const VALUE *argv, VALUE obj);
 VALUE rb_obj_protected_methods(int argc, const VALUE *argv, VALUE obj);
 VALUE rb_obj_private_methods(int argc, const VALUE *argv, VALUE obj);
@@ -144,10 +196,16 @@ static inline void RCLASS_SET_INCLUDER(VALUE iclass, VALUE klass);
 VALUE rb_class_inherited(VALUE, VALUE);
 VALUE rb_keyword_error_new(const char *, VALUE);
 
+static inline bool
+RCLASS_SINGLETON_P(VALUE klass)
+{
+    return RB_TYPE_P(klass, T_CLASS) && FL_TEST_RAW(klass, FL_SINGLETON);
+}
+
 static inline rb_alloc_func_t
 RCLASS_ALLOCATOR(VALUE klass)
 {
-    if (FL_TEST_RAW(klass, FL_SINGLETON)) {
+    if (RCLASS_SINGLETON_P(klass)) {
         return 0;
     }
     return RCLASS_EXT(klass)->as.class.allocator;
@@ -156,7 +214,7 @@ RCLASS_ALLOCATOR(VALUE klass)
 static inline void
 RCLASS_SET_ALLOCATOR(VALUE klass, rb_alloc_func_t allocator)
 {
-    assert(!FL_TEST(klass, FL_SINGLETON));
+    assert(!RCLASS_SINGLETON_P(klass));
     RCLASS_EXT(klass)->as.class.allocator = allocator;
 }
 
@@ -206,7 +264,7 @@ RCLASS_SET_SUPER(VALUE klass, VALUE super)
 static inline void
 RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
 {
-    assert(BUILTIN_TYPE(klass) == T_CLASS || BUILTIN_TYPE(klass) == T_MODULE || klass == rb_mRubyVMFrozenCore);
+    assert(BUILTIN_TYPE(klass) == T_CLASS || BUILTIN_TYPE(klass) == T_MODULE);
     assert(classpath == 0 || BUILTIN_TYPE(classpath) == T_STRING);
 
     RB_OBJ_WRITE(klass, &(RCLASS_EXT(klass)->classpath), classpath);
@@ -216,8 +274,7 @@ RCLASS_SET_CLASSPATH(VALUE klass, VALUE classpath, bool permanent)
 static inline VALUE
 RCLASS_SET_ATTACHED_OBJECT(VALUE klass, VALUE attached_object)
 {
-    assert(BUILTIN_TYPE(klass) == T_CLASS);
-    assert(FL_TEST_RAW(klass, FL_SINGLETON));
+    assert(RCLASS_SINGLETON_P(klass));
 
     RB_OBJ_WRITE(klass, &RCLASS_EXT(klass)->as.singleton_class.attached_object, attached_object);
     return attached_object;

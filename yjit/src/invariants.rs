@@ -1,7 +1,6 @@
 //! Code to track assumptions made during code generation and invalidate
 //! generated code if and when these assumptions are invalidated.
 
-use crate::asm::OutlinedCb;
 use crate::backend::ir::Assembler;
 use crate::codegen::*;
 use crate::core::*;
@@ -11,6 +10,7 @@ use crate::utils::IntoUsize;
 use crate::yjit::yjit_enabled_p;
 
 use std::collections::{HashMap, HashSet};
+use std::os::raw::c_void;
 use std::mem;
 
 // Invariants to track:
@@ -30,7 +30,6 @@ pub struct Invariants {
     /// quick access to all of the blocks that are making this assumption when
     /// the operator is redefined.
     basic_operator_blocks: HashMap<(RedefinitionFlag, ruby_basic_operators), HashSet<BlockRef>>,
-
     /// A map from a block to a set of classes and their associated basic
     /// operators that the block is assuming are not redefined. This is used for
     /// quick access to all of the assumptions that a block is making when it
@@ -48,10 +47,23 @@ pub struct Invariants {
     /// a constant `A::B` is redefined, then all blocks that are assuming that
     /// `A` and `B` have not be redefined must be invalidated.
     constant_state_blocks: HashMap<ID, HashSet<BlockRef>>,
-
     /// A map from a block to a set of IDs that it is assuming have not been
     /// redefined.
     block_constant_states: HashMap<BlockRef, HashSet<ID>>,
+
+    /// A map from a class to a set of blocks that assume objects of the class
+    /// will have no singleton class. When the set is empty, it means that
+    /// there has been a singleton class for the class after boot, so you cannot
+    /// assume no singleton class going forward.
+    /// For now, the key can be only Array, Hash, or String. Consider making
+    /// an inverted HashMap if we start using this for user-defined classes
+    /// to maintain the performance of block_assumptions_free().
+    no_singleton_classes: HashMap<VALUE, HashSet<BlockRef>>,
+
+    /// A map from an ISEQ to a set of blocks that assume base pointer is equal
+    /// to environment pointer. When the set is empty, it means that EP has been
+    /// escaped in the ISEQ.
+    no_ep_escape_iseqs: HashMap<IseqPtr, HashSet<BlockRef>>,
 }
 
 /// Private singleton instance of the invariants global struct.
@@ -68,6 +80,8 @@ impl Invariants {
                 single_ractor: HashSet::new(),
                 constant_state_blocks: HashMap::new(),
                 block_constant_states: HashMap::new(),
+                no_singleton_classes: HashMap::new(),
+                no_ep_escape_iseqs: HashMap::new(),
             });
         }
     }
@@ -84,12 +98,13 @@ impl Invariants {
 pub fn assume_bop_not_redefined(
     jit: &mut JITState,
     asm: &mut Assembler,
-    ocb: &mut OutlinedCb,
     klass: RedefinitionFlag,
     bop: ruby_basic_operators,
 ) -> bool {
     if unsafe { BASIC_OP_UNREDEFINED_P(bop, klass) } {
-        jit_ensure_block_entry_exit(jit, asm, ocb);
+        if jit_ensure_block_entry_exit(jit, asm).is_none() {
+            return false;
+        }
         jit.bop_assumptions.push((klass, bop));
 
         return true;
@@ -127,6 +142,48 @@ pub fn track_method_lookup_stability_assumption(
         .insert(uninit_block);
 }
 
+/// Track that a block will assume that `klass` objects will have no singleton class.
+pub fn track_no_singleton_class_assumption(uninit_block: BlockRef, klass: VALUE) {
+    Invariants::get_instance()
+        .no_singleton_classes
+        .entry(klass)
+        .or_default()
+        .insert(uninit_block);
+}
+
+/// Returns true if we've seen a singleton class of a given class since boot.
+pub fn has_singleton_class_of(klass: VALUE) -> bool {
+    Invariants::get_instance()
+        .no_singleton_classes
+        .get(&klass)
+        .map_or(false, |blocks| blocks.is_empty())
+}
+
+/// Track that a block will assume that base pointer is equal to environment pointer.
+pub fn track_no_ep_escape_assumption(uninit_block: BlockRef, iseq: IseqPtr) {
+    Invariants::get_instance()
+        .no_ep_escape_iseqs
+        .entry(iseq)
+        .or_default()
+        .insert(uninit_block);
+}
+
+/// Returns true if a given ISEQ has previously escaped an environment.
+pub fn iseq_escapes_ep(iseq: IseqPtr) -> bool {
+    Invariants::get_instance()
+        .no_ep_escape_iseqs
+        .get(&iseq)
+        .map_or(false, |blocks| blocks.is_empty())
+}
+
+/// Forget an ISEQ remembered in invariants
+pub fn iseq_free_invariants(iseq: IseqPtr) {
+    if unsafe { INVARIANTS.is_none() } {
+        return;
+    }
+    Invariants::get_instance().no_ep_escape_iseqs.remove(&iseq);
+}
+
 // Checks rb_method_basic_definition_p and registers the current block for invalidation if method
 // lookup changes.
 // A "basic method" is one defined during VM boot, so we can use this to check assumptions based on
@@ -134,13 +191,12 @@ pub fn track_method_lookup_stability_assumption(
 pub fn assume_method_basic_definition(
     jit: &mut JITState,
     asm: &mut Assembler,
-    ocb: &mut OutlinedCb,
     klass: VALUE,
     mid: ID
 ) -> bool {
     if unsafe { rb_method_basic_definition_p(klass, mid) } != 0 {
         let cme = unsafe { rb_callable_method_entry(klass, mid) };
-        jit.assume_method_lookup_stable(asm, ocb, cme);
+        jit.assume_method_lookup_stable(asm, cme);
         true
     } else {
         false
@@ -149,11 +205,13 @@ pub fn assume_method_basic_definition(
 
 /// Tracks that a block is assuming it is operating in single-ractor mode.
 #[must_use]
-pub fn assume_single_ractor_mode(jit: &mut JITState, asm: &mut Assembler, ocb: &mut OutlinedCb) -> bool {
+pub fn assume_single_ractor_mode(jit: &mut JITState, asm: &mut Assembler) -> bool {
     if unsafe { rb_yjit_multi_ractor_p() } {
         false
     } else {
-        jit_ensure_block_entry_exit(jit, asm, ocb);
+        if jit_ensure_block_entry_exit(jit, asm).is_none() {
+            return false;
+        }
         jit.block_assumes_single_ractor = true;
 
         true
@@ -174,7 +232,7 @@ pub fn track_stable_constant_names_assumption(uninit_block: BlockRef, idlist: *c
         uninit_block: BlockRef,
         id: ID,
     ) {
-        if id == idNULL as u64 {
+        if id == ID!(NULL) {
             // Used for :: prefix
             return;
         }
@@ -316,6 +374,23 @@ pub extern "C" fn rb_yjit_root_mark() {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn rb_yjit_root_update_references() {
+    if unsafe { INVARIANTS.is_none() } {
+        return;
+    }
+    let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
+
+    // Make a copy of the table with updated ISEQ keys
+    let mut updated_copy = HashMap::with_capacity(no_ep_escape_iseqs.len());
+    for (iseq, blocks) in mem::take(no_ep_escape_iseqs) {
+        let new_iseq = unsafe { rb_gc_location(iseq.into()) }.as_iseq();
+        updated_copy.insert(new_iseq, blocks);
+    }
+
+    *no_ep_escape_iseqs = updated_copy;
+}
+
 /// Remove all invariant assumptions made by the block by removing the block as
 /// as a key in all of the relevant tables.
 /// For safety, the block has to be initialized and the vm lock must be held.
@@ -386,6 +461,19 @@ pub fn block_assumptions_free(blockref: BlockRef) {
     if invariants.constant_state_blocks.is_empty() {
         invariants.constant_state_blocks.shrink_to_fit();
     }
+
+    // Remove tracking for blocks assuming no singleton class
+    // NOTE: no_singleton_class has up to 3 keys (Array, Hash, or String) for now.
+    // This is effectively an O(1) access unless we start using it for more classes.
+    for (_, blocks) in invariants.no_singleton_classes.iter_mut() {
+        blocks.remove(&blockref);
+    }
+
+    // Remove tracking for blocks assuming EP doesn't escape
+    let iseq = unsafe { blockref.as_ref() }.get_blockid().iseq;
+    if let Some(blocks) = invariants.no_ep_escape_iseqs.get_mut(&iseq) {
+        blocks.remove(&blockref);
+    }
 }
 
 /// Callback from the opt_setinlinecache instruction in the interpreter.
@@ -402,7 +490,7 @@ pub extern "C" fn rb_yjit_constant_ic_update(iseq: *const rb_iseq_t, ic: IC, ins
     let insn_idx: IseqIdx = if let Ok(idx) = insn_idx.try_into() {
         idx
     } else {
-        // The index is too large, YJIT can't possibily have code for it,
+        // The index is too large, YJIT can't possibly have code for it,
         // so there is nothing to invalidate.
         return;
     };
@@ -452,6 +540,66 @@ pub extern "C" fn rb_yjit_constant_ic_update(iseq: *const rb_iseq_t, ic: IC, ins
     });
 }
 
+/// Invalidate blocks that assume objects of a given class will have no singleton class.
+#[no_mangle]
+pub extern "C" fn rb_yjit_invalidate_no_singleton_class(klass: VALUE) {
+    // Skip tracking singleton classes during boot. Such objects already have a singleton class
+    // before entering JIT code, so they get rejected when they're checked for the first time.
+    if unsafe { INVARIANTS.is_none() } {
+        return;
+    }
+
+    // We apply this optimization only to Array, Hash, and String for now.
+    if unsafe { [rb_cArray, rb_cHash, rb_cString].contains(&klass) } {
+        with_vm_lock(src_loc!(), || {
+            let no_singleton_classes = &mut Invariants::get_instance().no_singleton_classes;
+            match no_singleton_classes.get_mut(&klass) {
+                Some(blocks) => {
+                    // Invalidate existing blocks and let has_singleton_class_of()
+                    // return true when they are compiled again
+                    for block in mem::take(blocks) {
+                        invalidate_block_version(&block);
+                        incr_counter!(invalidate_no_singleton_class);
+                    }
+                }
+                None => {
+                    // Let has_singleton_class_of() return true for this class
+                    no_singleton_classes.insert(klass, HashSet::new());
+                }
+            }
+        });
+    }
+}
+
+/// Invalidate blocks for a given ISEQ that assumes environment pointer is
+/// equal to base pointer.
+#[no_mangle]
+pub extern "C" fn rb_yjit_invalidate_ep_is_bp(iseq: IseqPtr) {
+    // Skip tracking EP escapes on boot. We don't need to invalidate anything during boot.
+    if unsafe { INVARIANTS.is_none() } {
+        return;
+    }
+
+    with_vm_lock(src_loc!(), || {
+        // If an EP escape for this ISEQ is detected for the first time, invalidate all blocks
+        // associated to the ISEQ.
+        let no_ep_escape_iseqs = &mut Invariants::get_instance().no_ep_escape_iseqs;
+        match no_ep_escape_iseqs.get_mut(&iseq) {
+            Some(blocks) => {
+                // Invalidate existing blocks and make jit.ep_is_bp() return false
+                for block in mem::take(blocks) {
+                    invalidate_block_version(&block);
+                    incr_counter!(invalidate_ep_escape);
+                }
+            }
+            None => {
+                // Let jit.ep_is_bp() return false for this ISEQ
+                no_ep_escape_iseqs.insert(iseq, HashSet::new());
+            }
+        }
+    });
+}
+
 // Invalidate all generated code and patch C method return code to contain
 // logic for firing the c_return TracePoint event. Once rb_vm_barrier()
 // returns, all other ractors are pausing inside RB_VM_LOCK_ENTER(), which
@@ -477,6 +625,8 @@ pub extern "C" fn rb_yjit_tracing_invalidate_all() {
     if !yjit_enabled_p() {
         return;
     }
+
+    incr_counter!(invalidate_everything);
 
     // Stop other ractors since we are going to patch machine code.
     with_vm_lock(src_loc!(), || {
@@ -513,22 +663,40 @@ pub extern "C" fn rb_yjit_tracing_invalidate_all() {
 
         let cb = CodegenGlobals::get_inline_cb();
 
+        // Prevent on-stack frames from jumping to the caller on jit_exec_exception
+        extern "C" {
+            fn rb_yjit_cancel_jit_return(leave_exit: *mut c_void, leave_exception: *mut c_void) -> VALUE;
+        }
+        unsafe {
+            rb_yjit_cancel_jit_return(
+                CodegenGlobals::get_leave_exit_code().raw_ptr(cb) as _,
+                CodegenGlobals::get_leave_exception_code().raw_ptr(cb) as _,
+            );
+        }
+
         // Apply patches
         let old_pos = cb.get_write_pos();
         let old_dropped_bytes = cb.has_dropped_bytes();
         let mut patches = CodegenGlobals::take_global_inval_patches();
-        patches.sort_by_cached_key(|patch| patch.inline_patch_pos.raw_ptr());
+        patches.sort_by_cached_key(|patch| patch.inline_patch_pos.raw_ptr(cb));
         let mut last_patch_end = std::ptr::null();
         for patch in &patches {
-            assert!(last_patch_end <= patch.inline_patch_pos.raw_ptr(), "patches should not overlap");
-
-            let mut asm = crate::backend::ir::Assembler::new();
-            asm.jmp(patch.outlined_target_pos.as_side_exit());
+            let patch_pos = patch.inline_patch_pos.raw_ptr(cb);
+            assert!(
+                last_patch_end <= patch_pos,
+                "patches should not overlap (last_patch_end: {last_patch_end:?}, patch_pos: {patch_pos:?})",
+            );
 
             cb.set_write_ptr(patch.inline_patch_pos);
             cb.set_dropped_bytes(false);
-            asm.compile(cb, None);
-            last_patch_end = cb.get_write_ptr().raw_ptr();
+            cb.without_page_end_reserve(|cb| {
+                let mut asm = crate::backend::ir::Assembler::new_without_iseq();
+                asm.jmp(patch.outlined_target_pos.as_side_exit());
+                if asm.compile(cb, None).is_none() {
+                    panic!("Failed to apply patch at {:?}", patch.inline_patch_pos);
+                }
+            });
+            last_patch_end = cb.get_write_ptr().raw_ptr(cb);
         }
         cb.set_pos(old_pos);
         cb.set_dropped_bytes(old_dropped_bytes);

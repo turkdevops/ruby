@@ -1,15 +1,116 @@
-== Packed \Data
+= Packed \Data
+
+== Quick Reference
+
+These tables summarize the directives for packing and unpacking.
+
+=== For Integers
+
+  Directive     | Meaning
+  --------------|---------------------------------------------------------------
+  C             | 8-bit unsigned (unsigned char)
+  S             | 16-bit unsigned, native endian (uint16_t)
+  L             | 32-bit unsigned, native endian (uint32_t)
+  Q             | 64-bit unsigned, native endian (uint64_t)
+  J             | pointer width unsigned, native endian (uintptr_t)
+
+  c             | 8-bit signed (signed char)
+  s             | 16-bit signed, native endian (int16_t)
+  l             | 32-bit signed, native endian (int32_t)
+  q             | 64-bit signed, native endian (int64_t)
+  j             | pointer width signed, native endian (intptr_t)
+
+  S_ S!         | unsigned short, native endian
+  I I_ I!       | unsigned int, native endian
+  L_ L!         | unsigned long, native endian
+  Q_ Q!         | unsigned long long, native endian
+                |   (raises ArgumentError if the platform has no long long type)
+  J!            | uintptr_t, native endian (same with J)
+
+  s_ s!         | signed short, native endian
+  i i_ i!       | signed int, native endian
+  l_ l!         | signed long, native endian
+  q_ q!         | signed long long, native endian
+                |   (raises ArgumentError if the platform has no long long type)
+  j!            | intptr_t, native endian (same with j)
+
+  S> s> S!> s!> | each the same as the directive without >, but big endian
+  L> l> L!> l!> |   S> is the same as n
+  I!> i!>       |   L> is the same as N
+  Q> q> Q!> q!> |
+  J> j> J!> j!> |
+
+  S< s< S!< s!< | each the same as the directive without <, but little endian
+  L< l< L!< l!< |   S< is the same as v
+  I!< i!<       |   L< is the same as V
+  Q< q< Q!< q!< |
+  J< j< J!< j!< |
+
+  n             | 16-bit unsigned, network (big-endian) byte order
+  N             | 32-bit unsigned, network (big-endian) byte order
+  v             | 16-bit unsigned, VAX (little-endian) byte order
+  V             | 32-bit unsigned, VAX (little-endian) byte order
+
+  U             | UTF-8 character
+  w             | BER-compressed integer
+
+=== For Floats
+
+  Directive | Meaning
+  ----------|--------------------------------------------------
+  D d       | double-precision, native format
+  F f       | single-precision, native format
+  E         | double-precision, little-endian byte order
+  e         | single-precision, little-endian byte order
+  G         | double-precision, network (big-endian) byte order
+  g         | single-precision, network (big-endian) byte order
+
+=== For Strings
+
+  Directive | Meaning
+  ----------|-----------------------------------------------------------------
+  A         | arbitrary binary string (remove trailing nulls and ASCII spaces)
+  a         | arbitrary binary string
+  Z         | null-terminated string
+  B         | bit string (MSB first)
+  b         | bit string (LSB first)
+  H         | hex string (high nibble first)
+  h         | hex string (low nibble first)
+  u         | UU-encoded string
+  M         | quoted-printable, MIME encoding (see RFC2045)
+  m         | base64 encoded string (RFC 2045) (default)
+            |   (base64 encoded string (RFC 4648) if followed by 0)
+  P         | pointer to a structure (fixed-length string)
+  p         | pointer to a null-terminated string
+
+=== Additional Directives for Packing
+
+  Directive | Meaning
+  ----------|----------------------------------------------------------------
+  @         | moves to absolute position
+  X         | back up a byte
+  x         | null byte
+
+=== Additional Directives for Unpacking
+
+  Directive | Meaning
+  ----------|----------------------------------------------------------------
+  @         | skip to the offset given by the length argument
+  X         | skip backward one byte
+  x         | skip forward one byte
+
+== Packing and Unpacking
 
 Certain Ruby core methods deal with packing and unpacking data:
 
-- \Method Array#pack:
+- Method Array#pack:
   Formats each element in array +self+ into a binary string;
   returns that string.
-- \Method String#unpack:
+- Method String#unpack:
   Extracts data from string +self+,
   forming objects that become the elements of a new array;
   returns that array.
-- \Method String#unpack1:
+- Method String#unpack1:
   Does the same, but unpacks and returns only the first extracted object.
 
 Each of these methods accepts a string +template+,
@@ -64,9 +165,9 @@ If elements don't fit the provided directive, only least significant bits are en
 
     [257].pack("C").unpack("C") # => [1]
 
-=== Packing \Method
+== Packing Method
 
-\Method Array#pack accepts optional keyword argument
+Method Array#pack accepts optional keyword argument
 +buffer+ that specifies the target string (instead of a new string):
 
   [65, 66].pack('C*', buffer: 'foo') # => "fooAB"
@@ -76,7 +177,7 @@ The method can accept a block:
   # Packed string is passed to the block.
   [65, 66].pack('C*') {|s| p s }    # => "AB"
 
-=== Unpacking Methods
+== Unpacking Methods
 
 Methods String#unpack and String#unpack1 each accept
 an optional keyword argument +offset+ that specifies an offset
@@ -95,12 +196,12 @@ Both methods can accept a block:
   # The single unpacked object is passed to the block.
   'AB'.unpack1('C*') {|ele| p ele } # => 65
 
-=== \Integer Directives
+== \Integer Directives
 
 Each integer directive specifies the packing or unpacking
 for one element in the input or output array.
 
-==== 8-Bit \Integer Directives
+=== 8-Bit \Integer Directives
 
 - <tt>'c'</tt> - 8-bit signed integer
   (like C <tt>signed char</tt>):
@@ -116,7 +217,7 @@ for one element in the input or output array.
     s = [0, 1, -1].pack('C*') # => "\x00\x01\xFF"
     s.unpack('C*')            # => [0, 1, 255]
 
-==== 16-Bit \Integer Directives
+=== 16-Bit \Integer Directives
 
 - <tt>'s'</tt> - 16-bit signed integer, native-endian
   (like C <tt>int16_t</tt>):
@@ -146,7 +247,7 @@ for one element in the input or output array.
     s.unpack('v*')
     # => [0, 1, 65535, 32767, 32768, 65535]
 
-==== 32-Bit \Integer Directives
+=== 32-Bit \Integer Directives
 
 - <tt>'l'</tt> - 32-bit signed integer, native-endian
   (like C <tt>int32_t</tt>):
@@ -178,7 +279,7 @@ for one element in the input or output array.
     s.unpack('v*')
     # => [0, 0, 1, 0, 65535, 65535]
 
-==== 64-Bit \Integer Directives
+=== 64-Bit \Integer Directives
 
 - <tt>'q'</tt> - 64-bit signed integer, native-endian
   (like C <tt>int64_t</tt>):
@@ -196,7 +297,7 @@ for one element in the input or output array.
     s.unpack('Q*')
     # => [578437695752307201, 17940646550795321087]
 
-==== Platform-Dependent \Integer Directives
+=== Platform-Dependent \Integer Directives
 
 - <tt>'i'</tt> - Platform-dependent width signed integer,
   native-endian (like C <tt>int</tt>):
@@ -214,25 +315,23 @@ for one element in the input or output array.
     s.unpack('I*')
     # => [67305985, 4244504319]
 
-==== Pointer Directives
-
-- <tt>'j'</tt> - 64-bit pointer-width signed integer,
-  native-endian (like C <tt>intptr_t</tt>):
+- <tt>'j'</tt> - Pointer-width signed integer, native-endian
+  (like C <tt>intptr_t</tt>):
 
     s = [67305985, -50462977].pack('j*')
     # => "\x01\x02\x03\x04\x00\x00\x00\x00\xFF\xFE\xFD\xFC\xFF\xFF\xFF\xFF"
     s.unpack('j*')
     # => [67305985, -50462977]
 
-- <tt>'j'</tt> - 64-bit pointer-width unsigned integer,
-  native-endian (like C <tt>uintptr_t</tt>):
+- <tt>'J'</tt> - Pointer-width unsigned integer, native-endian
+  (like C <tt>uintptr_t</tt>):
 
     s = [67305985, 4244504319].pack('J*')
     # => "\x01\x02\x03\x04\x00\x00\x00\x00\xFF\xFE\xFD\xFC\x00\x00\x00\x00"
     s.unpack('J*')
     # => [67305985, 4244504319]
 
-==== Other \Integer Directives
+=== Other \Integer Directives
 
 - <tt>'U'</tt> - UTF-8 character:
 
@@ -242,38 +341,37 @@ for one element in the input or output array.
     # => [4194304]
 
 - <tt>'w'</tt> - BER-encoded integer
-  (see {BER enocding}[https://en.wikipedia.org/wiki/X.690#BER_encoding]):
+  (see {BER encoding}[https://en.wikipedia.org/wiki/X.690#BER_encoding]):
 
     s = [1073741823].pack('w*')
     # => "\x83\xFF\xFF\xFF\x7F"
     s.unpack('w*')
     # => [1073741823]
 
-==== Modifiers for \Integer Directives
+=== Modifiers for \Integer Directives
 
-For directives in
-<tt>'i'</tt>,
-<tt>'I'</tt>,
-<tt>'s'</tt>,
-<tt>'S'</tt>,
-<tt>'l'</tt>,
-<tt>'L'</tt>,
-<tt>'q'</tt>,
-<tt>'Q'</tt>,
-<tt>'j'</tt>, and
-<tt>'J'</tt>,
-these modifiers may be suffixed:
+For the following directives, <tt>'!'</tt> or <tt>'_'</tt> modifiers may be
+suffixed as underlying platform’s native size.
 
-- <tt>'!'</tt> or <tt>'_'</tt> - Underlying platform’s native size.
+- <tt>'i'</tt>, <tt>'I'</tt> - C <tt>int</tt>, always native size.
+- <tt>'s'</tt>, <tt>'S'</tt> - C <tt>short</tt>.
+- <tt>'l'</tt>, <tt>'L'</tt> - C <tt>long</tt>.
+- <tt>'q'</tt>, <tt>'Q'</tt> - C <tt>long long</tt>, if available.
+- <tt>'j'</tt>, <tt>'J'</tt> - C <tt>intptr_t</tt>, always native size.
+
+Native size modifiers are silently ignored for always native size directives.
+
+The endian modifiers also may be suffixed in the directives above:
+
 - <tt>'>'</tt> - Big-endian.
 - <tt>'<'</tt> - Little-endian.
 
-=== \Float Directives
+== \Float Directives
 
 Each float directive specifies the packing or unpacking
 for one element in the input or output array.
 
-==== Single-Precision \Float Directives
+=== Single-Precision \Float Directives
 
 - <tt>'F'</tt> or <tt>'f'</tt> - Native format:
 
@@ -290,7 +388,7 @@ for one element in the input or output array.
     s = [3.0].pack('g') # => "@@\x00\x00"
     s.unpack('g')       # => [3.0]
 
-==== Double-Precision \Float Directives
+=== Double-Precision \Float Directives
 
 - <tt>'D'</tt> or <tt>'d'</tt> - Native format:
 
@@ -317,12 +415,12 @@ A float directive may be infinity or not-a-number:
   [nan].pack('f')                # => "\x00\x00\xC0\x7F"
   "\x00\x00\xC0\x7F".unpack('f') # => [NaN]
 
-=== \String Directives
+== \String Directives
 
 Each string directive specifies the packing or unpacking
 for one byte in the input or output string.
 
-==== Binary \String Directives
+=== Binary \String Directives
 
 - <tt>'A'</tt> - Arbitrary binary string (space padded; count is width);
   +nil+ is treated as the empty string:
@@ -380,7 +478,7 @@ for one byte in the input or output string.
     "foo".unpack('Z*')      # => ["foo"]
     "foo\0bar".unpack('Z*') # => ["foo"] # Does not read past "\0".
 
-==== Bit \String Directives
+=== Bit \String Directives
 
 - <tt>'B'</tt> - Bit string (high byte first):
 
@@ -424,7 +522,7 @@ for one byte in the input or output string.
     "\x01".unpack("b2") # => ["10"]
     "\x01".unpack("b3") # => ["100"]
 
-==== Hex \String Directives
+=== Hex \String Directives
 
 - <tt>'H'</tt> - Hex string (high nibble first):
 
@@ -470,7 +568,7 @@ for one byte in the input or output string.
     "\x01\xfe".unpack('h4') # => ["10ef"]
     "\x01\xfe".unpack('h5') # => ["10ef"]
 
-==== Pointer \String Directives
+=== Pointer \String Directives
 
 - <tt>'P'</tt> - Pointer to a structure (fixed-length string):
 
@@ -488,7 +586,7 @@ for one byte in the input or output string.
     ("\0" * 8).unpack("p") # => [nil]
     [nil].pack("p")        # => "\x00\x00\x00\x00\x00\x00\x00\x00"
 
-==== Other \String Directives
+=== Other \String Directives
 
 - <tt>'M'</tt> - Quoted printable, MIME encoding;
   text mode, but input must use LF and output LF;
@@ -557,34 +655,52 @@ for one byte in the input or output string.
 
 - <tt>'u'</tt> - UU-encoded string:
 
-    [0].pack("U")          # => "\u0000"
-    [0x3fffffff].pack("U") # => "\xFC\xBF\xBF\xBF\xBF\xBF"
-    [0x40000000].pack("U") # => "\xFD\x80\x80\x80\x80\x80"
-    [0x7fffffff].pack("U") # => "\xFD\xBF\xBF\xBF\xBF\xBF"
+    [""].pack("u")        # => ""
+    ["a"].pack("u")       # => "!80``\n"
+    ["aaa"].pack("u")     # => "#86%A\n"
 
-=== Offset Directives
+    "".unpack("u")        # => [""]
+    "#86)C\n".unpack("u") # => ["abc"]
+
+== Offset Directives
 
 - <tt>'@'</tt> - Begin packing at the given byte offset;
-  for packing, null fill if necessary:
+  for packing, null fill or shrink if necessary:
 
-    [1, 2].pack("C@0C") # => "\x02"
-    [1, 2].pack("C@1C") # => "\x01\x02"
-    [1, 2].pack("C@5C") # => "\x01\x00\x00\x00\x00\x02"
+    [1, 2].pack("C@0C")     # => "\x02"
+    [1, 2].pack("C@1C")     # => "\x01\x02"
+    [1, 2].pack("C@5C")     # => "\x01\x00\x00\x00\x00\x02"
+    [*1..5].pack("CCCC@2C") # => "\x01\x02\x05"
+
+  For unpacking, cannot to move to outside the string:
 
     "\x01\x00\x00\x02".unpack("C@3C") # => [1, 2]
     "\x00".unpack("@1C")              # => [nil]
+    "\x00".unpack("@2C")              # Raises ArgumentError.
 
-- <tt>'X'</tt> - Back up a byte:
+- <tt>'X'</tt> - For packing, shrink for the given byte offset:
 
     [0, 1, 2].pack("CCXC")    # => "\x00\x02"
     [0, 1, 2].pack("CCX2C")   # => "\x02"
+
+  For unpacking; rewind unpacking position for the given byte offset:
+
     "\x00\x02".unpack("CCXC") # => [0, 2, 2]
 
-=== Null Byte Direcive
+  Cannot to move to outside the string:
 
-- <tt>'x'</tt> - Null byte:
+    [0, 1, 2].pack("CCX3C")   # Raises ArgumentError.
+    "\x00\x02".unpack("CX3C") # Raises ArgumentError.
+
+- <tt>'x'</tt> - Begin packing at after the given byte offset;
+  for packing, null fill if necessary:
 
     [].pack("x0")                # => ""
     [].pack("x")                 # => "\x00"
     [].pack("x8")                # => "\x00\x00\x00\x00\x00\x00\x00\x00"
+
+  For unpacking, cannot to move to outside the string:
+
     "\x00\x00\x02".unpack("CxC") # => [0, 2]
+    "\x00\x00\x02".unpack("x3C") # => [nil]
+    "\x00\x00\x02".unpack("x4C") # Raises ArgumentError
