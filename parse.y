@@ -5013,6 +5013,12 @@ block_param	: f_arg[pre] ',' f_opt_arg(primary_value)[opt] ',' f_rest_arg[rest] 
                         $$ = new_args(p, $pre, 0, $rest, $post, $tail, &@$);
                     /*% ripper: params!($:pre, Qnil, $:rest, $:post, *$:tail[0..2]) %*/
                     }
+                | f_arg[pre] excessed_comma
+                    {
+                        $$ = new_args_tail(p, 0, 0, 0, &@excessed_comma);
+                        $$ = new_args(p, $pre, 0, $excessed_comma, 0, $$, &@$);
+                    /*% ripper: params!($:pre, Qnil, $:excessed_comma, Qnil, Qnil, Qnil, Qnil) %*/
+                    }
                 | f_arg[pre] opt_args_tail(block_args_tail)[tail]
                     {
                         $$ = new_args(p, $pre, 0, 0, 0, $tail, &@$);
@@ -5068,15 +5074,6 @@ block_param_def	: '|' opt_block_param opt_bv_decl '|'
                         p->ctxt.in_argdef = 0;
                         $$ = $2;
                     /*% ripper: block_var!($:2, $:3) %*/
-                    }
-                | '|' f_arg excessed_comma opt_bv_decl '|'
-                    {
-                        p->max_numparam = ORDINAL_PARAM;
-                        p->ctxt.in_argdef = 0;
-                        $$ = new_args_tail(p, 0, 0, 0, &@3);
-                        $$ = new_args(p, $2, 0, $3, 0, $$, &@$);
-                    /*% ripper: params!($:2, Qnil, $:3, Qnil, Qnil, Qnil, Qnil) %*/
-                    /*% ripper: block_var!($:$, $:4) %*/
                     }
                 ;
 
