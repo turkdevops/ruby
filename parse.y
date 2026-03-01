@@ -2778,7 +2778,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node> var_ref var_lhs
 %type <node> command_rhs arg_rhs
 %type <node> command_asgn mrhs mrhs_arg superclass block_call block_command
-%type <node_args> f_arglist f_opt_paren_args f_paren_args f_args
+%type <node_args> f_arglist f_opt_paren_args f_paren_args f_args f_empty_arg
 %type <node_args_aux> f_arg f_arg_item
 %type <node> f_marg f_rest_marg
 %type <node_masgn> f_margs
@@ -6257,9 +6257,14 @@ superclass	: '<'
                 ;
 
 f_opt_paren_args: f_paren_args
-                | /* none */
+                | f_empty_arg
                     {
                         p->ctxt.in_argdef = 0;
+                    }
+                ;
+
+f_empty_arg	: /* none */
+                    {
                         $$ = new_args_tail(p, 0, 0, 0, &@$);
                         $$ = new_args(p, 0, 0, 0, 0, $$, &@$);
                     /*% ripper: params!(Qnil, Qnil, Qnil, Qnil, Qnil, Qnil, Qnil) %*/
@@ -6382,12 +6387,7 @@ f_args		: f_arg[pre] ',' f_opt_arg(arg_value)[opt] ',' f_rest_arg[rest] opt_args
                         $$ = new_args(p, 0, 0, 0, 0, $tail, &@$);
                     /*% ripper: params!(Qnil, Qnil, Qnil, Qnil, *$:tail[0..2]) %*/
                     }
-                | /* none */
-                    {
-                        $$ = new_args_tail(p, 0, 0, 0, &@$);
-                        $$ = new_args(p, 0, 0, 0, 0, $$, &@$);
-                    /*% ripper: params!(Qnil, Qnil, Qnil, Qnil, Qnil, Qnil, Qnil) %*/
-                    }
+                | f_empty_arg
                 ;
 
 args_forward	: tBDOT3
