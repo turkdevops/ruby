@@ -1431,6 +1431,7 @@ static NODE *method_add_block(struct parser_params*p, NODE *m, NODE *b, const YY
 static bool args_info_empty_p(struct rb_args_info *args);
 static rb_node_args_t *new_args(struct parser_params*,rb_node_args_aux_t*,rb_node_opt_arg_t*,ID,rb_node_args_aux_t*,rb_node_args_t*,const YYLTYPE*);
 static rb_node_args_t *new_args_tail(struct parser_params*,rb_node_kw_arg_t*,ID,ID,const YYLTYPE*);
+#define new_empty_args_tail(p, loc) new_args_tail(p, 0, 0, 0, loc)
 static NODE *new_array_pattern(struct parser_params *p, NODE *constant, NODE *pre_arg, NODE *aryptn, const YYLTYPE *loc);
 static NODE *new_array_pattern_tail(struct parser_params *p, NODE *pre_args, int has_rest, NODE *rest_arg, NODE *post_args, const YYLTYPE *loc);
 static NODE *new_find_pattern(struct parser_params *p, NODE *constant, NODE *fndptn, const YYLTYPE *loc);
@@ -3094,7 +3095,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
                     }
                 | /* none */
                     {
-                        $$ = new_args_tail(p, 0, 0, 0, &@$);
+                        $$ = new_empty_args_tail(p, &@$);
                     /*% ripper: [Qnil, Qnil, Qnil] %*/
                     }
                 ;
@@ -4577,7 +4578,7 @@ primary		: inline_primary
                         m->nd_next = node_assign(p, (NODE *)NEW_MASGN(NEW_LIST($for_var, &@for_var), 0, &@for_var), internal_var, NO_LEX_CTXT, &@for_var);
                     }
                     /* {|*internal_id| <m> = internal_id; ... } */
-                    args = new_args(p, m, 0, id, 0, new_args_tail(p, 0, 0, 0, &@for_var), &@for_var);
+                    args = new_args(p, m, 0, id, 0, new_empty_args_tail(p, &@for_var), &@for_var);
                     scope = NEW_SCOPE2(tbl, args, $compstmt, NULL, &@$);
                     YYLTYPE do_keyword_loc = $do == keyword_do_cond ? @do : NULL_LOC;
                     $$ = NEW_FOR($expr_value, scope, &@$, &@k_for, &@keyword_in, &do_keyword_loc, &@k_end);
@@ -5015,7 +5016,7 @@ block_param	: f_arg[pre] ',' f_opt_arg(primary_value)[opt] ',' f_rest_arg[rest] 
                     }
                 | f_arg[pre] excessed_comma
                     {
-                        $$ = new_args_tail(p, 0, 0, 0, &@excessed_comma);
+                        $$ = new_empty_args_tail(p, &@excessed_comma);
                         $$ = new_args(p, $pre, 0, $excessed_comma, 0, $$, &@$);
                     /*% ripper: params!($:pre, Qnil, $:excessed_comma, Qnil, Qnil, Qnil, Qnil) %*/
                     }
@@ -6265,7 +6266,7 @@ f_opt_paren_args: f_paren_args
 
 f_empty_arg	: /* none */
                     {
-                        $$ = new_args_tail(p, 0, 0, 0, &@$);
+                        $$ = new_empty_args_tail(p, &@$);
                         $$ = new_args(p, 0, 0, 0, 0, $$, &@$);
                     /*% ripper: params!(Qnil, Qnil, Qnil, Qnil, Qnil, Qnil, Qnil) %*/
                     }
@@ -14539,7 +14540,7 @@ args_with_numbered(struct parser_params *p, rb_node_args_t *args, int max_numpar
     if (max_numparam > NO_PARAM || it_id) {
         if (!args) {
             YYLTYPE loc = RUBY_INIT_YYLLOC();
-            args = new_args_tail(p, 0, 0, 0, 0);
+            args = new_empty_args_tail(p, 0);
             nd_set_loc(RNODE(args), &loc);
         }
         args->nd_ainfo.pre_args_num = it_id ? 1 : max_numparam;
