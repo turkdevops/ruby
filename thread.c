@@ -4972,10 +4972,11 @@ COMPILER_WARNING_POP
         break;
       case io_wait_unhandled:
         EC_PUSH_TAG(ec);
+        struct timeval *volatile blocking_timeout = timeout;
         if ((state = EC_EXEC_TAG()) == TAG_NONE) {
             rb_hrtime_t *to, rel, end = 0;
             RUBY_VM_CHECK_INTS_BLOCKING(ec);
-            timeout_prepare(&to, &rel, &end, timeout);
+            timeout_prepare(&to, &rel, &end, blocking_timeout);
             do {
                 nfds = numberof(fds);
                 result = wait_for_single_fd_blocking_region(th, fds, nfds, to, &lerrno);
